@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>TS Intelligent Debug Helper</title>
+<link rel="stylesheet" href="/static/style.css?v=4">
+</head>
+<body>
+
+<div id="loginOverlay" class="login-overlay">
+  <div class="login-card">
+    <h1>TS Intelligent Debug Helper</h1>
+    <div class="sub" style="color:var(--grey); margin-bottom:16px;">Sign in to continue</div>
+    <label>Username</label>
+    <input id="loginUser" autocomplete="username" onkeydown="if(event.key==='Enter') doLogin()">
+    <label>Password</label>
+    <input id="loginPass" type="password" autocomplete="current-password" onkeydown="if(event.key==='Enter') doLogin()">
+    <button class="primary" style="width:100%;" onclick="doLogin()">Sign in</button>
+    <div id="loginStatus" class="status-line"></div>
+  </div>
+</div>
+
+<div id="appRoot" style="display:none;">
+<header>
+  <div>
+    <h1>TS Intelligent Debug Helper</h1>
+    <div class="sub">Org customization knowledgebase &amp; incident RCA</div>
+  </div>
+  <div style="text-align:right;">
+    <div class="sub" id="userInfo"></div>
+    <div class="sub" id="orgPicker"></div>
+  </div>
+</header>
+<nav>
+  <button data-view="connections" class="active">Connections</button>
+  <button data-view="dashboard">Org Dashboard</button>
+  <button data-view="incidents">Incidents</button>
+  <button data-view="logs">Log Normalizer</button>
+  <button data-view="tokens">API Tokens</button>
+  <button data-view="admin" id="navAdmin" style="display:none;">Admin</button>
+  <button onclick="doLogout()" style="margin-left:auto; color:var(--high);">Sign out</button>
+</nav>
+<main>
+
+  <section id="view-connections" class="view active">
+    <div class="card" data-requires="user">
+      <h2>Connect a new org</h2>
+      <p class="muted">Paste the org's Instance URL and an Access Token (from Workbench, a Connected App, or an
+        existing authenticated session). Nothing but the derived knowledgebase is ever stored -- the token is used
+        only to make the fetch and is not persisted.</p>
+      <label>Org ID (short, no spaces -- used to refer to this org from now on)</label>
+      <input id="newOrgId" placeholder="acme_prod">
+      <label>Org Name</label>
+      <input id="newOrgName" placeholder="Acme Corp - Production">
+      <label>Instance URL</label>
+      <input id="newInstanceUrl" placeholder="https://acme.my.salesforce.com">
+      <label>Access Token</label>
+      <input id="newAccessToken" type="password" placeholder="00D...">
+      <button class="primary" onclick="createOrg()">Connect &amp; Fetch</button>
+      <div id="createStatus" class="status-line"></div>
+    </div>
+
+    <div class="card">
+      <h2>Connected orgs</h2>
+      <table>
+        <thead><tr><th>Org ID</th><th>Name</th><th>Classes</th><th>Triggers</th><th>Flows</th><th>LWC</th><th>Last refreshed</th></tr></thead>
+        <tbody id="orgsTable"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="view-dashboard" class="view">
+    <div class="card">
+      <h2 id="dashOrgTitle">Org stats</h2>
+      <div id="dashStats" class="grid2"></div>
+    </div>
+    <div class="card">
+      <h2>Search the knowledgebase</h2>
+      <label>Component, object, or field name (partial match)</label>
+      <input id="searchBox" placeholder="e.g. Increment_Adjustment__c" onkeydown="if(event.key==='Enter') runSearch()">
+      <button class="secondary" onclick="runSearch()">Search</button>
+      <div id="searchResults"></div>
+    </div>
+    <div class="card">
+      <h2>Find who writes a field (no exception needed)</h2>
+      <label>Field API Name</label>
+      <input id="fieldWriterBox" placeholder="Increment_Adjustment__c" onkeydown="if(event.key==='Enter') findFieldWriters()">
+      <button class="secondary" onclick="findFieldWriters()">Find writers</button>
+      <div id="fieldWriterResults"></div>
+    </div>
+  </section>
+
+  <section id="view-incidents" class="view">
+    <div class="card" data-requires="user">
+      <h2>File a new incident</h2>
+      <label>Label (optional, no spaces)</label>
+      <input id="incLabel" placeholder="pcbtest1_wrong_value">
+      <label>Debug log file (optional)</label>
+      <input id="incLogFile" type="file">
+      <label>Suspect field API name (optional -- for a "wrong value, no exception" report)</label>
+      <input id="incField" placeholder="Increment_Adjustment__c">
+      <button class="primary" onclick="fileIncident()">File incident</button>
+      <div id="incidentStatus" class="status-line"></div>
+    </div>
+    <div class="card">
+      <h2>Incidents for this org</h2>
+      <table>
+        <thead><tr><th>When</th><th>Incident</th><th>Status</th><th>Field</th></tr></thead>
+        <tbody id="incidentsTable"></tbody>
+      </table>
+    </div>
+    <div class="card" id="incidentDetailCard" style="display:none;">
+      <h2>Incident detail</h2>
+      <div id="incidentDetail"></div>
+    </div>
+  </section>
+
+  <section id="view-logs" class="view">
+    <div class="card" data-requires="user">
+      <h2>Normalize a debug log</h2>
+      <p class="muted">Upload a raw Salesforce debug log to get a compact, normalized JSON version -- no org
+        connection, no Apex/Flow source, no metadata needed. The raw log is used only in memory and never stored;
+        only the normalized JSON can be kept. Once normalized, you can download it, keep it in the library below,
+        or hand it to Claude via the MCP server to get an RCA and suggested resolution from the log alone.</p>
+      <label>Debug log file</label>
+      <input id="logFile" type="file">
+      <label>Label (optional)</label>
+      <input id="logLabel" placeholder="e.g. batch_failure_2026_07_30">
+      <label><input type="checkbox" id="logStore" style="width:auto; margin-right:6px;">Store in the library for future reference</label>
+      <button class="primary" onclick="normalizeLog()">Normalize</button>
+      <div id="logStatus" class="status-line"></div>
+      <div id="logResultActions" style="display:none; margin-top:12px;">
+        <button class="secondary" onclick="downloadCurrentNormalized()">Download normalized JSON</button>
+      </div>
+      <div id="logResult"></div>
+    </div>
+
+    <div class="card">
+      <h2>Stored normalized logs</h2>
+      <table>
+        <thead><tr><th>When</th><th>Log ID</th><th>Top exception</th><th>Exceptions</th><th></th></tr></thead>
+        <tbody id="logsTable"></tbody>
+      </table>
+    </div>
+
+    <div class="card" id="logDetailCard" style="display:none;">
+      <h2>Normalized log detail</h2>
+      <div id="logDetailActions" style="margin-bottom:10px;"></div>
+      <div id="logDetail"></div>
+    </div>
+  </section>
+
+  <section id="view-tokens" class="view">
+    <div class="card">
+      <h2>Create an API token for the MCP server</h2>
+      <p class="muted">The MCP server authenticates to this app with an API token. A token inherits <b>your</b>
+        role, so a reader token can only read, a user token can also connect orgs and file incidents. The token is
+        shown once, on creation -- copy it immediately; it can't be retrieved later, only revoked.</p>
+      <label>Label (optional -- to remember what it's for)</label>
+      <input id="tokenLabel" placeholder="e.g. Claude Desktop on my laptop">
+      <label>Expires after (days -- leave blank for no expiry)</label>
+      <input id="tokenTtl" type="number" min="1" placeholder="(never)">
+      <button class="primary" onclick="createToken()">Create token</button>
+      <div id="tokenCreateResult"></div>
+    </div>
+    <div class="card">
+      <h2>Your API tokens</h2>
+      <table>
+        <thead><tr><th>Label</th><th>Role</th><th>Owner</th><th>Created</th><th>Expires</th><th>Last used</th><th></th></tr></thead>
+        <tbody id="tokensTable"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="view-admin" class="view">
+    <div class="card">
+      <h2>Create a user</h2>
+      <label>Username</label>
+      <input id="admUser" placeholder="jdoe">
+      <label>Temporary password (min 8 chars)</label>
+      <input id="admPass" type="text" placeholder="they can change it after signing in">
+      <label>Role</label>
+      <select id="admRole">
+        <option value="reader">reader -- read-only</option>
+        <option value="user" selected>user -- read + write (connect orgs, file incidents)</option>
+        <option value="admin">admin -- full access incl. user management</option>
+      </select>
+      <button class="primary" onclick="createUser()">Create user</button>
+      <div id="admStatus" class="status-line"></div>
+    </div>
+    <div class="card">
+      <h2>Users</h2>
+      <table>
+        <thead><tr><th>Username</th><th>Role</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead>
+        <tbody id="usersTable"></tbody>
+      </table>
+    </div>
+  </section>
+
+</main>
+</div>
+<script src="/static/app.js?v=4"></script>
+</body>
+</html>

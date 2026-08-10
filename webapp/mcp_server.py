@@ -1,0 +1,323 @@
+"""
+TS Intelligent Debug Helper -- local stdio MCP server.
+
+This does NOT talk to Salesforce or the filesystem directly. It is a thin
+proxy over the running FastAPI web app's HTTP API (see app/main.py), so an
+AI agent (Claude Desktop, Cowork, Claude Code, etc.) can drive org
+onboarding, knowledgebase lookups, and incident filing/resolution through
+the exact same code path -- and the exact same "only normalized JSON is
+ever persisted" guarantee -- as the web UI.
+
+Run the web app first:
+    uvicorn app.main:app --port 8000
+
+The web app now requires authentication, so the MCP server sends an API
+token (created in the web UI under "API Tokens") as a Bearer header on
+every request. The token inherits the role of the user who created it --
+a reader token can only call the read tools, a user/admin token can also
+create org connections and file incidents.
+
+Then point an MCP client at this script (stdio transport), e.g. in
+Claude Desktop's claude_desktop_config.json:
+    {
+      "mcpServers": {
+        "ts-debug-helper": {
+          "command": "python3",
+          "args": ["/absolute/path/to/webapp/mcp_server.py"],
+          "env": {
+            "TS_DEBUG_HELPER_URL": "http://127.0.0.1:8000",
+            "TS_DEBUG_HELPER_TOKEN": "<paste an API token from the web UI>"
+          }
+        }
+      }
+    }
+
+Every tool here is a network call to that local server, not a direct file
+read -- if the web app is not running, every tool will return an error
+saying so.
+"""
+import os
+from typing import Optional
+
+import httpx
+from mcp.server.fastmcp import FastMCP
+
+BASE_URL = os.environ.get("TS_DEBUG_HELPER_URL", "http://127.0.0.1:8000").rstrip("/")
+API_TOKEN = os.environ.get("TS_DEBUG_HELPER_TOKEN", "").strip()
+
+mcp = FastMCP("ts-debug-helper")
+
+
+def _auth_headers():
+    return {"Authorization": f"Bearer {API_TOKEN}"} if API_TOKEN else {}
+
+
+def _client() -> httpx.AsyncClient:
+    return httpx.AsyncClient(base_url=BASE_URL, timeout=30.0, headers=_auth_headers())
+
+
+def _auth_error(status: int):
+    if status == 401:
+        return {"error": "Authentication failed (401). Set TS_DEBUG_HELPER_TOKEN in the MCP "
+                         "server env to a valid API token created in the web UI under 'API Tokens'."}
+    if status == 403:
+        return {"error": "Not permitted (403). Your API token's role is too low for this action -- "
+                         "e.g. connecting an org or filing an incident needs a 'user' or 'admin' token, "
+                         "not a 'reader' token."}
+    return None
+
+
+_UNREACHABLE = None  # set lazily below
+
+
+def _conn_error():
+    return {"error": f"Cannot reach the TS Intelligent Debug Helper web app at {BASE_URL}. "
+                     f"Is it running (uvicorn app.main:app --port 8000)?"}
+
+
+async def _get(path: str, params: Optional[dict] = None):
+    async with _client() as c:
+        try:
+            r = await c.get(path, params=params)
+        except httpx.ConnectError:
+            return _conn_error()
+        if r.status_code >= 400:
+            return _auth_error(r.status_code) or {"error": f"{r.status_code}: {r.text}"}
+        return r.json()
+
+
+async def _post_json(path: str, body: dict):
+    async with _client() as c:
+        try:
+            r = await c.post(path, json=body)
+        except httpx.ConnectError:
+            return _conn_error()
+        if r.status_code >= 400:
+            return _auth_error(r.status_code) or {"error": f"{r.status_code}: {r.text}"}
+        return r.json()
+
+
+async def _post_form(path: str, data: dict, files: Optional[dict] = None):
+    async with _client() as c:
+        try:
+            r = await c.post(path, data=data, files=files or {})
+        except httpx.ConnectError:
+            return _conn_error()
+        if r.status_code >= 400:
+            return _auth_error(r.status_code) or {"error": f"{r.status_code}: {r.text}"}
+        return r.json()
+
+
+# ---------- org connections ----------
+
+@mcp.tool()
+async def create_org_connection(org_id: str, org_name: str, instance_url: str, access_token: str) -> dict:
+    """Connect a new Salesforce org: fetch its Apex classes/triggers, flows,
+    LWC components and custom objects via the Tooling API, then build and
+    store the derived knowledgebase for it. Only the derived JSON is ever
+    stored -- the access token and raw fetched source are never persisted.
+    This queues background work; poll get_org_connection_status(org_id) or
+    call list_orgs() until it reports status 'done'."""
+    return await _post_json("/api/orgs", {
+        "org_id": org_id, "org_name": org_name,
+        "instance_url": instance_url, "access_token": access_token,
+    })
+
+
+@mcp.tool()
+async def get_org_connection_status(org_id: str) -> dict:
+    """Check the progress of an org connection/fetch that was queued via
+    create_org_connection. Status values: queued, connecting,
+    fetching_objects, fetching_classes, fetching_triggers, fetching_flows,
+    fetching_lwc, fetching_workflow, extracting, indexing, saving, done, error."""
+    return await _get(f"/api/orgs/{org_id}/status")
+
+
+@mcp.tool()
+async def list_orgs() -> dict:
+    """List every org connected so far, with component counts and last-
+    refreshed timestamp for each. Use this to discover valid org_id values
+    for the other tools."""
+    return await _get("/api/orgs")
+
+
+# ---------- knowledgebase lookups ----------
+
+@mcp.tool()
+async def get_org_stats(org_id: str) -> dict:
+    """Get org-wide customization stats: counts of classes/triggers/flows/
+    LWC, async job classes (batch/queueable/schedulable/future), classes
+    with external callouts, flows missing a fault path, and org-wide risk
+    rollups (never-cleared static collections, fields with a high-risk
+    writer). Good first call when starting an investigation on an org."""
+    return await _get(f"/api/orgs/{org_id}/stats")
+
+
+@mcp.tool()
+async def get_component(org_id: str, component_id: str) -> dict:
+    """Get the full stored knowledgebase card for one component (an Apex
+    class/trigger, a flow, or an LWC bundle) -- its structure, objects/
+    fields touched, calls made, and (for Apex) any detected static mutable
+    state or risky field writes. Use search_knowledgebase or
+    find_field_writers first if you don't already know the exact id."""
+    return await _get(f"/api/orgs/{org_id}/components/{component_id}")
+
+
+@mcp.tool()
+async def get_object_touch(org_id: str, object_name: str) -> dict:
+    """List every component that reads or writes a given Salesforce object
+    (standard or custom, e.g. 'Quote' or 'Apttus_Config2__LineItem__c'),
+    useful for scoping which customizations could plausibly be involved in
+    an incident on that object."""
+    return await _get(f"/api/orgs/{org_id}/object-touch/{object_name}")
+
+
+@mcp.tool()
+async def find_field_writers(org_id: str, field_api_name: str) -> dict:
+    """Find every writer of a specific field (e.g. 'Increment_Adjustment__c')
+    across ALL update mechanisms -- not just Apex. Each writer carries a
+    `mechanism` ('Apex', 'Flow', 'Process Builder', or 'Workflow/Approval
+    field update'), a risk level (high/medium/low for Apex from static
+    analysis; 'declarative' for Flow/PB/Workflow), the target object, and a
+    plain-language reason. This is the key tool for 'field X had the wrong
+    value but there was no exception' reports, since it works from the static
+    knowledgebase alone with no debug log needed.
+
+    Coverage notes so you don't over-claim: Apex writers come from parsing
+    class/trigger source. Flow/Process Builder writers come from
+    recordUpdate/recordCreate/assignment elements in the flow metadata (a
+    declarative writer may carry a `confidence` of 'medium' when it writes via
+    a record variable rather than $Record directly). Workflow and Approval
+    field updates both come from WorkflowFieldUpdate metadata. If the field is
+    a formula or roll-up summary it is not 'written' by anything -- its value
+    derives from other data. When reporting, group writers by mechanism and
+    note that active-vs-inactive state of a flow/rule is not captured here, so
+    confirm the writer is active before concluding it caused a given change."""
+    return await _get(f"/api/orgs/{org_id}/field-writers/{field_api_name}")
+
+
+@mcp.tool()
+async def search_knowledgebase(org_id: str, query: str) -> dict:
+    """Freeform search over an org's knowledgebase: matches the query
+    (case-insensitive substring) against component ids, object names, and
+    field names. Use this when you have a vague description instead of an
+    exact identifier -- e.g. searching 'pricing' or 'adjustment'."""
+    return await _get(f"/api/orgs/{org_id}/search", params={"q": query})
+
+
+# ---------- incidents ----------
+
+@mcp.tool()
+async def file_incident(
+    org_id: str,
+    label: Optional[str] = None,
+    suspect_field: Optional[str] = None,
+    log_text: Optional[str] = None,
+) -> dict:
+    """File a new incident against an org's knowledgebase and get back an
+    RCA context pack (relevant components, object/field touch info,
+    recently-changed components, and -- if suspect_field is given --
+    ranked field writers) plus whether this matches a previously-seen
+    signature (recurrence) and any resolution already on file for it.
+    Provide log_text (the raw contents of a Salesforce debug log) and/or
+    suspect_field (a custom field API name reported as wrong with no
+    exception). Only the normalized/derived form of the log is ever
+    stored -- log_text itself is not persisted to disk."""
+    if not suspect_field and not log_text:
+        return {"error": "Provide log_text, suspect_field, or both."}
+    data = {}
+    if label:
+        data["label"] = label
+    if suspect_field:
+        data["field"] = suspect_field
+    files = None
+    if log_text:
+        files = {"log_file": ("incident.log", log_text.encode("utf-8"), "text/plain")}
+    return await _post_form(f"/api/orgs/{org_id}/incidents", data, files)
+
+
+@mcp.tool()
+async def list_incidents(org_id: str) -> dict:
+    """List all incidents filed so far for an org, newest metadata only
+    (timestamp, incident id, recurrence flag, suspect field). Use
+    get_incident for the full RCA context pack of one incident."""
+    return await _get(f"/api/orgs/{org_id}/incidents")
+
+
+@mcp.tool()
+async def get_incident(org_id: str, incident_id: str) -> dict:
+    """Get the full stored record for one incident: its normalized log
+    (if any), the assembled RCA context pack, and its filing metadata
+    (signature, recurrence, prior occurrences/resolution)."""
+    return await _get(f"/api/orgs/{org_id}/incidents/{incident_id}")
+
+
+@mcp.tool()
+async def record_resolution(org_id: str, signature: str, resolution: str) -> dict:
+    """Record the root cause and/or fix for a known-issue signature (as
+    returned in an incident's metadata) so future recurrences of the same
+    signature immediately surface this resolution instead of requiring a
+    fresh investigation."""
+    return await _post_json(f"/api/orgs/{org_id}/resolve", {"signature": signature, "resolution": resolution})
+
+
+@mcp.tool()
+async def list_known_issues(org_id: str) -> dict:
+    """List every known-issue signature recorded for an org so far, each
+    with its occurrence count, first/last-seen incident ids, and recorded
+    resolution (if any)."""
+    return await _get(f"/api/orgs/{org_id}/known-issues")
+
+
+# ---------- standalone log normalization + log-only RCA ----------
+
+@mcp.tool()
+async def normalize_log(log_text: str, label: Optional[str] = None, store: bool = False) -> dict:
+    """Normalize a raw Salesforce debug log with NO org, code, or metadata
+    required. Pass the raw log contents as `log_text`; get back the compact
+    normalized JSON -- execution units (with nesting depth and which threw),
+    deduplicated exceptions with type/message/stack, collapsed SOQL and DML
+    summaries, callouts, flow events, validation failures, final governor
+    limits, and any component names the log itself mentions. The raw log is
+    processed in memory and never stored; if `store` is true the derived
+    JSON (never the raw log) is kept in the library and a `log_id` is
+    returned.
+
+    After calling this, analyze the returned normalized log to produce an RCA
+    and a suggested resolution FROM THE LOG ALONE -- you do not have (and do
+    not need) the affected org's Apex/Flow source or metadata. Base the RCA on
+    what the log shows: the exception type and message, the failing frame at
+    the top of the stack, which execution unit / trigger was active, the
+    governor-limit usage (look for a limit at or near its max), the SOQL/DML
+    volumes (signs of queries or DML inside a loop), and the ordering of
+    events. State clearly which parts are evidenced by the log versus
+    inferred, and if confirming the root cause would require the org's code,
+    say specifically what to look at (e.g. 'inspect method X named in the top
+    stack frame')."""
+    files = {"log_file": ("incident.log", log_text.encode("utf-8"), "text/plain")}
+    data = {"store": "true" if store else "false"}
+    if label:
+        data["label"] = label
+    return await _post_form("/api/logs/normalize", data, files)
+
+
+@mcp.tool()
+async def list_normalized_logs() -> dict:
+    """List every standalone normalized log kept in the library (org-
+    independent), newest first, with each log's id, label, top exception
+    type, exception count, and the component names it mentions. Use
+    get_normalized_log(log_id) to pull the full normalized JSON for one."""
+    return await _get("/api/logs")
+
+
+@mcp.tool()
+async def get_normalized_log(log_id: str) -> dict:
+    """Get the full normalized JSON for one stored log (plus its metadata).
+    Use this to analyze a previously-normalized log and produce an RCA and
+    suggested resolution from the log alone -- see normalize_log for what the
+    log-only analysis should cover and how to caveat it."""
+    return await _get(f"/api/logs/{log_id}")
+
+
+if __name__ == "__main__":
+    mcp.run(transport="stdio")

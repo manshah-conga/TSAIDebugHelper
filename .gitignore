@@ -1,0 +1,41 @@
+# ---------------------------------------------------------------------------
+# Whitelist model: ignore EVERYTHING at the repo root, then re-include only
+# source code. This guarantees org knowledgebases, incidents, uploaded/
+# normalized logs, and user/auth data can never be committed by accident --
+# even brand-new data folders are ignored unless explicitly re-included here.
+# ---------------------------------------------------------------------------
+/*
+
+# Re-include source directories + this file
+!/webapp/
+!/scripts/
+!/.gitignore
+!/README.md
+
+# ---------------------------------------------------------------------------
+# Within the re-included dirs, still exclude anything that is DATA, not code.
+# ---------------------------------------------------------------------------
+
+# Web app runtime data: org knowledgebases, incidents, normalized-log library,
+# and auth (users.json + tokens.json). Never commit any of this.
+/webapp/data/
+/webapp/logs/
+
+# Real customer-org artifacts that were sitting next to the CLI scripts
+/scripts/BoxSBJuly26/
+/scripts/**/knowledge_base/
+/scripts/**/incidents/
+
+# Python / editor / OS noise
+__pycache__/
+*.pyc
+*.pyo
+*.tmp
+.venv/
+venv/
+.env
+.DS_Store
+Thumbs.db
+node_modules/
+.idea/
+.vscode/
