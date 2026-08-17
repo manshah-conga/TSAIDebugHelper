@@ -8,6 +8,8 @@ Flow metadata, raw LWC file text, or a raw debug log body.
 import os
 import json
 import glob
+import time
+import tempfile
 
 DATA_ROOT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 ORGS_ROOT = os.path.join(DATA_ROOT, "orgs")
@@ -54,11 +56,33 @@ def read_json(path, default=None):
 
 
 def write_json(path, obj):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(obj, f, indent=2)
-    os.replace(tmp, path)
+    """Atomic write via a UNIQUE temp file in the same directory, then
+    os.replace. The temp name must be unique per write: a fixed `path + '.tmp'`
+    breaks under concurrent requests (two writers clobber the same temp and one
+    os.replace then fails with PermissionError on Windows). os.replace is also
+    retried briefly because Windows can transiently lock the destination
+    (antivirus / search indexer) right as we swap it in."""
+    d = os.path.dirname(path)
+    os.makedirs(d, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".tmp-", suffix=".json")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(obj, f, indent=2)
+        last_err = None
+        for attempt in range(10):
+            try:
+                os.replace(tmp, path)
+                return
+            except PermissionError as e:  # transient Windows lock; back off and retry
+                last_err = e
+                time.sleep(0.05 * (attempt + 1))
+        raise last_err
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
 
 
 def org_dir(org_id):

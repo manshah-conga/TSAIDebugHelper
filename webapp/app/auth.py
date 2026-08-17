@@ -186,10 +186,29 @@ def verify_token(raw):
             user = get_user(d["username"])
             if not user or user.get("disabled"):
                 return None
-            d["last_used"] = _now()
-            storage.save_tokens(tokens)
+            # Stamp "last used" -- but this is purely informational, so make it
+            # (a) throttled: skip if we already stamped within the last minute,
+            # to avoid rewriting tokens.json on every single polled request, and
+            # (b) best-effort: a failed write must never turn a valid request
+            # into a 500. Auth succeeds regardless of whether the stamp lands.
+            if _should_stamp(d.get("last_used"), now):
+                d["last_used"] = _now()
+                try:
+                    storage.save_tokens(tokens)
+                except Exception:
+                    pass
             return {"username": d["username"], "role": user["role"], "token_id": tid, "kind": d.get("kind")}
     return None
+
+
+def _should_stamp(last_used, now):
+    if not last_used:
+        return True
+    try:
+        prev = datetime.datetime.strptime(last_used, "%Y-%m-%dT%H:%M:%SZ")
+    except (ValueError, TypeError):
+        return True
+    return (now - prev).total_seconds() >= 60
 
 
 def list_tokens(username=None):
