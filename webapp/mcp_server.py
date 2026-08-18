@@ -197,12 +197,36 @@ async def find_field_writers(org_id: str, field_api_name: str) -> dict:
 
 
 @mcp.tool()
-async def search_knowledgebase(org_id: str, query: str) -> dict:
+async def get_inbound_references(org_id: str, component_id: str) -> dict:
+    """Reverse-call lookup (schema v3): everything in the org that INVOKES a
+    given class/flow -- flows via actionCall (with the resolved Apex method),
+    classes via method call, flows via subflow. Answers 'what else calls
+    this?' without scanning every card. The complement of get_component's
+    outbound `calls_to`."""
+    return await _get(f"/api/orgs/{org_id}/inbound/{component_id}")
+
+
+@mcp.tool()
+async def get_entry_points(org_id: str, object_name: str) -> dict:
+    """Per-object automation entry points (schema v3): the before/after-save
+    flows, apex triggers, process builder, and workflow/approval field
+    updates that fire when a record of this object is saved, plus any
+    self_referential_automation (after-save automation that updates its own
+    object -- the recursion pattern behind loop-guard bugs). The closest the
+    knowledgebase gets to 'what runs when this object is saved'."""
+    return await _get(f"/api/orgs/{org_id}/entry-points/{object_name}")
+
+
+@mcp.tool()
+async def search_knowledgebase(org_id: str, query: str, customer_authored_only: bool = True) -> dict:
     """Freeform search over an org's knowledgebase: matches the query
     (case-insensitive substring) against component ids, object names, and
     field names. Use this when you have a vague description instead of an
-    exact identifier -- e.g. searching 'pricing' or 'adjustment'."""
-    return await _get(f"/api/orgs/{org_id}/search", params={"q": query})
+    exact identifier -- e.g. searching 'pricing' or 'adjustment'. Defaults to
+    customer-authored components only (managed-package internals are usually
+    noise); pass customer_authored_only=false to include managed results."""
+    return await _get(f"/api/orgs/{org_id}/search",
+                      params={"q": query, "customer_authored_only": str(customer_authored_only).lower()})
 
 
 # ---------- incidents ----------

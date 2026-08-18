@@ -1,15 +1,12 @@
 """
-Mock Salesforce Tooling/REST API, used only to validate sf_client.py +
-onboarding.py end to end without a live org. Mirrors the exact endpoints
-sf_client.py calls: /services/data/vXX/limits, /sobjects/,
-/tooling/query/?q=..., /tooling/sobjects/Flow/<id>.
+Mock Salesforce Tooling/REST API, used to validate sf_client.py +
+onboarding.py + the schema-v3 extractors end to end without a live org.
 
-Includes one Apex class deliberately written with the "never-cleared
-static Map" anti-pattern (mirrors the real CPQ_PricingCallBack bug found
-earlier in this project) so the risk-detection path can be verified
-end-to-end, not just unit-tested in isolation.
-
-Run with: uvicorn tests.mock_salesforce:app --port 8001
+Exercises the v3 paths: NamespacePrefix / ApiVersion on Apex, Flow version/
+status, a record-triggered after-save flow with entry filters, a decision
+graph, a self-referential loop-guard record update, a structured action
+call, plus an Apex class with a swallowed exception and an unpersisted field
+write (mirrors the CNG_Trigger_Approvals findings in the v3 proposal).
 """
 from fastapi import FastAPI, Request, HTTPException
 
@@ -17,8 +14,26 @@ app = FastAPI(title="Mock Salesforce")
 
 EXPECTED_TOKEN = "mock-token-123"
 
+
+# The real Tooling API serializes a Flow value node with EVERY union member
+# present, the unused ones null. These helpers reproduce that exactly so the
+# extractor is exercised against the real shape (this is what surfaced D-01).
+def _vnode(**present):
+    node = {"stringValue": None, "booleanValue": None, "numberValue": None,
+            "dateValue": None, "dateTimeValue": None, "elementReference": None}
+    node.update(present)
+    return node
+
+def SV(s): return _vnode(stringValue=s)
+def BV(b): return _vnode(booleanValue=b)
+def NV(n): return _vnode(numberValue=n)
+def REF(r): return _vnode(elementReference=r)
+def BLANK(): return _vnode()  # all members null -> deliberate blank assignment
+def WEIRD(): return {"stringValue": None, "booleanValue": None, "unmodeledValue": "xyz"}
+
+# Never-cleared static map bug (v2 case) -- persisted write.
 BUGGY_CLASS_BODY = """
-public class MockPricingCallback {
+public with sharing class MockPricingCallback {
     public static Map<Decimal, Decimal> lineAdjustmentCache = new Map<Decimal, Decimal>();
 
     public static void applyAdjustments(List<Mock_Line__c> lines) {
@@ -29,21 +44,27 @@ public class MockPricingCallback {
         }
         update lines;
     }
-
-    public static void cacheAdjustment(Decimal lineNumber, Decimal value) {
-        lineAdjustmentCache.put(lineNumber, value);
-    }
 }
 """
 
-NORMAL_CLASS_BODY = """
-public class MockQuoteHelper {
-    public static void recalcTotals(List<Mock_Line__c> lines) {
-        Decimal total = 0;
-        for (Mock_Line__c item : lines) {
-            total += item.Amount__c;
+# Swallowed exception + unpersisted field write + ORDER BY SOQL (v3 case).
+APPROVAL_CLASS_BODY = """
+public class CNG_Trigger_Approvals {
+    @InvocableMethod(label='Trigger Approval Requests')
+    public static void TriggerApprovalRequests(List<Id> agreementIds) {
+        List<Apttus_Approval__Approval_Process__c> procs = [
+            SELECT Apttus_Approval__Sequence__c, Id
+            FROM Apttus_Approval__Approval_Process__c
+            WHERE Apttus_Approval__Process_Name__c != null
+            ORDER BY Apttus_Approval__Sequence__c ASC
+        ];
+        Mock_Line__c AgmtRec = new Mock_Line__c();
+        AgmtRec.Auto_Trigger_Approvals__c = false;
+        try {
+            ApprovalsWebService.submitForApproval(agreementIds);
+        } catch (Exception e) {
+            System.debug('approval failed: ' + e.getMessage());
         }
-        System.debug('total=' + total);
     }
 }
 """
@@ -56,28 +77,62 @@ trigger MockLineTrigger on Mock_Line__c (before update) {
 }
 """
 
+# Record-triggered after-save flow on Mock_Line__c with entry filter, a
+# decision, a self-referential record update that clears the trigger flag
+# (loop guard), and an apex action call.
 FLOW_METADATA = {
     "label": "Mock Line Update Flow",
     "processType": "AutoLaunchedFlow",
-    "start": {"object": "Mock_Line__c", "triggerType": "RecordAfterSave", "recordTriggerType": "Update"},
-    "actionCalls": [{"actionName": "MockPricingCallback", "actionType": "apex"}],
-    "subflows": [],
-    "decisions": [{"name": "CheckAmount"}],
-    "assignments": [{"name": "SetAdjustment", "assignmentItems": [
-        {"assignToReference": "$Record.Increment_Adjustment__c",
-         "operator": "Assign", "value": {"numberValue": 0}},
-    ]}],
-    "recordUpdates": [{
-        "name": "UpdateLine", "object": "Mock_Line__c", "inputReference": "$Record",
-        "inputAssignments": [
-            {"field": "Increment_Adjustment__c", "value": {"elementReference": "SetAdjustment"}},
+    "description": "Triggers approvals for mock lines",
+    "runInMode": "DefaultMode",
+    "start": {
+        "object": "Mock_Line__c",
+        "triggerType": "RecordAfterSave",
+        "recordTriggerType": "Update",
+        "filterLogic": "and",
+        "doesRequireRecordChangedToMeetCriteria": True,
+        "filters": [
+            {"field": "Auto_Trigger_Approvals__c", "operator": "EqualTo", "value": BV(True)},
+            {"field": "CNG_Record_Type_Name__c", "operator": "EqualTo", "value": SV("Physician")},
         ],
+        "connector": {"targetReference": "Route_By_Next_Approval"},
+    },
+    "decisions": [{
+        "name": "Route_By_Next_Approval", "label": "Route By Next Approval",
+        "rules": [{
+            "name": "Is_Recruitment", "label": "Is Recruitment", "conditionLogic": "and",
+            "conditions": [{"field": "Next_Approval_to_Trigger__c", "operator": "EqualTo",
+                            "value": SV("Recruitment")}],
+            "connector": {"targetReference": "Trigger_Approvals"},
+        }],
+        "defaultConnector": {"targetReference": "APPRO_update"},
     }],
-    "faultConnectors": [],
+    "actionCalls": [{
+        "name": "Trigger_Approvals", "actionType": "apex", "actionName": "CNG_Trigger_Approvals",
+        "inputParameters": [{"name": "agreementIds", "value": REF("$Record.Id")}],
+        "connector": {"targetReference": "APPRO_update"},
+        "faultConnector": {"targetReference": "Approval_Failed_Path"},
+    }],
+    "recordUpdates": [{
+        "name": "APPRO_update", "inputReference": "$Record",   # no explicit object -> Q-07 derives it
+        "inputAssignments": [
+            {"field": "Apttus__Status__c", "value": SV("Activated")},          # STRING must survive (D-01)
+            {"field": "Amount__c", "value": NV(100)},                          # NUMBER must survive
+            {"field": "Owner_Ref__c", "value": REF("varOwner.Id")},            # REFERENCE must survive
+            {"field": "Auto_Trigger_Approvals__c", "value": BV(False)},        # boolean false (loop guard)
+            {"field": "Next_Approval_to_Trigger__c", "value": BLANK()},        # deliberate blank
+            {"field": "Weird_Field__c", "value": WEIRD()},                     # -> unparsed (D-02)
+        ],
+        # no faultConnector -> should raise the no_fault_path flag
+    }],
+    "assignments": [{
+        "name": "SetAdjustment",
+        "assignmentItems": [{"assignToReference": "$Record.Next_Approval_to_Trigger__c",
+                             "operator": "Assign", "value": BLANK()}],
+        "connector": {"targetReference": "Route_By_Next_Approval"},
+    }],
 }
 
-# A Workflow Rule / Approval Process field update that writes the SAME field,
-# so validation confirms all three mechanisms surface for one field.
 WORKFLOW_FIELD_UPDATES = [
     {"Id": "04Y001", "FullName": "Mock_Line__c.Reset_Increment_Adjustment",
      "Metadata": {"field": "Increment_Adjustment__c", "name": "Reset Increment Adjustment",
@@ -88,18 +143,14 @@ LWC_FILES = {
     "mockLineEditor": {
         "mockLineEditor.js": "import { LightningElement, api } from 'lwc';\n"
                               "export default class MockLineEditor extends LightningElement {\n"
-                              "  @api recordId;\n"
-                              "  connectedCallback() { console.log('loaded', this.recordId); }\n"
-                              "}\n",
-        "mockLineEditor.html": "<template><lightning-card title='Mock Line Editor'></lightning-card></template>",
-        "mockLineEditor.js-meta.xml": "<LightningComponentBundle><isExposed>true</isExposed></LightningComponentBundle>",
+                              "  @api recordId;\n}\n",
+        "mockLineEditor.html": "<template></template>",
     }
 }
 
 
 def _check_auth(request: Request):
-    auth = request.headers.get("authorization", "")
-    if auth != f"Bearer {EXPECTED_TOKEN}":
+    if request.headers.get("authorization", "") != f"Bearer {EXPECTED_TOKEN}":
         raise HTTPException(401, "invalid token")
 
 
@@ -114,6 +165,7 @@ def sobjects(request: Request):
     _check_auth(request)
     return {"sobjects": [
         {"name": "Mock_Line__c", "custom": True},
+        {"name": "Apttus_Approval__Approval_Process__c", "custom": True},
         {"name": "Account", "custom": False},
     ]}
 
@@ -124,32 +176,33 @@ def tooling_query(request: Request, q: str):
     ql = q.upper()
     if "FROM APEXCLASS" in ql:
         return {"records": [
-            {"Id": "01p001", "Name": "MockPricingCallback", "Body": BUGGY_CLASS_BODY},
-            {"Id": "01p002", "Name": "MockQuoteHelper", "Body": NORMAL_CLASS_BODY},
+            {"Id": "01p001", "Name": "MockPricingCallback", "NamespacePrefix": None,
+             "ApiVersion": 60.0, "Body": BUGGY_CLASS_BODY},
+            {"Id": "01p002", "Name": "CNG_Trigger_Approvals", "NamespacePrefix": None,
+             "ApiVersion": 64.0, "Body": APPROVAL_CLASS_BODY},
+            {"Id": "01p003", "Name": "ApttusInternalHelper", "NamespacePrefix": "Apttus",
+             "ApiVersion": 58.0, "Body": "global class ApttusInternalHelper { public void x(){} }"},
         ], "nextRecordsUrl": None}
     if "FROM APEXTRIGGER" in ql:
         return {"records": [
-            {"Id": "01q001", "Name": "MockLineTrigger", "Body": TRIGGER_BODY, "TableEnumOrId": "Mock_Line__c"},
+            {"Id": "01q001", "Name": "MockLineTrigger", "NamespacePrefix": None, "ApiVersion": 60.0,
+             "Body": TRIGGER_BODY, "TableEnumOrId": "Mock_Line__c"},
         ], "nextRecordsUrl": None}
     if "FROM FLOWDEFINITION" in ql:
         return {"records": [
-            {"Id": "300001", "DeveloperName": "Mock_Line_Update_Flow", "ActiveVersionId": "301001",
-             "ActiveVersion": {"VersionNumber": 3, "ApiVersion": 60.0}},
+            {"Id": "300001", "DeveloperName": "Mock_Line_Update_Flow", "NamespacePrefix": None,
+             "ActiveVersionId": "301001",
+             "ActiveVersion": {"VersionNumber": 7, "ApiVersion": 64.0, "Status": "Active"}},
         ], "nextRecordsUrl": None}
     if "FROM LIGHTNINGCOMPONENTBUNDLE" in ql:
-        return {"records": [
-            {"Id": "0Rb001", "DeveloperName": "mockLineEditor"},
-        ], "nextRecordsUrl": None}
+        return {"records": [{"Id": "0Rb001", "DeveloperName": "mockLineEditor"}], "nextRecordsUrl": None}
     if "FROM LIGHTNINGCOMPONENTRESOURCE" in ql:
         import base64
-        files = LWC_FILES["mockLineEditor"]
-        records = [
-            {"FilePath": f"lwc/mockLineEditor/{fn}", "Source": base64.b64encode(content.encode()).decode()}
-            for fn, content in files.items()
-        ]
-        return {"records": records, "nextRecordsUrl": None}
+        return {"records": [
+            {"FilePath": f"lwc/mockLineEditor/{fn}", "Source": base64.b64encode(c.encode()).decode()}
+            for fn, c in LWC_FILES["mockLineEditor"].items()
+        ], "nextRecordsUrl": None}
     if "FROM WORKFLOWFIELDUPDATE" in ql:
-        # Emulates a bulk Metadata query being available (some orgs allow it).
         return {"records": WORKFLOW_FIELD_UPDATES, "nextRecordsUrl": None}
     return {"records": [], "nextRecordsUrl": None}
 

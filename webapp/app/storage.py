@@ -110,11 +110,14 @@ def load_kb(org_id):
     """Loads every knowledgebase JSON document for an org. Returns None
     for any file not yet written (e.g. mid-fetch)."""
     d = kb_dir(org_id)
+    idx = os.path.join(d, "_indexes")
     return {
         "org_index": read_json(os.path.join(d, "org_index.json"), {}),
         "object_touch_map": read_json(os.path.join(d, "object_touch_map.json"), {}),
         "call_graph": read_json(os.path.join(d, "call_graph.json"), {"calls": {}, "called_by": {}}),
         "field_touch_map": read_json(os.path.join(d, "field_touch_map.json"), {}),
+        "inbound_index": read_json(os.path.join(idx, "inbound.json"), {}),
+        "entry_points_index": read_json(os.path.join(idx, "entry_points.json"), {}),
         "org_stats": read_json(os.path.join(d, "org_stats.json"), {}),
         "file_hashes": read_json(os.path.join(d, "file_hashes.json"), {}),
     }
@@ -122,10 +125,13 @@ def load_kb(org_id):
 
 def save_kb(org_id, index_result, file_hashes):
     d = kb_dir(org_id)
+    idx = os.path.join(d, "_indexes")
     write_json(os.path.join(d, "org_index.json"), index_result["org_index"])
     write_json(os.path.join(d, "object_touch_map.json"), index_result["object_touch_map"])
     write_json(os.path.join(d, "call_graph.json"), index_result["call_graph"])
     write_json(os.path.join(d, "field_touch_map.json"), index_result["field_touch_map"])
+    write_json(os.path.join(idx, "inbound.json"), index_result.get("inbound_index", {}))
+    write_json(os.path.join(idx, "entry_points.json"), index_result.get("entry_points_index", {}))
     write_json(os.path.join(d, "org_stats.json"), index_result["org_stats"])
     write_json(os.path.join(d, "file_hashes.json"), file_hashes)
 

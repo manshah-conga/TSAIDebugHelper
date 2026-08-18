@@ -264,19 +264,45 @@ def get_field_writers(org_id: str, field_name: str):
 
 
 @app.get("/api/orgs/{org_id}/search", dependencies=Dep_reader)
-def search_components(org_id: str, q: str):
+def search_components(org_id: str, q: str, customer_authored_only: bool = True):
     """Freeform lookup used by the 'ask a question' box in the UI: matches
     the query against component ids, objects touched, and field names, so
     a person (or an AI over MCP) can start from a vague description
-    instead of an exact identifier."""
+    instead of an exact identifier. Defaults to customer-authored components
+    only (§4.3) -- managed-package internals are usually noise in an
+    incident; pass customer_authored_only=false to include them."""
     kb = storage.load_kb(org_id)
     q_lower = q.lower()
-    matches = {
-        "components": [cid for cid in kb["org_index"] if q_lower in cid.lower()][:25],
+    index = kb["org_index"]
+
+    def keep(cid):
+        if not customer_authored_only:
+            return True
+        return index.get(cid, {}).get("is_customer_authored", True)
+
+    return {
+        "components": [cid for cid in index if q_lower in cid.lower() and keep(cid)][:25],
         "objects": [o for o in kb["object_touch_map"] if q_lower in o.lower()][:25],
         "fields": [f for f in kb["field_touch_map"] if q_lower in f.lower()][:25],
+        "customer_authored_only": customer_authored_only,
     }
-    return matches
+
+
+@app.get("/api/orgs/{org_id}/inbound/{component_id}", dependencies=Dep_reader)
+def get_inbound(org_id: str, component_id: str):
+    """Reverse-call index (§7.1): everything that invokes this component --
+    flows via actionCall, classes via method call, flows via subflow."""
+    kb = storage.load_kb(org_id)
+    return kb["inbound_index"].get(component_id, {"called_by": []})
+
+
+@app.get("/api/orgs/{org_id}/entry-points/{object_name}", dependencies=Dep_reader)
+def get_entry_points(org_id: str, object_name: str):
+    """Per-object automation entry points (§7.3): the flows / triggers /
+    process builder / workflow field updates that fire when a record of this
+    object is saved, plus any self-referential automation on it."""
+    kb = storage.load_kb(org_id)
+    return kb["entry_points_index"].get(object_name, {})
 
 
 # ---------- incidents ----------

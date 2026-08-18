@@ -87,7 +87,9 @@ async def run_onboarding(org_id, org_name, instance_url, access_token, existing_
 
     for name, info in classes.items():
         try:
-            apex_cards[name] = apex_extractor.parse_class(name, info["body"], known_objects, all_class_names)
+            apex_cards[name] = apex_extractor.parse_class(
+                name, info["body"], known_objects, all_class_names,
+                namespace_prefix=info.get("namespace_prefix"), api_version=info.get("api_version"))
             apex_cards[name]["file"] = info["file"]
             file_hashes[f"classes/{info['file']}"] = _content_hash_entry(
                 f"classes/{info['file']}", info["body"], existing_hashes)
@@ -96,7 +98,9 @@ async def run_onboarding(org_id, org_name, instance_url, access_token, existing_
 
     for name, info in triggers.items():
         try:
-            apex_cards[name] = apex_extractor.parse_trigger(name, info["body"], known_objects, all_class_names)
+            apex_cards[name] = apex_extractor.parse_trigger(
+                name, info["body"], known_objects, all_class_names,
+                namespace_prefix=info.get("namespace_prefix"), api_version=info.get("api_version"))
             apex_cards[name]["file"] = info["file"]
             file_hashes[f"triggers/{info['file']}"] = _content_hash_entry(
                 f"triggers/{info['file']}", info["body"], existing_hashes)
@@ -105,7 +109,9 @@ async def run_onboarding(org_id, org_name, instance_url, access_token, existing_
 
     for name, info in flows_raw.items():
         try:
-            flow_cards[name] = flow_extractor.parse_flow(name, info["metadata"], info.get("api_version"))
+            flow_cards[name] = flow_extractor.parse_flow(
+                name, info["metadata"], info.get("api_version"),
+                version_info=info.get("version_info"), namespace_prefix=info.get("namespace_prefix"))
             flow_cards[name]["file"] = f"{name}.flow"
             file_hashes[f"flows/{name}.flow"] = _content_hash_entry(
                 f"flows/{name}.flow", str(info["metadata"]), existing_hashes)
@@ -130,8 +136,31 @@ async def run_onboarding(org_id, org_name, instance_url, access_token, existing_
         except Exception as e:
             JOBS[org_id]["warnings"].append(f"workflow field update '{full_name}': {e}")
 
+    # Coverage block (§4.2): distinguishes a genuine zero from "not collected".
+    warns = " ".join(JOBS[org_id]["warnings"]).lower()
+
+    def _cov(count, keyword=None):
+        status = "partial" if (keyword and keyword in warns) else "ok"
+        return {"attempted": True, "status": status, "count": count}
+
+    n_classes = sum(1 for c in apex_cards.values() if c.get("type") == "ApexClass")
+    n_triggers = sum(1 for c in apex_cards.values() if c.get("type") == "ApexTrigger")
+    n_pb = sum(1 for c in flow_cards.values() if c.get("mechanism") == "Process Builder")
+    n_flows_only = len(flow_cards) - n_pb
+    coverage = {
+        "apex_classes": _cov(n_classes, "class"),
+        "apex_triggers": _cov(n_triggers, "trigger"),
+        "flows": _cov(n_flows_only, "flow"),
+        "process_builder": _cov(n_pb),
+        "lwc_components": _cov(len(lwc_cards), "lwc"),
+        "workflow_field_updates": _cov(len(workflow_cards), "workflow"),
+        "validation_rules": {"attempted": False, "status": "not_supported", "count": None},
+        "record_types": {"attempted": False, "status": "not_supported", "count": None},
+        "approval_processes": {"attempted": False, "status": "not_supported", "count": None},
+    }
+
     _job(org_id, "indexing")
-    index_result = build_index(apex_cards, flow_cards, lwc_cards, workflow_cards)
+    index_result = build_index(apex_cards, flow_cards, lwc_cards, workflow_cards, coverage=coverage)
 
     _job(org_id, "saving")
     storage.save_kb(org_id, index_result, file_hashes)

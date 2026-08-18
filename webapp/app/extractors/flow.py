@@ -1,20 +1,18 @@
 """
 Flow extraction from the Salesforce Tooling API's JSON metadata
 representation of a Flow (GET /tooling/sobjects/Flow/<id> -> the
-"Metadata" property), instead of the raw .flow XML the standalone
-extract_flow.py script parses with ElementTree.
+"Metadata" property).
 
-IMPORTANT / not yet verified live: this session had no real Salesforce
-access token to fetch an actual Flow through the Tooling API, so the
-field names below (start.object, start.triggerType, decisions,
-recordCreates, actionCalls, subflows, faultConnector, ...) are based on
-Salesforce's documented Flow metadata schema, which the Tooling API JSON
-representation mirrors 1:1 with the XML element names as JSON keys. On
-first real use, if a shape mismatch shows up, it will only affect this
-one file (every access below is defensive .get()-based, so a wrong key
-degrades to a thinner card instead of crashing the whole org fetch) --
-report any mismatch and it's a quick fix here, not a redesign.
+Schema v3 (see ../schema.py and the v3 proposal): in addition to the v2
+summary fields, the flow card now carries the entry-criteria block
+(`trigger`), the element graph (`elements` + derived `graph`), structured
+`action_calls`, version/activation state, and the unified value model. All
+of this is derived from the metadata dict -- still no raw source on disk.
+
+Every access is defensive (.get()/_as_list): an unexpected shape yields a
+thinner card, never a crash, so one odd flow can't abort a whole org fetch.
 """
+from .. import schema
 
 ELEMENT_ARRAY_KEYS = [
     "decisions", "assignments", "recordCreates", "recordUpdates",
@@ -22,7 +20,9 @@ ELEMENT_ARRAY_KEYS = [
     "screens", "loops", "waits", "collectionProcessors",
 ]
 
-# processType values that mean "this Flow is really a Process Builder process"
+# Elements that perform DML/callout work and therefore *should* have a fault path.
+FAULT_CAPABLE_TYPES = {"recordUpdate", "recordCreate", "recordDelete", "recordLookup", "actionCall"}
+
 PROCESS_BUILDER_TYPES = {"workflow", "invocableprocess"}
 
 
@@ -33,54 +33,44 @@ def _as_list(v):
 
 
 def _looks_like_field(tok):
-    """Heuristic: does this final path segment look like a Salesforce field
-    API name? Custom fields end in __c (and relationship/namespace fields
-    contain __); standard fields are capitalised identifiers."""
     if not tok or not isinstance(tok, str):
         return False
     return tok.endswith("__c") or "__" in tok or (tok[:1].isupper() and tok.isidentifier())
 
 
-def _describe_value(v):
-    """Condense a Flow value node (inputAssignments/assignmentItems 'value')
-    into a short {kind, value} so the field-write is checkable without
-    keeping the whole metadata blob."""
-    if not isinstance(v, dict):
-        return {"kind": "literal", "value": v} if v is not None else None
-    for k in ("stringValue", "numberValue", "booleanValue", "dateValue", "dateTimeValue"):
-        if k in v:
-            return {"kind": k, "value": v[k]}
-    if "elementReference" in v:
-        return {"kind": "reference", "value": v["elementReference"]}
-    # formulaExpression, apexValue, sobjectValue, etc.
-    key = next(iter(v.keys()), None)
-    return {"kind": key or "expression", "value": v.get(key) if key else None}
+def _target(connector):
+    if isinstance(connector, dict):
+        return connector.get("targetReference")
+    return None
 
+
+def _conditions(node):
+    """Parse a decision-rule / filter condition list into the unified model."""
+    out = []
+    for c in _as_list(node):
+        if isinstance(c, dict):
+            out.append({
+                "field": c.get("field") or c.get("leftValueReference"),
+                "operator": c.get("operator"),
+                "value": schema.flow_value(c.get("value") or c.get("rightValue")),
+            })
+    return out
+
+
+# ---------- field writes (kept from v2, now on the unified value model) ----------
 
 def _extract_field_writes(metadata, start_object):
-    """Name the fields this flow writes, so field_touch_map can index flows
-    (and Process Builder processes) as writers -- not just Apex. Covers the
-    high-signal shapes: record-update / record-create elements'
-    inputAssignments, and assignment elements that target $Record.<Field> or
-    a record variable that is later persisted by a record-update/create.
-
-    Best-effort and defensive: unknown shapes are skipped, never crash. PB
-    (processType Workflow/InvocableProcess) compiles to the same flow
-    metadata, so the same passes apply."""
     writes = []
 
-    def add(field, obj, element_type, element_name, value, confidence):
+    def add(field, obj, element_type, element_name, value, confidence, basis):
         if field and _looks_like_field(field):
             writes.append({
                 "field": field, "object": obj, "element_type": element_type,
-                "element_name": element_name, "value": value, "confidence": confidence,
+                "element_name": element_name, "value": value,
+                "confidence": confidence, "confidence_basis": basis,
             })
 
-    # Which record variables actually get persisted (so an assignment writing
-    # into one counts as a real field write). $Record is always persisted for
-    # record-triggered flows.
     persisted_refs = {"$Record"}
-
     for key, etype in (("recordUpdates", "recordUpdate"), ("recordCreates", "recordCreate")):
         for el in _as_list(metadata.get(key)):
             if not isinstance(el, dict):
@@ -89,13 +79,14 @@ def _extract_field_writes(metadata, start_object):
             if ref:
                 persisted_refs.add(ref.split(".")[0])
             if el.get("name"):
-                persisted_refs.add(el["name"])  # recordCreate stores into its own element name
+                persisted_refs.add(el["name"])
             obj = el.get("object")
             if not obj and ref.startswith("$Record"):
                 obj = start_object
             for a in _as_list(el.get("inputAssignments")):
                 if isinstance(a, dict):
-                    add(a.get("field"), obj, etype, el.get("name"), _describe_value(a.get("value")), "high")
+                    add(a.get("field"), obj, etype, el.get("name"),
+                        schema.flow_value(a.get("value")), "high", "direct_field_reference")
 
     for el in _as_list(metadata.get("assignments")):
         if not isinstance(el, dict):
@@ -109,68 +100,343 @@ def _extract_field_writes(metadata, start_object):
             head = ref.split(".")[0]
             field = ref.rsplit(".", 1)[-1]
             if head.startswith("$Record"):
-                add(field, start_object, "assignment", el.get("name"), _describe_value(it.get("value")), "high")
+                add(field, start_object, "assignment", el.get("name"),
+                    schema.flow_value(it.get("value")), "high", "direct_field_reference")
             elif head in persisted_refs:
-                add(field, None, "assignment", el.get("name"), _describe_value(it.get("value")), "medium")
+                add(field, None, "assignment", el.get("name"),
+                    schema.flow_value(it.get("value")), "medium", "via_record_variable")
     return writes
 
 
-def _count_connectors(node, counts):
-    """Walk the metadata dict/list recursively counting 'connector' and
-    'faultConnector' keys, the same fault-path signal the XML version
-    computes via ElementTree.iter()."""
-    if isinstance(node, dict):
-        for k, v in node.items():
-            if k == "faultConnector":
-                counts["fault"] += 1
-            elif k == "connector":
-                counts["total"] += 1
-            _count_connectors(v, counts)
-    elif isinstance(node, list):
-        for item in node:
-            _count_connectors(item, counts)
+# ---------- trigger / entry criteria (§5.2) ----------
+
+def _trigger_block(metadata, start):
+    # P-01: distinguish "absent from metadata" from "collected as false".
+    rc = start.get("doesRequireRecordChangedToMeetCriteria", "__MISSING__")
+    requires_change = rc if rc not in ("__MISSING__", None) else "not_present_in_metadata"
+    trig = {
+        "type": start.get("triggerType"),
+        "record_trigger_type": start.get("recordTriggerType"),
+        "object": start.get("object"),
+        "filter_logic": start.get("filterLogic") or ("and" if start.get("filters") else None),
+        "filter_formula": start.get("filterFormula"),
+        "filters": _conditions(start.get("filters")),
+        "requires_change_to_meet_criteria": requires_change,
+        "run_in_mode": metadata.get("runInMode") or start.get("runInMode"),
+        "scheduled_paths": [],
+    }
+    for sp in _as_list(start.get("scheduledPaths")):
+        if isinstance(sp, dict):
+            trig["scheduled_paths"].append({
+                "name": sp.get("name") or sp.get("label"),
+                "offset_number": sp.get("offsetNumber"),
+                "offset_unit": sp.get("offsetUnit"),
+                "base_field": sp.get("recordField"),
+                "time_source": sp.get("timeSource"),
+            })
+    return trig
 
 
-def parse_flow(name, metadata, api_version=None):
-    process_type = metadata.get("processType")
-    mechanism = "Process Builder" if (process_type or "").lower() in PROCESS_BUILDER_TYPES else "Flow"
-    card = {
-        "id": name, "type": "Flow", "label": metadata.get("label"),
-        "processType": process_type, "mechanism": mechanism, "apiVersion": api_version,
-        "start_object": None, "trigger_type": None, "record_trigger_type": None,
-        "element_counts": {}, "apex_actions_called": [], "subflows_called": [],
-        "field_writes": [], "fields_written": [],
-        "fault_paths": 0, "total_connectors": 0,
+# ---------- elements + graph (§5.4-5.6) ----------
+
+def _element_common(el, etype):
+    return {"name": el.get("name"), "label": el.get("label"), "type": etype,
+            "next": _target(el.get("connector")), "fault_target": _target(el.get("faultConnector"))}
+
+
+def _extract_elements(metadata, start_object=None):
+    elements = []
+    connectors = 0
+    fault_paths = 0
+
+    for el in _as_list(metadata.get("decisions")):
+        if not isinstance(el, dict):
+            continue
+        e = {"name": el.get("name"), "label": el.get("label"), "type": "decision",
+             "rules": [], "default_target": _target(el.get("defaultConnector")), "fault_target": None}
+        for r in _as_list(el.get("rules")):
+            if isinstance(r, dict):
+                e["rules"].append({
+                    "name": r.get("name"), "label": r.get("label"),
+                    "condition_logic": r.get("conditionLogic") or "and",
+                    "conditions": _conditions(r.get("conditions")),
+                    "target": _target(r.get("connector")),
+                })
+        elements.append(e)
+
+    for el in _as_list(metadata.get("recordUpdates")):
+        if not isinstance(el, dict):
+            continue
+        e = _element_common(el, "recordUpdate")
+        ref = el.get("inputReference")
+        # Q-07: a $Record-based update has no explicit object; derive it from
+        # the flow's start object so consumers don't have to do the join.
+        e["target_object"] = el.get("object") or (start_object if (ref or "").startswith("$Record") else None)
+        e["target_reference"] = ref
+        elements.append(e)
+    for el in _as_list(metadata.get("recordCreates")):
+        if not isinstance(el, dict):
+            continue
+        e = _element_common(el, "recordCreate")
+        e["target_object"] = el.get("object")
+        elements.append(e)
+    for el in _as_list(metadata.get("recordDeletes")):
+        if not isinstance(el, dict):
+            continue
+        elements.append(_element_common(el, "recordDelete"))
+
+    for el in _as_list(metadata.get("recordLookups")):
+        if not isinstance(el, dict):
+            continue
+        e = _element_common(el, "recordLookup")
+        e["object"] = el.get("object")
+        e["filters"] = _conditions(el.get("filters"))
+        e["get_first_only"] = el.get("getFirstRecordOnly")
+        e["stores_into"] = el.get("outputReference")
+        elements.append(e)
+
+    for el in _as_list(metadata.get("assignments")):
+        if not isinstance(el, dict):
+            continue
+        e = _element_common(el, "assignment")
+        e["assignments"] = [
+            {"to": it.get("assignToReference"), "operator": it.get("operator"),
+             "from": schema.flow_value(it.get("value"))}
+            for it in _as_list(el.get("assignmentItems")) if isinstance(it, dict)
+        ]
+        elements.append(e)
+
+    for el in _as_list(metadata.get("loops")):
+        if not isinstance(el, dict):
+            continue
+        e = {"name": el.get("name"), "label": el.get("label"), "type": "loop",
+             "collection": el.get("collectionReference"), "iteration_order": el.get("iterationOrder"),
+             "next": _target(el.get("nextValueConnector")),
+             "no_more_values_target": _target(el.get("noMoreValuesConnector")), "fault_target": None}
+        elements.append(e)
+
+    for el in _as_list(metadata.get("actionCalls")):
+        if not isinstance(el, dict):
+            continue
+        e = _element_common(el, "actionCall")
+        e["action_type"] = el.get("actionType")
+        e["action_name"] = el.get("actionName")
+        elements.append(e)
+
+    for el in _as_list(metadata.get("subflows")):
+        if not isinstance(el, dict):
+            continue
+        e = _element_common(el, "subflow")
+        e["flow_name"] = el.get("flowName")
+        elements.append(e)
+
+    for el in _as_list(metadata.get("screens")):
+        if isinstance(el, dict):
+            elements.append(_element_common(el, "screen"))
+    for el in _as_list(metadata.get("waits")):
+        if isinstance(el, dict):
+            elements.append(_element_common(el, "wait"))
+
+    # count connectors / fault paths from the structured elements (matches v2 scalar)
+    for e in elements:
+        for tgt in _outgoing(e):
+            if tgt:
+                connectors += 1
+        if e.get("fault_target"):
+            fault_paths += 1
+    return elements, connectors, fault_paths
+
+
+def _outgoing(e):
+    """All target references leaving an element (for the adjacency graph)."""
+    targets = []
+    if e.get("type") == "decision":
+        for r in e.get("rules", []):
+            targets.append(r.get("target"))
+        targets.append(e.get("default_target"))
+    elif e.get("type") == "loop":
+        targets.append(e.get("next"))
+        targets.append(e.get("no_more_values_target"))
+    else:
+        targets.append(e.get("next"))
+    targets.append(e.get("fault_target"))
+    return [t for t in targets if t]
+
+
+def _build_graph(elements, start_element):
+    by_name = {e["name"]: e for e in elements if e.get("name")}
+    adj = {name: [] for name in by_name}
+    indeg = {name: 0 for name in by_name}
+    for name, e in by_name.items():
+        for tgt in _outgoing(e):
+            if tgt in by_name:
+                adj[name].append(tgt)
+    for name in adj:
+        for tgt in adj[name]:
+            indeg[tgt] += 1
+
+    # reachability from start
+    reachable, stack = set(), [start_element] if start_element in by_name else []
+    while stack:
+        n = stack.pop()
+        if n in reachable:
+            continue
+        reachable.add(n)
+        stack.extend(adj.get(n, []))
+    unreachable = sorted(n for n in by_name if n not in reachable)
+
+    # Kahn topological sort (also detects cycles)
+    from collections import deque
+    indeg2 = dict(indeg)
+    q = deque([n for n in by_name if indeg2[n] == 0])
+    topo = []
+    while q:
+        n = q.popleft()
+        topo.append(n)
+        for m in adj[n]:
+            indeg2[m] -= 1
+            if indeg2[m] == 0:
+                q.append(m)
+    has_cycles = len(topo) < len(by_name)
+
+    without_fault = sorted(
+        e["name"] for e in elements
+        if e.get("type") in FAULT_CAPABLE_TYPES and not e.get("fault_target") and e.get("name"))
+
+    # longest path (depth) only meaningful when acyclic
+    max_depth = None
+    if not has_cycles and start_element in by_name:
+        depth = {n: 0 for n in by_name}
+        for n in topo:
+            for m in adj[n]:
+                depth[m] = max(depth[m], depth[n] + 1)
+        max_depth = max(depth.values()) if depth else 0
+
+    return {
+        "start_element": start_element,
+        "topological_order": topo if not has_cycles else [],
+        "has_cycles": has_cycles,
+        "unreachable_elements": unreachable,
+        "elements_without_fault_path": without_fault,
+        "max_depth": max_depth,
     }
 
+
+# ---------- action calls (§5.3) ----------
+
+def _action_calls(metadata):
+    out = []
+    for el in _as_list(metadata.get("actionCalls")):
+        if not isinstance(el, dict):
+            continue
+        atype = (el.get("actionType") or "").strip() or None
+        entry = {
+            "element": el.get("name"),
+            "action_type": atype,
+            "action_name": el.get("actionName"),
+            "inputs": [
+                {"name": p.get("name"), "value": schema.flow_value(p.get("value"))}
+                for p in _as_list(el.get("inputParameters")) if isinstance(p, dict)
+            ],
+            "outputs": [p.get("name") for p in _as_list(el.get("outputParameters")) if isinstance(p, dict)],
+            "fault_target": _target(el.get("faultConnector")),
+        }
+        if atype == "apex":
+            # resolved_method is filled by the index pass (P1: no cross-file work here)
+            entry["resolved_method"] = None
+            entry["resolution"] = "pending"
+        else:
+            entry["resolution"] = "standard_action"
+        out.append(entry)
+    return out
+
+
+# ---------- objects touched ----------
+
+def _objects_touched(metadata, start_object, field_writes):
+    touched = {}
+
+    def mark(obj, read=False, write=False):
+        if not obj:
+            return
+        t = touched.setdefault(obj, {"object": obj, "reads": False, "writes": False})
+        t["reads"] = t["reads"] or read
+        t["writes"] = t["writes"] or write
+
+    if start_object:
+        mark(start_object, read=True)
+    for el in _as_list(metadata.get("recordLookups")):
+        if isinstance(el, dict):
+            mark(el.get("object"), read=True)
+    for key in ("recordUpdates", "recordCreates", "recordDeletes"):
+        for el in _as_list(metadata.get(key)):
+            if isinstance(el, dict):
+                obj = el.get("object")
+                if not obj and (el.get("inputReference") or "").startswith("$Record"):
+                    obj = start_object
+                mark(obj, write=True)
+    for w in field_writes:
+        mark(w.get("object"), write=True)
+    return list(touched.values())
+
+
+# ---------- top-level ----------
+
+def parse_flow(name, metadata, api_version=None, version_info=None, namespace_prefix=None):
+    process_type = metadata.get("processType")
+    mechanism = "Process Builder" if (process_type or "").lower() in PROCESS_BUILDER_TYPES else "Flow"
     start = metadata.get("start") or {}
-    card["start_object"] = start.get("object")
-    card["trigger_type"] = start.get("triggerType")
-    card["record_trigger_type"] = start.get("recordTriggerType")
+    start_object = start.get("object")
+
+    card = {
+        "id": name, "type": "Flow",
+        **schema.envelope(api_version),
+        **schema.namespace_fields(namespace_prefix, name),
+        "label": metadata.get("label"),
+        "description": metadata.get("description"),
+        "processType": process_type, "mechanism": mechanism, "apiVersion": api_version,
+        "start_object": start_object,
+        "trigger_type": start.get("triggerType"),
+        "record_trigger_type": start.get("recordTriggerType"),
+    }
+
+    # version / activation state (§5.1) -- supplied by the fetch layer
+    vi = version_info or {}
+    card["version_number"] = vi.get("version_number")
+    card["status"] = vi.get("status")
+    card["is_active_version"] = vi.get("is_active_version")
+    # Q-02 / P3: we fetch ONLY the active version, so we cannot list siblings.
+    # `null` + version_capture says that honestly; `[]` would falsely claim
+    # "no other versions exist" on e.g. a version-60 flow.
+    card["sibling_versions"] = vi.get("sibling_versions")  # None unless enumerated
+    card["version_capture"] = "active_version_only" if vi else "not_collected"
+
+    card["trigger"] = _trigger_block(metadata, start)
+
+    elements, connectors, fault_paths = _extract_elements(metadata, start_object)
+    card["elements"] = elements
+    card["start_element"] = _target(start.get("connector"))
+    card["graph"] = _build_graph(elements, card["start_element"])
+    card["total_connectors"] = connectors
+    card["fault_paths"] = fault_paths
+
+    card["action_calls"] = _action_calls(metadata)
+    card["apex_actions_called"] = [a["action_name"] for a in card["action_calls"]
+                                   if a.get("action_type") == "apex" and a.get("action_name")]
+    card["subflows_called"] = [e.get("flow_name") for e in elements
+                               if e.get("type") == "subflow" and e.get("flow_name")]
+
+    card["field_writes"] = _extract_field_writes(metadata, start_object)
+    card["fields_written"] = sorted({w["field"] for w in card["field_writes"]})
+    card["objects_touched"] = _objects_touched(metadata, start_object, card["field_writes"])
 
     counts = {}
     for key in ELEMENT_ARRAY_KEYS:
-        items = metadata.get(key) or []
-        if isinstance(items, dict):  # a single element serializes as an object, not a list, in some API versions
-            items = [items]
+        items = _as_list(metadata.get(key))
         if items:
             counts[key] = len(items)
-        if key == "actionCalls":
-            for a in items:
-                if (a.get("actionType") or "").lower() == "apex" and a.get("actionName"):
-                    card["apex_actions_called"].append(a["actionName"])
-        if key == "subflows":
-            for s in items:
-                if s.get("flowName"):
-                    card["subflows_called"].append(s["flowName"])
     card["element_counts"] = counts
 
-    card["field_writes"] = _extract_field_writes(metadata, card["start_object"])
-    card["fields_written"] = sorted({w["field"] for w in card["field_writes"]})
-
-    connector_counts = {"fault": 0, "total": 0}
-    _count_connectors(metadata, connector_counts)
-    card["fault_paths"] = connector_counts["fault"]
-    card["total_connectors"] = connector_counts["total"]
-
+    # D-02.4: surface how many value nodes could not be parsed.
+    card["parse_stats"] = schema.count_value_nodes(card)
     return card

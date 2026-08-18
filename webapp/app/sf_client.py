@@ -142,13 +142,19 @@ class SalesforceClient:
         return records
 
     async def fetch_apex_classes(self, client):
-        """-> {ClassName: {"body": str, "file": "ClassName.cls"}}"""
-        records = await self._tooling_query_all(client, "SELECT Id, Name, Body FROM ApexClass")
-        return {r["Name"]: {"body": r.get("Body") or "", "file": f"{r['Name']}.cls"} for r in records if r.get("Body")}
+        """-> {ClassName: {"body", "file", "namespace_prefix", "api_version"}}"""
+        records = await self._tooling_query_all(
+            client, "SELECT Id, Name, NamespacePrefix, ApiVersion, Body FROM ApexClass")
+        return {r["Name"]: {"body": r.get("Body") or "", "file": f"{r['Name']}.cls",
+                            "namespace_prefix": r.get("NamespacePrefix"), "api_version": r.get("ApiVersion")}
+                for r in records if r.get("Body")}
 
     async def fetch_apex_triggers(self, client):
-        records = await self._tooling_query_all(client, "SELECT Id, Name, Body, TableEnumOrId FROM ApexTrigger")
-        return {r["Name"]: {"body": r.get("Body") or "", "file": f"{r['Name']}.trigger"} for r in records if r.get("Body")}
+        records = await self._tooling_query_all(
+            client, "SELECT Id, Name, NamespacePrefix, ApiVersion, Body, TableEnumOrId FROM ApexTrigger")
+        return {r["Name"]: {"body": r.get("Body") or "", "file": f"{r['Name']}.trigger",
+                            "namespace_prefix": r.get("NamespacePrefix"), "api_version": r.get("ApiVersion")}
+                for r in records if r.get("Body")}
 
     async def fetch_custom_objects(self, client):
         """-> set of custom object / custom metadata / platform event API names,
@@ -170,7 +176,8 @@ class SalesforceClient:
         try:
             defs = await self._tooling_query_all(
                 client,
-                "SELECT Id, DeveloperName, ActiveVersionId, ActiveVersion.VersionNumber, ActiveVersion.ApiVersion "
+                "SELECT Id, DeveloperName, NamespacePrefix, ActiveVersionId, "
+                "ActiveVersion.VersionNumber, ActiveVersion.ApiVersion, ActiveVersion.Status "
                 "FROM FlowDefinition WHERE ActiveVersionId != null",
             )
         except Exception as e:
@@ -186,7 +193,18 @@ class SalesforceClient:
                 rec = await self._get(client, f"/services/data/v{self.api_version}/tooling/sobjects/Flow/{version_id}")
                 metadata = rec.get("Metadata", {})
                 av = (d.get("ActiveVersion") or {}) or {}
-                out[name] = {"metadata": metadata, "api_version": av.get("ApiVersion")}
+                # Only the ACTIVE version is fetched; that's exactly what runs, so
+                # is_active_version is True and status Active. Sibling (obsolete/
+                # draft) versions are not enumerated -- honestly reflected as [].
+                version_info = {
+                    "version_number": av.get("VersionNumber"),
+                    "status": av.get("Status") or "Active",
+                    "is_active_version": True,
+                    # sibling versions not enumerated (only the active version is
+                    # fetched) -- left unset so the card records it honestly.
+                }
+                out[name] = {"metadata": metadata, "api_version": av.get("ApiVersion"),
+                             "version_info": version_info, "namespace_prefix": d.get("NamespacePrefix")}
             except Exception as e:
                 self.warnings.append(f"flow '{name}': {e}")
         return out

@@ -85,9 +85,16 @@ def assemble_context(normalized, org_index, call_graph, object_touch, file_hashe
 
 def lookup_field_writers(field, org_index, field_touch_map, file_hashes=None):
     """Answers 'field X had the wrong value, no exception' using only the
-    knowledgebase: every writer of `field`, ranked by risk, with recency."""
+    knowledgebase: every writer of `field`, ranked by risk, with recency.
+    Handles both the v3 field_touch_map shape ({writers, used_in_entry_
+    criteria_of}) and the legacy plain-list shape."""
     now = datetime.datetime.utcnow()
-    writers = field_touch_map.get(field, [])
+    entry = field_touch_map.get(field, [])
+    if isinstance(entry, dict):
+        writers = entry.get("writers", [])
+        used_in_entry_criteria_of = entry.get("used_in_entry_criteria_of", [])
+    else:
+        writers, used_in_entry_criteria_of = entry, []
     enriched = []
     for w in writers:
         card = org_index.get(w["component"], {})
@@ -100,4 +107,5 @@ def lookup_field_writers(field, org_index, field_touch_map, file_hashes=None):
             **w, "card_type": card.get("type"), "card_file": card.get("file"),
             "last_changed": last_changed, "age_days": age_days,
         })
-    return {"field": field, "writers": enriched}
+    return {"field": field, "writers": enriched,
+            "used_in_entry_criteria_of": used_in_entry_criteria_of}

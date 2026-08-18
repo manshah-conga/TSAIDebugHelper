@@ -32,10 +32,11 @@ def _describe_value(metadata):
     return None
 
 
-def parse_workflow_field_update(full_name, metadata):
+def parse_workflow_field_update(full_name, metadata, namespace_prefix=None, api_version=None):
     """full_name is 'Object.FieldUpdateApiName'. Returns a component card of
     type WorkflowFieldUpdate, or None if the target field can't be
     determined."""
+    from .. import schema
     metadata = metadata or {}
     obj = full_name.split(".", 1)[0] if "." in full_name else metadata.get("targetObject")
     field = metadata.get("field")
@@ -48,6 +49,8 @@ def parse_workflow_field_update(full_name, metadata):
     return {
         "id": full_name,
         "type": "WorkflowFieldUpdate",
+        **schema.envelope(api_version),
+        **schema.namespace_fields(namespace_prefix, full_name),
         "mechanism": "Workflow/Approval field update",
         "object": obj,
         "field": target_field,
