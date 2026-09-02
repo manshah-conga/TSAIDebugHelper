@@ -29,10 +29,20 @@ def _sha(text):
 
 
 def _job(org_id, status, detail=""):
-    JOBS[org_id] = {"status": status, "detail": detail, "warnings": JOBS.get(org_id, {}).get("warnings", [])}
+    prev = JOBS.get(org_id, {})
+    JOBS[org_id] = {"status": status, "detail": detail,
+                    "warnings": prev.get("warnings", []),
+                    # who queued this job -- so /status on an org that has no
+                    # registry entry yet is still gated to that person + admins
+                    "owner": prev.get("owner")}
 
 
-async def run_onboarding(org_id, org_name, instance_url, access_token, existing_hashes=None):
+async def run_onboarding(org_id, org_name, instance_url, access_token, existing_hashes=None,
+                         owner=None, visibility=None):
+    """`owner` / `visibility` carry the per-org access settings (see
+    app/org_access.py) through to the registry write at the end. On a
+    re-connect of an existing org they are passed as the values already on
+    record, so a refresh never silently changes who can see the org."""
     existing_hashes = existing_hashes or {}
     client_sf = SalesforceClient(instance_url, access_token)
     _job(org_id, "connecting")
@@ -165,19 +175,63 @@ async def run_onboarding(org_id, org_name, instance_url, access_token, existing_
     _job(org_id, "saving")
     storage.save_kb(org_id, index_result, file_hashes)
 
+    # What actually moved since the last fetch. Purely derived from the
+    # content hashes we already keep, so a refresh can report "3 classes and
+    # 1 flow changed" instead of just "done".
+    changes = diff_hashes(existing_hashes, file_hashes)
+
     registry = storage.load_registry()
     from .common_now import iso_now
+    from . import org_access
+    prior = registry.get(org_id, {})
     registry[org_id] = {
         "name": org_name,
         "instance_url": instance_url,
-        "first_onboarded_at": registry.get(org_id, {}).get("first_onboarded_at", iso_now()),
+        # Access settings: keep whatever is already on record unless the
+        # caller explicitly supplied new values.
+        "owner": owner or prior.get("owner"),
+        "visibility": org_access.normalize_visibility(
+            visibility, default=prior.get("visibility") or org_access.DEFAULT_VISIBILITY),
+        "first_onboarded_at": prior.get("first_onboarded_at", iso_now()),
         "last_extracted_at": iso_now(),
         "component_counts": index_result["org_stats"]["counts"],
         "warnings": list(JOBS[org_id]["warnings"]),
+        "last_refresh_changes": changes,
     }
     storage.save_registry(registry)
 
     _job(org_id, "done")
+    JOBS[org_id]["changes"] = changes
+
+
+def diff_hashes(before, after, sample=8):
+    """Compare two file_hashes manifests. Keys look like 'classes/Foo.cls',
+    'flows/My_Flow.flow', 'lwc/myCmp' -- the prefix gives us a per-kind
+    breakdown for free. `before` empty means this is a first connection, not
+    a refresh, so everything counts as new rather than 'changed'."""
+    before, after = before or {}, after or {}
+    added = sorted(k for k in after if k not in before)
+    removed = sorted(k for k in before if k not in after)
+    changed = sorted(k for k in after if k in before
+                     and after[k].get("hash") != before[k].get("hash"))
+
+    def by_kind(keys):
+        out = {}
+        for k in keys:
+            out[k.split("/", 1)[0]] = out.get(k.split("/", 1)[0], 0) + 1
+        return out
+
+    return {
+        "first_connection": not before,
+        "added": len(added), "changed": len(changed), "removed": len(removed),
+        "unchanged": len(after) - len(added) - len(changed),
+        "total": len(after),
+        "added_by_kind": by_kind(added), "changed_by_kind": by_kind(changed),
+        # A short sample so the UI can name names without carrying a manifest
+        # of thousands of components around.
+        "changed_sample": changed[:sample], "added_sample": added[:sample],
+        "removed_sample": removed[:sample],
+    }
 
 
 def _content_hash_entry(key, content, existing_hashes):

@@ -3,9 +3,11 @@
 <head>
 <meta charset="UTF-8">
 <title>TS Intelligent Debug Helper</title>
-<link rel="stylesheet" href="/static/style.css?v=4">
+<link rel="stylesheet" href="/static/style.css?v=6">
 </head>
 <body>
+
+<div id="toasts" class="toast-host"></div>
 
 <div id="loginOverlay" class="login-overlay">
   <div class="login-card">
@@ -35,10 +37,12 @@
   <button data-view="connections" class="active">Connections</button>
   <button data-view="dashboard">Org Dashboard</button>
   <button data-view="incidents">Incidents</button>
+  <button data-view="known">Known Issues</button>
   <button data-view="logs">Log Normalizer</button>
   <button data-view="tokens">API Tokens</button>
   <button data-view="admin" id="navAdmin" style="display:none;">Admin</button>
-  <button onclick="doLogout()" style="margin-left:auto; color:var(--high);">Sign out</button>
+  <button onclick="changeOwnPassword()" style="margin-left:auto;">Change password</button>
+  <button onclick="doLogout()" style="color:var(--high);">Sign out</button>
 </nav>
 <main>
 
@@ -56,14 +60,22 @@
       <input id="newInstanceUrl" placeholder="https://acme.my.salesforce.com">
       <label>Access Token</label>
       <input id="newAccessToken" type="password" placeholder="00D...">
+      <label>Who can see this org?</label>
+      <select id="newVisibility">
+        <option value="private" selected>Private -- only me (and admins)</option>
+        <option value="public">Public -- everyone signed in to this app</option>
+      </select>
+      <p class="muted" id="visibilityHint">Private is the default. You can change this at any time from the
+        Connected orgs table below. Either way, only you or an admin can re-connect or refresh this org.</p>
       <button class="primary" onclick="createOrg()">Connect &amp; Fetch</button>
       <div id="createStatus" class="status-line"></div>
     </div>
 
     <div class="card">
       <h2>Connected orgs</h2>
+      <p class="muted">You see every public org, plus your own private ones. Admins see all orgs.</p>
       <table>
-        <thead><tr><th>Org ID</th><th>Name</th><th>Classes</th><th>Triggers</th><th>Flows</th><th>LWC</th><th>Last refreshed</th></tr></thead>
+        <thead><tr><th>Org ID</th><th>Name</th><th>Visibility</th><th>Owner</th><th>Classes</th><th>Triggers</th><th>Flows</th><th>LWC</th><th>Last refreshed</th><th></th></tr></thead>
         <tbody id="orgsTable"></tbody>
       </table>
     </div>
@@ -112,6 +124,21 @@
     <div class="card" id="incidentDetailCard" style="display:none;">
       <h2>Incident detail</h2>
       <div id="incidentDetail"></div>
+    </div>
+  </section>
+
+  <section id="view-known" class="view">
+    <div class="card">
+      <h2 id="knownOrgTitle">Known issues</h2>
+      <p class="muted">Every distinct failure signature filed against this org, with the fix if someone
+        recorded one. This is the payoff of filing incidents: the second time an issue appears, the
+        answer is already here.</p>
+      <div id="knownSummary" class="muted" style="margin-bottom:10px;"></div>
+      <label>Filter by exception type, message, field, signature, or fix text</label>
+      <input id="knownFilter" placeholder="e.g. NullPointerException" oninput="renderKnownIssues()">
+      <label><input type="checkbox" id="knownUnresolved" style="width:auto; margin-right:6px;"
+        onchange="renderKnownIssues()">Only show issues with no fix on file</label>
+      <div id="knownList" style="margin-top:14px;"></div>
     </div>
   </section>
 
@@ -199,6 +226,6 @@
 
 </main>
 </div>
-<script src="/static/app.js?v=4"></script>
+<script src="/static/app.js?v=6"></script>
 </body>
 </html>

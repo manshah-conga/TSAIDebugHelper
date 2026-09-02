@@ -20,12 +20,62 @@ pip install -r requirements.txt
 python -m uvicorn app.main:app --port 8000
 ```
 
-Use `python -m uvicorn ...` rather than bare `uvicorn ...` -- on Windows, pip's
-`Scripts` folder (where the standalone `uvicorn.exe` lands) is often not on `PATH`,
-which produces `'uvicorn' is not recognized as an internal or external command`.
-Running it as a module through `python` sidesteps that, since it only needs `python`
-itself on PATH. If `python` isn't recognized either, use the Windows launcher
-instead: `py -m pip install -r requirements.txt` then `py -m uvicorn app.main:app --port 8000`.
+On Windows there are two launchers in `webapp\` that do the same thing while
+handling what people usually get wrong (working directory, `python` vs `py`,
+execution policy). **Pick the one that matches the shell you're in:**
+
+```
+:: cmd.exe, or double-click in Explorer -- use the .bat
+start_server.bat install     -> create .venv, install dependencies, then start (run once, first)
+start_server.bat             -> 127.0.0.1:8000
+start_server.bat all         -> 0.0.0.0:8000
+start_server.bat all 9000    -> 0.0.0.0:9000     (any other port)
+```
+
+```powershell
+# already in a PowerShell prompt -- use the .ps1
+.\start_server.ps1 -Install
+.\start_server.ps1
+.\start_server.ps1 -Listen All -Port 8000
+```
+
+`-Install` / `install` creates `webapp\.venv`, installs `requirements.txt` into it,
+and starts the server. Every later run picks that `.venv` up automatically, so you
+only need it once (and again after `requirements.txt` changes).
+
+**`ModuleNotFoundError: No module named 'uvicorn'`** means the dependencies were
+installed for a *different* Python than the one launching the app -- the usual cause
+is a bare `pip install` resolving to a different interpreter than bare `python`
+(common on Windows with the Microsoft Store Python stub, or with several versions
+installed). Run `start_server.bat install` and the mismatch goes away, because the
+venv pins both to the same interpreter. The launchers now check for this before
+starting and print which interpreter is short of the dependencies.
+
+The general rule if you install by hand: always `<python> -m pip install -r
+requirements.txt`, never bare `pip install` -- `-m pip` guarantees the packages land
+in the interpreter you named.
+
+If typing `.\start_server.ps1` **opens the script in Notepad instead of running
+it**, you're in cmd.exe or Explorer, where the `.ps1` extension is associated with
+an editor rather than with PowerShell. Use `start_server.bat` instead (it just
+shells out to the same `.ps1`), or run it explicitly:
+
+```
+powershell -NoProfile -ExecutionPolicy Bypass -File .\start_server.ps1 -Listen All -Port 8000
+```
+
+Three rules the launch command has to satisfy, however you start it:
+
+1. **Run from inside `webapp/`.** The `app.main:app` import path is relative to
+   that folder. From anywhere else you get `ModuleNotFoundError: No module named 'app'`.
+2. **Use `python -m uvicorn ...`, not bare `uvicorn ...`.** On Windows, pip's
+   `Scripts` folder (where the standalone `uvicorn.exe` lands) is often not on
+   `PATH`, producing `'uvicorn' is not recognized as an internal or external
+   command`. Going through `python -m` only needs `python` itself on PATH. If
+   `python` isn't recognized either, use the Windows launcher: `py -m pip install
+   -r requirements.txt` then `py -m uvicorn app.main:app --port 8000`.
+3. **Match the port you actually browse to.** The port is whatever you pass to
+   `--port`; nothing in the app defaults it for you.
 
 Then open `http://127.0.0.1:8000` in a browser. That's the whole app -- one process,
 one port, no database to stand up. Data is written under `webapp/data/` as flat JSON
@@ -65,9 +115,260 @@ on any write, regardless of what the UI shows.
 Passwords are stored only as salted PBKDF2-SHA256 hashes (stdlib, no extra
 dependency); the cleartext is never written to disk.
 
+### Org visibility: private vs public
+
+Roles say *what kind* of action you may take; **visibility** says *which orgs* you
+may take it against. Every connected org has an **owner** (whoever connected it) and
+a visibility setting:
+
+- **private** (the default for a newly connected org) -- only the owner and admins
+  can see it. To everyone else the org simply does not exist: it is absent from the
+  org list, and every endpoint for it returns **404**, not 403, so the app never
+  confirms that someone else's org is there.
+- **public** -- every signed-in account can see it, at whatever role that account
+  already has (a reader still only reads).
+
+Managing an org -- changing its visibility, or re-connecting/refreshing it -- is
+restricted to its **owner or an admin**, even when it is public. Public means
+"everyone can look", not "everyone can rewrite". Filing an incident or recording a
+resolution against an org you can see is allowed at the normal `user` role: that is
+the point of making an org public, so colleagues can investigate against it.
+
+Pick the visibility on the Connections tab when you connect the org, and change it
+later from the **Visibility** column of the Connected orgs table (a dropdown, shown
+only if you may manage that org). Over the API/MCP it is the `visibility` field on
+`POST /api/orgs` and `PATCH /api/orgs/{org_id}/visibility` (MCP tool
+`set_org_visibility`).
+
+Orgs connected **before** this feature existed have no owner recorded. They are
+treated as public so nothing disappears from an existing install; an admin can adopt
+one by setting its visibility, which stamps them as its owner.
+
+Anyone can change their **own** password from the **Change password** button in the
+nav bar (the current password is required); admins can still reset someone else's from
+the Admin tab. If your session expires while the app is open, it returns you to the
+sign-in screen with an explanation rather than quietly showing empty tables.
+
 This is meant to run on your own machine or a trusted internal host. There is no
 transport encryption built in -- if you expose it beyond localhost, put it behind a
 reverse proxy that terminates HTTPS.
+
+## 1b. Running it on a VM so others can reach it (e.g. AWS EC2)
+
+By default uvicorn binds to `127.0.0.1`, which is reachable only from inside the
+machine itself. Hosting it means changing the bind address **and** opening the port
+in two separate firewalls. All three are required; missing any one produces the same
+symptom -- works in the VM's own browser, times out from yours.
+
+```
+cd webapp
+start_server.bat install all 8000   :: first run on a fresh VM
+start_server.bat all 8000           :: every run after that
+```
+
+or, from a PowerShell prompt, `.\start_server.ps1 -Listen All -Port 8000` --
+either is equivalent to `python -m uvicorn app.main:app --host 0.0.0.0 --port 8000`.
+
+Confirm the bind took effect -- this must show `0.0.0.0:8000`, not `127.0.0.1:8000`:
+
+```powershell
+netstat -ano | findstr :8000
+```
+
+Then open the port in both firewalls:
+
+```powershell
+# 1. Windows Firewall, on the VM, in an elevated PowerShell
+New-NetFirewallRule -DisplayName "TS Debug Helper 8000" -Direction Inbound `
+    -Protocol TCP -LocalPort 8000 -Action Allow
+```
+
+```
+# 2. AWS Security Group, in the EC2 console
+   Instance -> Security -> the attached security group -> Edit inbound rules
+   Add rule: Custom TCP | Port 8000 | Source: My IP
+```
+
+A Security Group is a stateful allow-list attached to the instance's network
+interface, evaluated before traffic ever reaches the OS -- which is why the Windows
+Firewall rule alone isn't enough, and why a blocked request *times out* rather than
+being refused. Only inbound rules matter here: return traffic is allowed
+automatically because the group is stateful, so no outbound rule is needed.
+
+**Via the AWS CLI**, `open_aws_port.ps1` does the whole thing from on the instance --
+it reads the instance id and region from the metadata service, finds the attached
+group, adds the rule, and prints the resulting rule table:
+
+```powershell
+.\open_aws_port.ps1 -SourceIp 203.0.113.45           # your laptop's public IP
+.\open_aws_port.ps1 -SourceCidr 10.0.0.0/8           # a corporate range
+.\open_aws_port.ps1 -SourceIp 203.0.113.45 -WhatIf   # show the rule, change nothing
+```
+
+It needs AWS CLI v2 and credentials carrying `ec2:DescribeInstances`,
+`ec2:DescribeSecurityGroups` and `ec2:AuthorizeSecurityGroupIngress` (check with
+`aws sts get-caller-identity`). It refuses `0.0.0.0/0` deliberately.
+
+Get the value for `-SourceIp` **from your own laptop, not the VM**:
+
+```
+curl https://checkip.amazonaws.com
+```
+
+Run that on the VM and you get the VM's own address, which is not the source of your
+browser's traffic and will not let you in. If your ISP gives you a changing address,
+use your corporate egress CIDR instead of a `/32`.
+
+The equivalent raw commands, if you'd rather run them yourself:
+
+```powershell
+aws ec2 describe-instances --instance-ids i-0abc123 `
+    --query "Reservations[].Instances[].SecurityGroups[]" --output table
+
+aws ec2 authorize-security-group-ingress `
+    --group-id sg-0abc123 --protocol tcp --port 8000 --cidr 203.0.113.45/32
+
+aws ec2 describe-security-groups --group-ids sg-0abc123 `
+    --query "SecurityGroups[].IpPermissions[]" --output table
+```
+
+`InvalidPermission.Duplicate` back from `authorize-...` just means the rule is
+already there. To remove one later, the same arguments with
+`revoke-security-group-ingress`.
+
+Browse to `http://<instance-public-IPv4>:8000` -- plain `http`, and don't drop the
+port. If it still times out, check the instance actually has a public or Elastic IP
+and that its subnet's Network ACL isn't custom-restricted (the default ACL allows
+everything).
+
+Two things to fix before this is a real deployment rather than a demo:
+
+- **Set the Security Group source to your own IP or a corporate CIDR, never
+  `0.0.0.0/0`.** This app holds extracted customer org metadata, and there is no
+  HTTPS -- login credentials and API tokens cross the wire in cleartext. If it needs
+  to be broadly reachable, put it behind a reverse proxy that terminates TLS
+  (see section 5, "Auth").
+- **Detach it from your RDP session.** A server started in an interactive
+  PowerShell window dies when you log off. Run it under NSSM (`nssm install
+  TSDebugHelper`) or a Task Scheduler task set to "Run whether user is logged on or
+  not", and drop `--reload` -- the reloader is a development convenience that adds a
+  watcher process and restarts on file writes.
+
+## 1c. Reaching it over an SSH tunnel instead (shared Security Group)
+
+**Prefer this to section 1b whenever the instance sits in a Security Group shared
+with other instances.** A Security Group rule applies to *every* instance attached
+to the group, so opening 8000 there exposes port 8000 on all of them -- including any
+instance where something unrelated happens to be listening on 8000. An SSH tunnel
+avoids the problem entirely: nothing new is opened anywhere, the app keeps listening
+only on `127.0.0.1`, and the forwarded traffic rides the SSH port that is already
+permitted from the VPN ranges.
+
+```
+        your laptop                    the VM
+   browser -> localhost:8000  ==SSH==>  127.0.0.1:8000  (uvicorn)
+                                 ^
+                        port 22, already allowed
+```
+
+`ssh -L` resolves the `localhost` in `-L 8000:localhost:8000` **on the VM side**, so
+`-Listen Local` (the default) is not just sufficient but preferable -- it means the
+port is unreachable from anywhere except through the tunnel.
+
+### If the VM runs Windows, do this first
+
+The one-line `ssh -i key.pem user@host` recipe assumes a *Linux* instance. On a
+Windows instance it fails for two reasons, both fixable but neither automatic:
+
+- **No SSH server is running.** Windows ships OpenSSH Server as an optional
+  capability that is off by default. (`ss -tlnp` won't exist either -- the Windows
+  equivalent is `Get-NetTCPConnection -State Listen -LocalPort 8000` or
+  `netstat -ano | findstr :8000`.)
+- **The EC2 `.pem` is not an SSH credential here.** On Windows instances that key
+  only decrypts the Administrator password for RDP. SSH key auth needs your own
+  keypair's public half installed on the VM.
+
+`enable_ssh_access.ps1` handles both. On the VM, in an **elevated** PowerShell:
+
+```powershell
+cd <repo>\webapp
+.\enable_ssh_access.ps1 -PublicKeyPath C:\Users\<you>\id_ed25519.pub
+```
+
+It installs and starts `sshd`, ensures the Windows Firewall allows TCP 22, and writes
+your public key to `C:\ProgramData\ssh\administrators_authorized_keys` with the ACL
+sshd insists on (`Administrators` and `SYSTEM` only, inheritance removed). That ACL
+is the usual cause of `Permission denied (publickey)` on Windows, and it is why the
+key does *not* go in `~\.ssh\authorized_keys` for an admin account.
+
+Generate the keypair on your laptop first if you don't have one -- and copy only the
+`.pub` half to the VM:
+
+```
+ssh-keygen -t ed25519 -C "you@laptop"
+```
+
+Add `-RemoveAppFirewallRule` if you already created the inbound 8000 rule from
+section 1b; with a tunnel it is dead weight.
+
+### Step by step
+
+1. **On the VM**, run the app bound to loopback only (the default):
+
+   ```powershell
+   cd <repo>\webapp
+   .\start_server.ps1
+   ```
+
+2. **On the VM**, confirm it is actually listening:
+
+   ```powershell
+   Get-NetTCPConnection -State Listen -LocalPort 8000
+   ```
+
+   `127.0.0.1:8000` is exactly right for a tunnel. `0.0.0.0:8000` also works, but
+   there is no reason to be that permissive once you're tunnelling.
+
+3. **On the VM** (Windows only, once), enable SSH per the section above, and check:
+
+   ```powershell
+   Get-Service sshd
+   Get-NetTCPConnection -State Listen -LocalPort 22
+   ```
+
+4. **Connect to the VPN** on your laptop. Port 22 is allowed only from the VPN egress
+   addresses, so this step is not optional.
+
+5. **From your laptop**, open the tunnel and leave the window running:
+
+   ```
+   ssh -i C:\path\to\your_private_key -N -L 8000:localhost:8000 <user>@<instance-ip>
+   ```
+
+   `-N` means "forward ports, don't open a shell". `<user>` is the Windows account
+   whose `administrators_authorized_keys` holds your key (typically
+   `Administrator`). Drop `-N` if you also want a shell in the same session.
+
+6. **In your laptop's browser**, go to `http://localhost:8000` -- not the VM's IP.
+   The session cookie is host-scoped and not `Secure`-flagged, so login works fine
+   over plain HTTP on localhost.
+
+### When it doesn't work
+
+| Symptom | Cause |
+|---|---|
+| `channel 2: open failed: connect failed: Connection refused` | Tunnel is up but nothing is listening on 8000 *on the VM*. Re-check step 2. |
+| `Permission denied (publickey)` | Wrong username, key not installed, or the `administrators_authorized_keys` ACL is wrong. Re-run `enable_ssh_access.ps1`. Add `-v` to the ssh command to see which key it offered. |
+| `Connection timed out` on port 22 | Not on the VPN, or connecting from an address outside the allowed egress ranges. |
+| `bind: Address already in use` | Port 8000 is busy on *your laptop*. Use a different local port: `-L 8081:localhost:8000`, then browse `http://localhost:8081`. |
+| Tunnel drops when idle | Add `-o ServerAliveInterval=30` to the ssh command. |
+
+Two things worth knowing about this arrangement: the tunnel is per-person -- each
+user who needs the app opens their own, which is a feature for a support tool holding
+customer org metadata, but it does not scale to an audience. And SSH gives you
+transport encryption for free, which the app itself does not have. If it eventually
+needs to serve a team, the right shape is an internal ALB or reverse proxy
+terminating TLS with a dedicated Security Group, not a rule on the shared one.
 
 ## 2. Connecting an org
 
@@ -78,6 +379,9 @@ On the **Connections** tab, you need:
 - **Org Name**: a display label.
 - **Instance URL**: e.g. `https://yourorg.my.salesforce.com`.
 - **Access Token**: a valid Salesforce session/access token for that org.
+- **Who can see this org?**: `private` (default -- only you and admins) or `public`
+  (everyone signed in). See "Org visibility" in section 1a; you can change it later
+  from the Connected orgs table.
 
 This app does not implement an OAuth login flow -- you obtain the token yourself,
 for example:
@@ -91,12 +395,25 @@ for example:
   REST/Tooling API.
 
 The token is sent once, used to fetch metadata, and is never written to disk (see
-below). Tokens expire -- to refresh an org's knowledgebase, POST to `/api/orgs`
-again with the same `org_id` and a current token; each component's content hash
-determines what actually changed, so a refresh is cheap even for a large org.
+below).
 
 Fetch progress is polled from the UI automatically; component counts and last-
 refreshed time show up on the Connections tab once it's done.
+
+### Refreshing an org
+
+Salesforce access tokens expire, so a refresh needs a new one -- but *only* that.
+Hit **Refresh** on the org's row in the Connected orgs table, paste a current token,
+and everything else (name, instance URL, owner, visibility) is reused from what is
+already on record. Over the API that is `POST /api/orgs/{org_id}/refresh` with
+`{"access_token": "..."}`, or the `refresh_org` MCP tool. Owner or admin only.
+
+Each component's content hash decides what counts as changed, so a refresh is cheap
+even for a large org, and the result says what actually moved -- "3 changed, 1 new"
+rather than just "done". That summary is also kept on the org's registry entry, so
+the Connections table shows what the last refresh found. `POST /api/orgs` with an
+existing `org_id` still works and behaves identically; the refresh endpoint just
+saves you retyping the fields it can look up itself.
 
 ## 3. Working an incident
 
@@ -132,8 +449,32 @@ both. You get back immediately:
   AI (or a person) needs to reason about root cause without being handed the whole
   org.
 
+The incident report is rendered for reading, not dumped as JSON: a verdict banner
+(new vs. recurrence, with any resolution already on file quoted at the top), the
+exception and its stack, **prime suspects** -- the in-scope components ranked by how
+likely each is to be the cause, each with the reason it scored where it did (named in
+the log, changed 3 days ago, writes the suspect field, is a trigger, does DML/callouts;
+managed-package components sink, since you can't edit those anyway) -- the transaction's
+SOQL/DML shape, governor limits with anything above 70% flagged, and the other
+automation on the same objects. The full RCA context pack is still there, one click
+away under a collapsed **Full RCA context pack (JSON)** -- that is verbatim what the
+MCP tools hand to Claude.
+
 Once you know the fix, record it against the incident's signature so the next
 recurrence surfaces the resolution immediately instead of starting from scratch.
+
+## 3b. The Known Issues tab
+
+Everything you have ever recorded a fix for, per org, in one searchable place --
+signature, exception type and message, how many times it has occurred, first and last
+seen, and the resolution. Filter by exception type, message, field, signature or fix
+text, or tick **Only show issues with no fix on file** to find the gaps in your team's
+documented knowledge. You can record or edit a fix straight from this tab, and jump to
+the latest incident that produced a signature.
+
+This is the compounding part of the tool: an issue diagnosed once by one person is a
+lookup for everyone else afterwards. Combined with public orgs (section 1a), a fix
+recorded by one engineer shows up for the whole team.
 
 ## 3a. Normalizing a log on its own (no org, no code, no metadata)
 
@@ -271,7 +612,8 @@ above, it isolates to `extractors/flow.py` or `sf_client.py`'s Flow/LWC methods.
 `mcp_server.py` is a local **stdio** MCP server that proxies every tool call to this
 same running web app over HTTP -- it has no direct file or Salesforce access of its
 own, so it inherits the same storage guarantee. It exposes: `create_org_connection`,
-`get_org_connection_status`, `list_orgs`, `get_org_stats`, `get_component`,
+`get_org_connection_status`, `refresh_org`, `list_orgs`, `set_org_visibility`, `get_org_stats`,
+`get_component`,
 `get_object_touch`, `find_field_writers`, `search_knowledgebase`, `file_incident`,
 `list_incidents`, `get_incident`, `record_resolution`, `list_known_issues`, and --
 for the org-independent log path -- `normalize_log`, `list_normalized_logs`,
@@ -288,11 +630,17 @@ shown -- it's displayed once -- and put it in the MCP server's `TS_DEBUG_HELPER_
 environment variable. If it's missing or wrong, every tool returns a clear 401/403
 message telling you what to fix.
 
+Org visibility applies over MCP exactly as it does in the browser: the token acts as
+the account that created it, so `list_orgs` returns only the orgs that account may
+see, and any other tool called with an org_id outside that set reports "no such org".
+`create_org_connection` takes a `visibility` argument (`"private"` by default) and
+`set_org_visibility` flips an org you own between private and public.
+
 To use it, start the web app first, then point an MCP client at the script:
 
 ```bash
-uvicorn app.main:app --port 8000     # in one terminal
-python3 mcp_server.py                # the MCP server itself is launched by your MCP client, not run standalone
+python -m uvicorn app.main:app --port 8000   # in one terminal, from inside webapp/
+python3 mcp_server.py                        # the MCP server itself is launched by your MCP client, not run standalone
 ```
 
 For Claude Desktop, add to `claude_desktop_config.json`:
@@ -331,12 +679,17 @@ webapp/
     rca.py                assembles an RCA context pack; finds field writers
     incidents.py         exception/field signature matching for recurrence detection
     auth.py               users, roles, password hashing, API tokens, role dependencies
+    org_access.py         per-org visibility: owner, public/private, who may view/manage
     storage.py           the ONLY module that touches disk
     common_now.py        iso_now() helper
     main.py               FastAPI app / routes (incl. auth, admin, token endpoints)
   static/                 index.html, app.js, style.css -- the web UI (incl. login, admin, tokens)
   tests/
     mock_salesforce.py    mock Tooling/REST API used to validate the whole flow without a live org
+    test_org_visibility.py     private/public org access across several users
+    test_refresh_and_password.py  refresh endpoint + change-your-own-password
+    test_refresh_e2e.py        connect -> refresh -> edit -> refresh against the mock org
+    test_ui_render.js          suspect ranking, RCA/log rendering, escaping (node)
   mcp_server.py           local stdio MCP server proxying the web app (sends an API token)
   requirements.txt
   data/                   created at runtime -- org knowledgebases + incidents + auth (flat JSON)

@@ -7,7 +7,9 @@ knowledgebase (stats, field-writers, object-touch, component detail), and
 incidents (file one from an uploaded log and/or a suspect field, list,
 detail, resolve).
 
-Run with:  uvicorn app.main:app --reload --port 8000
+Run with:  python -m uvicorn app.main:app --reload --port 8000
+           (from inside webapp/ -- see README section 1; add --host 0.0.0.0
+            to make it reachable from other machines)
 """
 import os
 from typing import Optional
@@ -19,6 +21,7 @@ from pydantic import BaseModel
 
 from . import storage
 from . import auth
+from . import org_access
 from .onboarding import run_onboarding, JOBS
 from .log_normalizer import parse_log_text
 from .rca import assemble_context, lookup_field_writers
@@ -34,6 +37,23 @@ STATIC_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file
 Dep_reader = [Depends(auth.require_reader)]
 Dep_user = [Depends(auth.require_user)]
 Dep_admin = [Depends(auth.require_admin)]
+
+
+def _org_view_dep(request: Request, ident=Depends(auth.require_reader)):
+    """Per-org visibility gate for any route with an `{org_id}` path param
+    (see app/org_access.py). Raises 404 -- not 403 -- for a private org you
+    are not allowed to see, so the route never confirms it exists."""
+    org_access.assert_can_view(request.path_params.get("org_id"), ident)
+    return ident
+
+
+# Read an org's knowledgebase/incidents: must be able to SEE the org.
+Dep_org_view = [Depends(_org_view_dep)]
+# Write against an org (file an incident, record a resolution): must be able
+# to see it AND hold the `user` role. Visibility is checked first on purpose,
+# so a reader is told "no such org" rather than "wrong role" for an org that
+# is not theirs to know about.
+Dep_org_write = [Depends(_org_view_dep), Depends(auth.require_user)]
 
 
 @app.on_event("startup")
@@ -70,6 +90,26 @@ def logout(request: Request, response: Response):
         if ident and ident.get("token_id"):
             auth.revoke_token(ident["token_id"])
     response.delete_cookie(auth.SESSION_COOKIE)
+    return {"ok": True}
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
+@app.post("/api/auth/password")
+def change_own_password(req: ChangePasswordRequest, ident=Depends(auth.require_reader)):
+    """Change your OWN password. Previously only an admin could reset one,
+    which left every account stuck on whatever temporary password an admin
+    typed. Requires the current password, so a walk-up on an unlocked browser
+    cannot lock the real owner out."""
+    if not auth.authenticate(ident["username"], req.current_password):
+        raise HTTPException(403, "Current password is incorrect.")
+    try:
+        auth.reset_password(ident["username"], req.new_password)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     return {"ok": True}
 
 
@@ -197,44 +237,127 @@ class NewOrgRequest(BaseModel):
     org_name: str
     instance_url: str
     access_token: str
+    # "private" (default) -- only you and admins can see this org.
+    # "public"            -- every signed-in account can see it.
+    # On a re-connect of an org you already own, omitting this keeps the
+    # visibility it already has.
+    visibility: Optional[str] = None
+
+
+class VisibilityRequest(BaseModel):
+    visibility: str
 
 
 @app.post("/api/orgs", dependencies=Dep_user)
-def create_org(req: NewOrgRequest, background_tasks: BackgroundTasks):
+def create_org(req: NewOrgRequest, background_tasks: BackgroundTasks,
+               ident=Depends(auth.require_user)):
+    registry = storage.load_registry()
+    existing_entry = registry.get(req.org_id)
+
+    if existing_entry is not None:
+        # Re-connecting an org that already exists is a refresh of someone's
+        # knowledgebase -- only its owner (or an admin) may do that, and a
+        # private org you can't see reports 404 rather than "already taken".
+        org_access.assert_can_manage(req.org_id, ident, registry)
+        owner = org_access.owner_of(existing_entry) or ident["username"]
+        default_visibility = org_access.visibility_of(existing_entry)
+    else:
+        owner = ident["username"]
+        default_visibility = org_access.DEFAULT_VISIBILITY
+
+    try:
+        visibility = org_access.normalize_visibility(req.visibility, default=default_visibility)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
     existing = storage.read_json(os.path.join(storage.kb_dir(req.org_id), "file_hashes.json"), {})
-    JOBS[req.org_id] = {"status": "queued", "detail": "", "warnings": []}
+    JOBS[req.org_id] = {"status": "queued", "detail": "", "warnings": [], "owner": owner}
     background_tasks.add_task(
         run_onboarding, req.org_id, req.org_name, req.instance_url, req.access_token, existing,
+        owner, visibility,
     )
-    return {"org_id": req.org_id, "status": "queued"}
+    return {"org_id": req.org_id, "status": "queued", "owner": owner, "visibility": visibility}
 
 
 @app.get("/api/orgs", dependencies=Dep_reader)
-def list_orgs():
-    return storage.load_registry()
+def list_orgs(ident=Depends(auth.require_reader)):
+    """Only the orgs this account may see: everything public, plus your own
+    private orgs (plus everyone's, if you are an admin). Each entry is
+    decorated with `owner`, `visibility` and `can_manage`."""
+    return org_access.visible_orgs(ident)
 
 
 @app.get("/api/orgs/{org_id}/status", dependencies=Dep_reader)
-def org_status(org_id: str):
-    return JOBS.get(org_id, {"status": "unknown", "detail": "", "warnings": []})
+def org_status(org_id: str, ident=Depends(auth.require_reader)):
+    job = JOBS.get(org_id)
+    registry = storage.load_registry()
+    if org_id in registry:
+        org_access.assert_can_view(org_id, ident, registry)
+    elif job is not None:
+        # Still in flight -- no registry entry exists yet, so fall back to
+        # whoever queued the job.
+        if ident["role"] != "admin" and job.get("owner") != ident["username"]:
+            raise HTTPException(404, f"No org '{org_id}' (or you do not have access to it).")
+    if not job:
+        return {"status": "unknown", "detail": "", "warnings": []}
+    return {k: v for k, v in job.items() if k != "owner"}
+
+
+@app.get("/api/orgs/{org_id}/visibility", dependencies=Dep_reader)
+def get_visibility(org_id: str, ident=Depends(auth.require_reader)):
+    entry = org_access.assert_can_view(org_id, ident)
+    return {"org_id": org_id, "visibility": org_access.visibility_of(entry),
+            "owner": org_access.owner_of(entry),
+            "can_manage": org_access.can_manage(entry, ident)}
+
+
+@app.patch("/api/orgs/{org_id}/visibility", dependencies=Dep_reader)
+def set_visibility(org_id: str, req: VisibilityRequest, ident=Depends(auth.require_reader)):
+    """Make an org public (visible to everyone signed in) or private (visible
+    only to its owner and admins). Owner or admin only."""
+    try:
+        return org_access.set_visibility(org_id, req.visibility, ident)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+class RefreshRequest(BaseModel):
+    access_token: str
+    # Optional overrides, for the rare case an org moved instance or was
+    # renamed. Omitted -> reuse what is already on record.
+    instance_url: Optional[str] = None
+    org_name: Optional[str] = None
 
 
 @app.post("/api/orgs/{org_id}/refresh", dependencies=Dep_user)
-def refresh_org(org_id: str, background_tasks: BackgroundTasks):
-    registry = storage.load_registry()
-    if org_id not in registry:
-        raise HTTPException(404, f"Org '{org_id}' not found. Create it first with POST /api/orgs.")
-    raise HTTPException(
-        400,
-        "Refresh needs a fresh Access Token (tokens expire) -- POST /api/orgs again with the "
-        "same org_id, org_name, instance_url and a current access_token; changed-vs-unchanged "
-        "is computed automatically from each component's content hash.",
+def refresh_org(org_id: str, req: RefreshRequest, background_tasks: BackgroundTasks,
+                ident=Depends(auth.require_user)):
+    """Re-fetch an org you already connected. Salesforce access tokens expire,
+    so a fresh one is the only thing you have to supply -- the org's name,
+    instance URL, owner and visibility all come from the registry, and each
+    component's content hash decides what actually counts as changed. Owner or
+    admin only, same as any other management action on an org."""
+    entry = org_access.assert_can_manage(org_id, ident)
+    instance_url = (req.instance_url or entry.get("instance_url") or "").strip()
+    if not instance_url:
+        raise HTTPException(
+            400, f"Org '{org_id}' has no instance URL on record -- pass instance_url with the refresh.")
+    org_name = req.org_name or entry.get("name") or org_id
+
+    existing = storage.read_json(os.path.join(storage.kb_dir(org_id), "file_hashes.json"), {})
+    JOBS[org_id] = {"status": "queued", "detail": "", "warnings": [],
+                    "owner": org_access.owner_of(entry) or ident["username"]}
+    background_tasks.add_task(
+        run_onboarding, org_id, org_name, instance_url, req.access_token, existing,
+        org_access.owner_of(entry) or ident["username"], org_access.visibility_of(entry),
     )
+    return {"org_id": org_id, "status": "queued", "instance_url": instance_url,
+            "reused_instance_url": req.instance_url is None}
 
 
 # ---------- knowledgebase lookups ----------
 
-@app.get("/api/orgs/{org_id}/stats", dependencies=Dep_reader)
+@app.get("/api/orgs/{org_id}/stats", dependencies=Dep_org_view)
 def get_stats(org_id: str):
     kb = storage.load_kb(org_id)
     if not kb["org_index"]:
@@ -242,7 +365,7 @@ def get_stats(org_id: str):
     return kb["org_stats"]
 
 
-@app.get("/api/orgs/{org_id}/components/{component_id}", dependencies=Dep_reader)
+@app.get("/api/orgs/{org_id}/components/{component_id}", dependencies=Dep_org_view)
 def get_component(org_id: str, component_id: str):
     kb = storage.load_kb(org_id)
     card = kb["org_index"].get(component_id)
@@ -251,19 +374,19 @@ def get_component(org_id: str, component_id: str):
     return card
 
 
-@app.get("/api/orgs/{org_id}/object-touch/{object_name}", dependencies=Dep_reader)
+@app.get("/api/orgs/{org_id}/object-touch/{object_name}", dependencies=Dep_org_view)
 def get_object_touch(org_id: str, object_name: str):
     kb = storage.load_kb(org_id)
     return kb["object_touch_map"].get(object_name, {})
 
 
-@app.get("/api/orgs/{org_id}/field-writers/{field_name}", dependencies=Dep_reader)
+@app.get("/api/orgs/{org_id}/field-writers/{field_name}", dependencies=Dep_org_view)
 def get_field_writers(org_id: str, field_name: str):
     kb = storage.load_kb(org_id)
     return lookup_field_writers(field_name, kb["org_index"], kb["field_touch_map"], kb["file_hashes"])
 
 
-@app.get("/api/orgs/{org_id}/search", dependencies=Dep_reader)
+@app.get("/api/orgs/{org_id}/search", dependencies=Dep_org_view)
 def search_components(org_id: str, q: str, customer_authored_only: bool = True):
     """Freeform lookup used by the 'ask a question' box in the UI: matches
     the query against component ids, objects touched, and field names, so
@@ -288,7 +411,7 @@ def search_components(org_id: str, q: str, customer_authored_only: bool = True):
     }
 
 
-@app.get("/api/orgs/{org_id}/inbound/{component_id}", dependencies=Dep_reader)
+@app.get("/api/orgs/{org_id}/inbound/{component_id}", dependencies=Dep_org_view)
 def get_inbound(org_id: str, component_id: str):
     """Reverse-call index (§7.1): everything that invokes this component --
     flows via actionCall, classes via method call, flows via subflow."""
@@ -296,7 +419,7 @@ def get_inbound(org_id: str, component_id: str):
     return kb["inbound_index"].get(component_id, {"called_by": []})
 
 
-@app.get("/api/orgs/{org_id}/entry-points/{object_name}", dependencies=Dep_reader)
+@app.get("/api/orgs/{org_id}/entry-points/{object_name}", dependencies=Dep_org_view)
 def get_entry_points(org_id: str, object_name: str):
     """Per-object automation entry points (§7.3): the flows / triggers /
     process builder / workflow field updates that fire when a record of this
@@ -307,7 +430,7 @@ def get_entry_points(org_id: str, object_name: str):
 
 # ---------- incidents ----------
 
-@app.post("/api/orgs/{org_id}/incidents", dependencies=Dep_user)
+@app.post("/api/orgs/{org_id}/incidents", dependencies=Dep_org_write)
 async def create_incident(
     org_id: str,
     label: Optional[str] = Form(None),
@@ -369,12 +492,12 @@ async def create_incident(
     return {"meta": meta, "field_writers": field_result["writers"] if field_result else None}
 
 
-@app.get("/api/orgs/{org_id}/incidents", dependencies=Dep_reader)
+@app.get("/api/orgs/{org_id}/incidents", dependencies=Dep_org_view)
 def get_incidents(org_id: str):
     return storage.list_incidents(org_id)
 
 
-@app.get("/api/orgs/{org_id}/incidents/{incident_id}", dependencies=Dep_reader)
+@app.get("/api/orgs/{org_id}/incidents/{incident_id}", dependencies=Dep_org_view)
 def get_incident(org_id: str, incident_id: str):
     result = storage.load_incident(org_id, incident_id)
     if not result:
@@ -387,7 +510,7 @@ class ResolveRequest(BaseModel):
     resolution: str
 
 
-@app.post("/api/orgs/{org_id}/resolve", dependencies=Dep_user)
+@app.post("/api/orgs/{org_id}/resolve", dependencies=Dep_org_write)
 def resolve_incident(org_id: str, req: ResolveRequest):
     known = storage.load_known_issues(org_id)
     if req.signature not in known:
@@ -398,7 +521,7 @@ def resolve_incident(org_id: str, req: ResolveRequest):
     return known[req.signature]
 
 
-@app.get("/api/orgs/{org_id}/known-issues", dependencies=Dep_reader)
+@app.get("/api/orgs/{org_id}/known-issues", dependencies=Dep_org_view)
 def get_known_issues(org_id: str):
     return storage.load_known_issues(org_id)
 

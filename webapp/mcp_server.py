@@ -111,17 +111,55 @@ async def _post_form(path: str, data: dict, files: Optional[dict] = None):
 # ---------- org connections ----------
 
 @mcp.tool()
-async def create_org_connection(org_id: str, org_name: str, instance_url: str, access_token: str) -> dict:
+async def create_org_connection(org_id: str, org_name: str, instance_url: str,
+                                access_token: str, visibility: str = "private") -> dict:
     """Connect a new Salesforce org: fetch its Apex classes/triggers, flows,
     LWC components and custom objects via the Tooling API, then build and
     store the derived knowledgebase for it. Only the derived JSON is ever
     stored -- the access token and raw fetched source are never persisted.
     This queues background work; poll get_org_connection_status(org_id) or
-    call list_orgs() until it reports status 'done'."""
+    call list_orgs() until it reports status 'done'.
+
+    `visibility` controls who else can see the org in this app:
+      "private" (default) -- only the account that owns the API token you are
+                             using, plus admins.
+      "public"            -- every signed-in account.
+    Either way, only the owner or an admin can re-connect/refresh the org or
+    change its visibility later (see set_org_visibility). Re-connecting an
+    org you already own keeps its current visibility unless you pass a new
+    one explicitly."""
     return await _post_json("/api/orgs", {
         "org_id": org_id, "org_name": org_name,
         "instance_url": instance_url, "access_token": access_token,
+        "visibility": visibility,
     })
+
+
+@mcp.tool()
+async def set_org_visibility(org_id: str, visibility: str) -> dict:
+    """Make a connected org "public" (visible to every signed-in account) or
+    "private" (visible only to its owner and admins). Only the org's owner or
+    an admin can do this."""
+    async with _client() as c:
+        try:
+            r = await c.patch(f"/api/orgs/{org_id}/visibility", json={"visibility": visibility})
+        except httpx.ConnectError:
+            return _conn_error()
+        if r.status_code >= 400:
+            return _auth_error(r.status_code) or {"error": f"{r.status_code}: {r.text}"}
+        return r.json()
+
+
+@mcp.tool()
+async def refresh_org(org_id: str, access_token: str) -> dict:
+    """Re-fetch an org that is already connected, to pick up customization
+    changes. Only a fresh Salesforce access token is needed -- the org's name,
+    instance URL, owner and visibility all come from what is already on record,
+    and each component's content hash decides what counts as changed. Owner or
+    admin only. Queues background work: poll get_org_connection_status(org_id)
+    until it reports 'done', and its `changes` block then tells you how many
+    components changed / were added / were removed since the last fetch."""
+    return await _post_json(f"/api/orgs/{org_id}/refresh", {"access_token": access_token})
 
 
 @mcp.tool()
@@ -135,9 +173,13 @@ async def get_org_connection_status(org_id: str) -> dict:
 
 @mcp.tool()
 async def list_orgs() -> dict:
-    """List every org connected so far, with component counts and last-
-    refreshed timestamp for each. Use this to discover valid org_id values
-    for the other tools."""
+    """List the orgs your API token's account is allowed to see -- every
+    public org, plus your own private ones (plus everyone's, for an admin
+    token) -- with component counts, `owner`, `visibility`, `can_manage` and
+    the last-refreshed timestamp for each. Use this to discover valid org_id
+    values for the other tools. An org that does not appear here will report
+    "no such org" from every other tool, whether it is private to someone
+    else or genuinely absent."""
     return await _get("/api/orgs")
 
 
