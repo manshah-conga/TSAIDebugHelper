@@ -12,6 +12,7 @@ Run with:  python -m uvicorn app.main:app --reload --port 8000
             to make it reachable from other machines)
 """
 import os
+from contextlib import asynccontextmanager
 from typing import Optional
 
 from fastapi import FastAPI, BackgroundTasks, UploadFile, File, Form, HTTPException, Depends, Request, Response
@@ -27,8 +28,20 @@ from .log_normalizer import parse_log_text
 from .rca import assemble_context, lookup_field_writers
 from .incidents import file_incident
 from .common_now import iso_now
+from .mcp_http import MCPTransportMiddleware, mcp_lifespan
 
-app = FastAPI(title="TS Intelligent Debug Helper")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Process startup/shutdown. Creates the bootstrap admin, then holds the
+    MCP Streamable HTTP session manager open for the life of the process --
+    POST /mcp returns a 500 if that manager was never started."""
+    auth.bootstrap_admin()
+    async with mcp_lifespan(app):
+        yield
+
+
+app = FastAPI(title="TS Intelligent Debug Helper", lifespan=lifespan)
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "static")
 
@@ -56,9 +69,13 @@ Dep_org_view = [Depends(_org_view_dep)]
 Dep_org_write = [Depends(_org_view_dep), Depends(auth.require_user)]
 
 
-@app.on_event("startup")
-def _startup():
-    auth.bootstrap_admin()
+# ---------- remote MCP endpoint ----------
+# POST /mcp serves the MCP tools over Streamable HTTP, so a client needs only
+# a URL and a token. The tools themselves live in mcp_server.py and are shared
+# verbatim with the local stdio entry point; app/mcp_http.py supplies the
+# transport and pulls the caller's API token off the request. It runs as
+# middleware, above the router, so the bare /mcp path is not redirected.
+app.add_middleware(MCPTransportMiddleware)
 
 
 # ---------- authentication ----------

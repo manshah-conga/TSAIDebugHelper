@@ -1,24 +1,30 @@
 """
-TS Intelligent Debug Helper -- local stdio MCP server.
+TS Intelligent Debug Helper -- MCP server (stdio + remote streamable HTTP).
 
 This does NOT talk to Salesforce or the filesystem directly. It is a thin
 proxy over the running FastAPI web app's HTTP API (see app/main.py), so an
-AI agent (Claude Desktop, Cowork, Claude Code, etc.) can drive org
-onboarding, knowledgebase lookups, and incident filing/resolution through
-the exact same code path -- and the exact same "only normalized JSON is
-ever persisted" guarantee -- as the web UI.
+AI agent (Claude Desktop, Cowork, Claude Code, Copilot Studio, etc.) can
+drive org onboarding, knowledgebase lookups, and incident filing/resolution
+through the exact same code path -- and the exact same "only normalized JSON
+is ever persisted" guarantee -- as the web UI.
 
-Run the web app first:
-    uvicorn app.main:app --port 8000
+There are two ways to reach these tools, and they share every tool
+definition below.
 
-The web app now requires authentication, so the MCP server sends an API
-token (created in the web UI under "API Tokens") as a Bearer header on
-every request. The token inherits the role of the user who created it --
-a reader token can only call the read tools, a user/admin token can also
-create org connections and file incidents.
+1. REMOTE (preferred; nothing to install on the client)
+   The web app mounts this same FastMCP instance at POST /mcp as a
+   Streamable HTTP endpoint -- see app/mcp_http.py. A client just needs the
+   URL and an API token sent as a request header:
 
-Then point an MCP client at this script (stdio transport), e.g. in
-Claude Desktop's claude_desktop_config.json:
+       https://<host>/mcp     header:  Authorization: Bearer <api token>
+
+   The token travels per request, so one endpoint serves many people, each
+   acting as themselves with their own role and org visibility. Nothing is
+   read from the environment in this mode.
+
+2. LOCAL stdio (legacy; needs Python on each client machine)
+   Run this script as a subprocess of the MCP client. Because there is no
+   request to carry a header, the token comes from the environment instead:
     {
       "mcpServers": {
         "ts-debug-helper": {
@@ -32,11 +38,15 @@ Claude Desktop's claude_desktop_config.json:
       }
     }
 
-Every tool here is a network call to that local server, not a direct file
-read -- if the web app is not running, every tool will return an error
-saying so.
+Either way the token inherits the role of the user who created it -- a
+reader token can only call the read tools, a user/admin token can also
+create org connections and file incidents.
+
+Every tool here is a network call to the web app, not a direct file read --
+if the web app is not running, every tool will return an error saying so.
 """
 import os
+from contextvars import ContextVar
 from typing import Optional
 
 import httpx
@@ -45,11 +55,30 @@ from mcp.server.fastmcp import FastMCP
 BASE_URL = os.environ.get("TS_DEBUG_HELPER_URL", "http://127.0.0.1:8000").rstrip("/")
 API_TOKEN = os.environ.get("TS_DEBUG_HELPER_TOKEN", "").strip()
 
-mcp = FastMCP("ts-debug-helper")
+# Set per request by app/mcp_http.py from the caller's Authorization header
+# when these tools are served over Streamable HTTP. Empty in stdio mode, where
+# API_TOKEN from the environment is used instead. A ContextVar (not a global)
+# so concurrent callers on the shared remote endpoint never see each other's
+# token: each request runs in its own context.
+CURRENT_TOKEN: ContextVar[str] = ContextVar("ts_api_token", default="")
+
+# stateless_http: every request is self-contained, which is what lets the
+# per-request token above be the whole of the auth story -- there is no
+# server-side session holding an identity between calls. It also keeps the
+# endpoint working behind load balancers and reverse proxies that do not
+# pin a client to one worker.
+mcp = FastMCP("ts-debug-helper", stateless_http=True)
+
+
+def _token() -> str:
+    """The API token for the call in flight: the caller's request header when
+    served over HTTP, else the environment variable in stdio mode."""
+    return CURRENT_TOKEN.get() or API_TOKEN
 
 
 def _auth_headers():
-    return {"Authorization": f"Bearer {API_TOKEN}"} if API_TOKEN else {}
+    tok = _token()
+    return {"Authorization": f"Bearer {tok}"} if tok else {}
 
 
 def _client() -> httpx.AsyncClient:
@@ -58,8 +87,10 @@ def _client() -> httpx.AsyncClient:
 
 def _auth_error(status: int):
     if status == 401:
-        return {"error": "Authentication failed (401). Set TS_DEBUG_HELPER_TOKEN in the MCP "
-                         "server env to a valid API token created in the web UI under 'API Tokens'."}
+        return {"error": "Authentication failed (401). The API token is missing, expired, or "
+                         "revoked. Over HTTP, send a valid token as 'Authorization: Bearer "
+                         "<token>'; in stdio mode, set TS_DEBUG_HELPER_TOKEN in the MCP server "
+                         "env. Tokens are created in the web UI under 'API Tokens'."}
     if status == 403:
         return {"error": "Not permitted (403). Your API token's role is too low for this action -- "
                          "e.g. connecting an org or filing an incident needs a 'user' or 'admin' token, "

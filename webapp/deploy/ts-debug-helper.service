@@ -1,0 +1,47 @@
+; systemd unit for the TS Intelligent Debug Helper web app + MCP endpoint.
+;
+; Install on the VM:
+;   sudo cp ts-debug-helper.service /etc/systemd/system/
+;   sudo systemctl daemon-reload
+;   sudo systemctl enable --now ts-debug-helper
+;   sudo systemctl status ts-debug-helper
+;
+; Adjust User, WorkingDirectory and the python path to match the VM.
+
+[Unit]
+Description=TS Intelligent Debug Helper (web app + MCP)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/ts-debug-helper/webapp
+
+; Bound to loopback on purpose. Nothing reaches this port from outside the
+; VM -- nginx terminates TLS on 443 and proxies here. If you bind 0.0.0.0
+; instead, plain HTTP on 8000 is exposed and the tokens travel in the clear.
+ExecStart=/opt/ts-debug-helper/venv/bin/python -m uvicorn app.main:app \
+    --host 127.0.0.1 --port 8000 --proxy-headers --forwarded-allow-ips=127.0.0.1
+
+; Set on first run only, to choose the bootstrap admin password instead of
+; letting one be generated into the journal. Remove it afterwards.
+; Environment=TS_ADMIN_PASSWORD=change-me-on-first-login
+
+; Refuse tokens passed in the query string (?token=...). Leave commented while
+; you have clients that cannot set headers; set it once they all can.
+; Environment=TS_MCP_ALLOW_QUERY_TOKEN=0
+
+Restart=always
+RestartSec=3
+
+; Light hardening: the app only needs to write its own data/ directory.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=/opt/ts-debug-helper/webapp/data
+
+[Install]
+WantedBy=multi-user.target
