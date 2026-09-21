@@ -133,11 +133,22 @@ def set_visibility(org_id, visibility, ident):
     visibility = normalize_visibility(visibility, default=None)
     if visibility is None:
         raise ValueError("visibility is required")
-    registry = storage.load_registry()
-    entry = assert_can_manage(org_id, ident, registry)
-    entry["visibility"] = visibility
-    if not entry.get("owner"):
-        entry["owner"] = ident["username"]
-    registry[org_id] = entry
-    storage.save_registry(registry)
-    return {"org_id": org_id, "visibility": visibility, "owner": entry["owner"]}
+
+    # The permission check and the write happen inside one lock over the
+    # registry. Splitting them let an org fetch finishing at the same moment
+    # rewrite the whole registry from its own snapshot and drop this
+    # visibility change -- an org silently staying private after the owner
+    # was told it went public is a confidentiality-shaped bug, not a cosmetic
+    # one.
+    result = {}
+
+    def _apply(registry):
+        entry = assert_can_manage(org_id, ident, registry)
+        entry["visibility"] = visibility
+        if not entry.get("owner"):
+            entry["owner"] = ident["username"]
+        registry[org_id] = entry
+        result.update({"org_id": org_id, "visibility": visibility, "owner": entry["owner"]})
+
+    storage.mutate_registry(_apply)
+    return result

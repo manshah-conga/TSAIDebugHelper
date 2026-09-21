@@ -52,6 +52,17 @@ from typing import Optional
 import httpx
 from mcp.server.fastmcp import FastMCP
 
+# Importing the package loads webapp/.env (see app/env_file.py), so running
+# this as a standalone stdio server picks up the same TS_DEBUG_HELPER_URL /
+# TS_DEBUG_HELPER_TOKEN an operator put in the file. It has to happen before
+# the two reads below, which are import-time. The load is silent by design:
+# stdio MCP speaks JSON-RPC on stdout, and a banner printed there corrupts
+# the protocol.
+try:
+    import app as _app                # noqa: F401 - imported for its side effect
+except Exception:                     # noqa: BLE001 - never block the server
+    pass
+
 BASE_URL = os.environ.get("TS_DEBUG_HELPER_URL", "http://127.0.0.1:8000").rstrip("/")
 API_TOKEN = os.environ.get("TS_DEBUG_HELPER_TOKEN", "").strip()
 

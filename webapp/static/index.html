@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>TS Intelligent Debug Helper</title>
-<link rel="stylesheet" href="/static/style.css?v=10">
+<link rel="stylesheet" href="/static/style.css?v=11">
 </head>
 <body>
 
@@ -40,6 +40,7 @@
   <button data-view="known">Known Issues</button>
   <button data-view="logs">Log Normalizer</button>
   <button data-view="tokens">API Tokens</button>
+  <button data-view="usage" id="navUsage" style="display:none;">Usage</button>
   <button data-view="admin" id="navAdmin" style="display:none;">Admin</button>
   <button onclick="toggleChatDock()" id="navChat" class="nav-chat" style="margin-left:auto;">Ask &#9662;</button>
   <button onclick="changeOwnPassword()">Change password</button>
@@ -200,6 +201,78 @@
     </div>
   </section>
 
+  <!-- Usage. Admin-only, and it exists because one shared LLM key makes the
+       provider's own dashboard useless for attribution: every call arrives
+       from the same credential, so "who spent this" can only be answered
+       here, from what the app recorded at the point of use. -->
+  <section id="view-usage" class="view">
+    <div class="card">
+      <h2>LLM connection</h2>
+      <p class="muted">The connection every signed-in user shares. It is read from the server's
+        environment, so changing it means editing the server's configuration and restarting the
+        service &mdash; deliberately, because a credential any session could rewrite is a
+        credential a stolen session could rewrite.</p>
+      <div id="llmStatusPanel"></div>
+    </div>
+
+    <div class="card">
+      <h2>Usage</h2>
+      <div class="usage-controls">
+        <div>
+          <label for="usageDays">Period</label>
+          <select id="usageDays" onchange="loadUsage()">
+            <option value="7">Last 7 days</option>
+            <option value="30" selected>Last 30 days</option>
+            <option value="90">Last 90 days</option>
+            <option value="365">Last 12 months</option>
+          </select>
+        </div>
+        <div>
+          <label for="usageUser">Account</label>
+          <select id="usageUser" onchange="loadUsage()">
+            <option value="">Everyone</option>
+          </select>
+        </div>
+        <button class="secondary" onclick="loadUsage()">Refresh</button>
+      </div>
+      <div id="usageKpis" class="usage-kpis"></div>
+      <div id="usageTrend"></div>
+    </div>
+
+    <div class="card">
+      <h2>By user</h2>
+      <p class="muted">Every chat turn is attributed to the account that asked it, including
+        turns that failed before reaching the provider.</p>
+      <table>
+        <thead><tr><th>User</th><th class="num">Questions</th><th class="num">Tokens</th>
+          <th class="num">Cost</th><th class="num">Tool calls</th><th class="num">Avg answer</th>
+          <th class="num">Failed</th><th>Share</th></tr></thead>
+        <tbody id="usageByUser"></tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h2>By org</h2>
+      <p class="muted">Which customer orgs the effort is going against. Turns with no org
+        selected &mdash; standalone log normalization, for instance &mdash; are grouped
+        separately.</p>
+      <table>
+        <thead><tr><th>Org</th><th class="num">Questions</th><th class="num">Tokens</th>
+          <th class="num">Cost</th><th>Share</th></tr></thead>
+        <tbody id="usageByOrg"></tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h2>By model</h2>
+      <table>
+        <thead><tr><th>Model</th><th class="num">Questions</th><th class="num">Tokens</th>
+          <th class="num">Cost</th><th class="num">Avg answer</th></tr></thead>
+        <tbody id="usageByModel"></tbody>
+      </table>
+    </div>
+  </section>
+
   <section id="view-admin" class="view">
     <div class="card">
       <h2>Create a user</h2>
@@ -235,7 +308,7 @@
 </aside>
 
 </div>
-<script src="/static/app.js?v=10"></script>
-<script src="/static/chat.js?v=10"></script>
+<script src="/static/app.js?v=11"></script>
+<script src="/static/chat.js?v=11"></script>
 </body>
 </html>

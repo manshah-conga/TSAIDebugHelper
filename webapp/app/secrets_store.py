@@ -2,6 +2,24 @@
 Per-user LLM API keys, encrypted at rest with a key derived from the user's
 own password.
 
+Its role changed -- read this first
+-----------------------------------
+This used to be the ONLY way to get an LLM into the app, and every user had
+to walk through it. It is now an **admin-only override** sitting behind the
+shared, server-configured connection in app/llm_config.py.
+
+The shared connection is what ordinary users get: configured once in the
+server's environment, available to everyone the moment they sign in, no key
+to paste and no password to re-enter after a restart. An admin who wants
+their own turns billed to their own provider account can still store a
+personal key here, and it wins for their sessions only.
+
+Nothing below changed mechanically. The scheme, the consequences, and the
+tests are all as they were -- what changed is who can reach it
+(`require_admin` on the routes) and what happens when there is no personal
+key: instead of "chat is unavailable", the caller falls through to the
+shared connection. See `require_creds` at the bottom for that order.
+
 Why not a server master key
 ---------------------------
 The obvious design is one AES key in the environment and every user's API
@@ -55,6 +73,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.exceptions import InvalidTag
 
 from . import storage
+from . import llm_config
 
 KEK_ROUNDS = 400_000
 ALG = "AESGCM-256"
@@ -96,8 +115,12 @@ def _load_all():
     return storage.read_json(LLM_KEYS_PATH, {}) or {}
 
 
-def _save_all(records):
-    storage.write_json(LLM_KEYS_PATH, records)
+def _mutate_all(mutator):
+    """Every write in this module changes ONE user's record inside a document
+    that holds all of them, so a plain load/modify/save loses a concurrent
+    change to a different user. Routed through storage.mutate_json, which
+    holds an exclusive lock across the whole read-modify-write."""
+    return storage.mutate_json(LLM_KEYS_PATH, mutator, {})
 
 
 def get_record(username):
@@ -238,12 +261,13 @@ def store_key(username, password, api_key, provider=DEFAULT_PROVIDER, token_id=N
         "verified_at": None,
         "default_model": None,
     }
-    records = _load_all()
-    previous = records.get(username) or {}
-    # Keep the user's model choice across a key replacement.
-    record["default_model"] = previous.get("default_model")
-    records[username] = record
-    _save_all(records)
+    def _apply(records):
+        previous = records.get(username) or {}
+        # Keep the user's model choice across a key replacement.
+        record["default_model"] = previous.get("default_model")
+        records[username] = record
+
+    _mutate_all(_apply)
 
     evict_user(username)
     put_in_keyring(token_id, username, api_key)
@@ -276,8 +300,7 @@ def rewrap_for_new_password(username, old_password, new_password):
     """Self-service password change. Both passwords are in hand, so the DEK is
     unwrapped under the old KEK and re-wrapped under the new one -- the API
     key's own ciphertext is never touched. No-op when no key is stored."""
-    records = _load_all()
-    record = records.get(username)
+    record = get_record(username)
     if not record:
         return False
     dek = _unwrap_dek(record, old_password)
@@ -286,12 +309,21 @@ def rewrap_for_new_password(username, old_password, new_password):
     kek_salt = secrets.token_bytes(16)
     kek = _derive_kek(new_password, kek_salt, rounds)
     dek_nonce = secrets.token_bytes(12)
-    record["kek_salt"] = _b64e(kek_salt)
-    record["dek_nonce"] = _b64e(dek_nonce)
-    record["wrapped_dek"] = _b64e(AESGCM(kek).encrypt(dek_nonce, dek, username.encode("utf-8")))
-    record["rounds"] = rounds
-    records[username] = record
-    _save_all(records)
+    wrapped = _b64e(AESGCM(kek).encrypt(dek_nonce, dek, username.encode("utf-8")))
+
+    def _apply(records):
+        # Re-read inside the lock: the record may have been replaced between
+        # the unwrap above and here, and rewrapping a DEK onto a record that
+        # no longer holds the matching ciphertext would corrupt it.
+        current = records.get(username)
+        if not current or not current.get("ciphertext"):
+            return
+        current["kek_salt"] = _b64e(kek_salt)
+        current["dek_nonce"] = _b64e(dek_nonce)
+        current["wrapped_dek"] = wrapped
+        current["rounds"] = rounds
+
+    _mutate_all(_apply)
     return True
 
 
@@ -300,61 +332,91 @@ def note_password_reset_by_admin(username):
     and the stored key is gone for good. Delete the record and leave a marker
     so the UI can explain what happened instead of showing an inscrutable
     'locked' state forever."""
-    records = _load_all()
-    record = records.pop(username, None)
-    if record is None:
-        return False
-    records[username] = {
-        "username": username,
-        "cleared": True,
-        "key_lost_at": _now(),
-        "reason": "password_reset_by_admin",
-        "provider": record.get("provider"),
-        "default_model": record.get("default_model"),
-    }
-    _save_all(records)
+    existed = [False]
+
+    def _apply(records):
+        record = records.pop(username, None)
+        if record is None:
+            return
+        existed[0] = True
+        records[username] = {
+            "username": username,
+            "cleared": True,
+            "key_lost_at": _now(),
+            "reason": "password_reset_by_admin",
+            "provider": record.get("provider"),
+            "default_model": record.get("default_model"),
+        }
+
+    _mutate_all(_apply)
     evict_user(username)
-    return True
+    return existed[0]
 
 
 def remove_key(username, token_id=None):
-    records = _load_all()
-    if username not in records:
-        return False
-    default_model = (records[username] or {}).get("default_model")
-    del records[username]
-    if default_model:
-        records[username] = {"username": username, "cleared": True,
-                             "reason": "removed_by_user", "default_model": default_model}
-    _save_all(records)
+    existed = [False]
+
+    def _apply(records):
+        if username not in records:
+            return
+        existed[0] = True
+        default_model = (records[username] or {}).get("default_model")
+        del records[username]
+        if default_model:
+            records[username] = {"username": username, "cleared": True,
+                                 "reason": "removed_by_user", "default_model": default_model}
+
+    _mutate_all(_apply)
     evict_user(username)
-    return True
+    return existed[0]
 
 
 def forget_user(username):
-    """Called when an account is deleted."""
-    records = _load_all()
-    if records.pop(username, None) is not None:
-        _save_all(records)
+    """Called when an account is deleted.
+
+    Written as a named function rather than a lambda for a reason worth
+    recording: `lambda records: records.pop(username, None) and None` looks
+    equivalent and is not. `mutate_json` treats a non-None return as a
+    REPLACEMENT document, and `{} and None` evaluates to `{}` -- so popping a
+    record that happened to be an empty dict would replace the entire key
+    store with one, destroying every other user's wrapped key. A mutator must
+    either change its argument in place and return None, or return a
+    deliberate replacement; never both by accident.
+    """
+    def _drop(records):
+        records.pop(username, None)
+
+    _mutate_all(_drop)
     evict_user(username)
 
 
 def set_default_model(username, model):
-    records = _load_all()
-    record = records.get(username) or {"username": username, "cleared": True}
-    record["default_model"] = model or None
-    records[username] = record
-    _save_all(records)
+    def _apply(records):
+        record = records.get(username) or {"username": username, "cleared": True}
+        record["default_model"] = model or None
+        records[username] = record
+
+    _mutate_all(_apply)
 
 
 def mark_verified(username):
     """Stamp a successful provider call. Best-effort: a failed write must never
-    turn a working chat turn into an error."""
+    turn a working chat turn into an error.
+
+    A user on the shared connection has no record here to stamp, so the stamp
+    lands on the shared connection's own state instead -- otherwise "last
+    verified" would be permanently blank for everyone except the admins who
+    store a personal key, which is precisely backwards."""
     try:
-        records = _load_all()
-        if username in records:
-            records[username]["verified_at"] = _now()
-            _save_all(records)
+        if not has_usable_key(get_record(username)):
+            llm_config.mark_verified(_now())
+            return
+
+        def _apply(records):
+            if username in records:
+                records[username]["verified_at"] = _now()
+
+        _mutate_all(_apply)
     except Exception:
         pass
 
@@ -364,7 +426,16 @@ def has_usable_key(record):
 
 
 def public_state(username, token_id):
-    """Everything the UI is allowed to know. Never the key itself."""
+    """Everything the UI is allowed to know about this account's PERSONAL
+    key. Never the key itself.
+
+    Note what this does not describe: the shared server connection. That has
+    its own reporter (`llm_config.public_state`), and keeping the two apart
+    matters -- conflating them would leave an ordinary user looking at a
+    screen that says "not configured" while their chat works perfectly,
+    because it is running on the shared connection. `effective_state` below
+    is the one the UI actually renders.
+    """
     record = get_record(username)
     usable = has_usable_key(record)
     return {
@@ -381,24 +452,103 @@ def public_state(username, token_id):
     }
 
 
+def effective_state(ident):
+    """What the UI renders: which connection this session will actually use,
+    and whether chat is ready.
+
+    The shape is deliberately flat, with `ready` decided here rather than in
+    JavaScript. The dock previously inferred readiness from `configured &&
+    unlocked`, which is now wrong for the great majority of users -- they
+    have no personal key at all and are nonetheless entirely able to chat.
+    """
+    username = ident["username"]
+    is_admin = ident.get("role") == "admin"
+    personal = public_state(username, ident.get("token_id"))
+    shared = llm_config.public_state()
+
+    # A personal key only counts when it is present AND unlocked AND the
+    # holder is still an admin. The role check is what stops a demoted admin
+    # from quietly continuing on their own key after the privilege was taken
+    # away.
+    personal_active = bool(personal["configured"] and personal["unlocked"] and is_admin)
+    using = "personal" if personal_active else ("shared" if shared["configured"] else None)
+
+    if using == "personal":
+        provider = personal["provider"]
+        default_model = personal["default_model"] or shared["default_model"]
+        model_locked = False             # an admin on their own key picks freely
+    else:
+        provider = shared["provider"]
+        default_model = shared["default_model"] or personal["default_model"]
+        model_locked = shared["model_locked"] and not is_admin
+
+    return {
+        "ready": using is not None,
+        "using": using,
+        "provider": provider,
+        "default_model": default_model,
+        "model_locked": model_locked,
+        # An admin has a personal key on file but has not unlocked it this
+        # session: chat still works on the shared connection, so this is a
+        # nudge rather than a blocker.
+        "personal_key_locked": bool(personal["configured"] and not personal["unlocked"] and is_admin),
+        "can_manage": is_admin,
+        "shared": shared,
+        # Only admins are shown the personal-key panel, so only admins are
+        # sent its state. There is nothing secret in it, but a field a user
+        # can never act on is a field that only raises questions.
+        "personal": personal if is_admin else None,
+    }
+
+
 def require_key(ident):
     """The plaintext key for the identity making this request, or a typed
     exception the route can turn into a specific, actionable message."""
-    record = get_record(ident["username"])
-    if not has_usable_key(record):
-        raise KeyMissing("No LLM API key is configured for this account.")
-    api_key = key_for_session(ident.get("token_id"))
-    if not api_key:
-        raise KeyLocked("Your saved API key is locked. Enter your password to unlock it.")
-    return api_key
+    return require_creds(ident)["api_key"]
 
 
 def require_creds(ident):
     """Key plus provider and endpoint -- everything a call needs, in the one
     shape llm.py takes, so callers never assemble it themselves and cannot
-    forget the endpoint on the Azure path."""
-    api_key = require_key(ident)
-    record = get_record(ident["username"]) or {}
-    return {"provider": record.get("provider") or DEFAULT_PROVIDER,
-            "api_key": api_key,
-            "endpoint": record.get("endpoint") or ""}
+    forget the endpoint on the Azure path.
+
+    Resolution order, and the reasoning for it:
+
+    1. **This admin's own unlocked key.** An explicit act by someone with the
+       privilege to perform it, so it wins. Restricted to admins because the
+       route that stores one is; checking the role here too means a demotion
+       takes effect immediately rather than at their next sign-in.
+    2. **The shared server connection.** The default for everybody. No paste,
+       no unlock, works straight after a restart.
+    3. **Nothing** -- raise, with a message that says whose problem it is.
+       A user cannot fix an unset server environment variable, so telling
+       them to "add an API key" would send them looking for a screen that,
+       for them, does not exist.
+
+    An admin whose personal key is merely *locked* falls through to the
+    shared connection rather than erroring. Their chat keeps working; the UI
+    tells them separately that their own key is available to unlock.
+    """
+    username = ident["username"]
+    record = get_record(username)
+
+    if has_usable_key(record) and ident.get("role") == "admin":
+        api_key = key_for_session(ident.get("token_id"))
+        if api_key:
+            return {"provider": record.get("provider") or DEFAULT_PROVIDER,
+                    "api_key": api_key,
+                    "endpoint": record.get("endpoint") or "",
+                    "source": "personal"}
+
+    shared = llm_config.creds()
+    if shared:
+        return dict(shared, source="shared")
+
+    state = llm_config.public_state()
+    if state["present_but_invalid"]:
+        raise KeyMissing(
+            "The server's LLM connection is configured but not usable: "
+            f"{state['config_error']} An administrator needs to correct it on the server.")
+    raise KeyMissing(
+        "This server has no LLM connection configured yet, so chat is unavailable. "
+        "Ask an administrator to set it up -- everything else in the app works without it.")

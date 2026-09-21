@@ -41,7 +41,9 @@ from typing import AsyncIterator
 
 from . import chat_store
 from . import llm
+from . import llm_config
 from . import secrets_store
+from . import usage as usage_ledger
 from .common_now import iso_now
 
 from mcp_server import mcp, CURRENT_TOKEN
@@ -416,12 +418,24 @@ async def run_turn(ident, chat_id, user_text, org_id, org_label, model,
     confirmed = set(confirmed_tool_ids or [])
     started = time.monotonic()
 
+    def elapsed_ms():
+        return int((time.monotonic() - started) * 1000)
+
     try:
         creds = secrets_store.require_creds(ident)
     except secrets_store.KeyLocked as e:
+        # A turn that never reached the provider still gets a usage record.
+        # It cost nothing, but "this user tried to chat forty times and the
+        # server has no LLM configured" is the single most useful thing an
+        # admin could learn from this report, and it is invisible if only
+        # successful turns are logged.
+        usage_ledger.record_turn(username, chat_id=chat_id, org_id=org_id, model=model,
+                                 duration_ms=elapsed_ms(), ok=False, error_code="key_locked")
         yield sse("error", {"code": "key_locked", "message": str(e)})
         return
     except secrets_store.KeyMissing as e:
+        usage_ledger.record_turn(username, chat_id=chat_id, org_id=org_id, model=model,
+                                 duration_ms=elapsed_ms(), ok=False, error_code="key_missing")
         yield sse("error", {"code": "key_missing", "message": str(e)})
         return
 
@@ -437,10 +451,21 @@ async def run_turn(ident, chat_id, user_text, org_id, org_label, model,
     seen_calls = set()
     rounds_used = 0
     used_text_tool_calls = False
+    # Accounting for the usage ledger. `turn_error` holds the first error code
+    # this turn produced, if any -- first rather than last, because the first
+    # failure is the one that explains the rest.
+    tool_calls_made = 0
+    turn_error = None
+
+    def note_error(code):
+        nonlocal turn_error
+        if turn_error is None:
+            turn_error = code
 
     for round_index in range(MAX_TOOL_ROUNDS):
         rounds_used = round_index + 1
         if time.monotonic() - started > TURN_DEADLINE_SECONDS:
+            note_error("timeout")
             yield sse("error", {
                 "code": "timeout",
                 "message": f"This turn ran past {int(TURN_DEADLINE_SECONDS)}s and was stopped. "
@@ -477,11 +502,19 @@ async def run_turn(ident, chat_id, user_text, org_id, org_label, model,
                 if delta.usage:
                     final_usage = _usage(delta.usage)
         except llm.LLMError as e:
+            note_error(e.code)
+            # Record it against the shared connection so an admin's LLM panel
+            # can show the real provider-side reason instead of a generic
+            # "chat unavailable". Only for the shared connection: a failure on
+            # one admin's personal key says nothing about the server's.
+            if creds.get("source") == "shared":
+                llm_config.mark_verify_failed(str(e))
             yield sse("error", {"code": e.code, "message": str(e)})
             break
         except asyncio.CancelledError:
             raise
         except Exception as e:                        # noqa: BLE001 - stream must never 500
+            note_error("internal")
             yield sse("error", {"code": "internal",
                                 "message": f"The model stream failed: {e.__class__.__name__}."})
             break
@@ -603,6 +636,7 @@ async def run_turn(ident, chat_id, user_text, org_id, org_label, model,
                 result = {"error": f"{e.__class__.__name__}: {e}"}
                 ok = False
             ms = int((time.monotonic() - t0) * 1000)
+            tool_calls_made += 1
 
             content, truncated = _truncate(result)
             executed.append(_record(call, result, ok=ok, ms=ms, content=content,
@@ -702,12 +736,26 @@ async def run_turn(ident, chat_id, user_text, org_id, org_label, model,
 
     meta = chat_store.append_messages(username, chat_id, new_messages,
                                       usage=final_usage, title_hint=user_text)
-    if model and meta.get("model") != model:
-        meta["model"] = model
-        chat_store.save_meta(username, chat_id, meta)
-    if org_id and meta.get("org_id") != org_id:
-        meta["org_id"] = org_id
-        chat_store.save_meta(username, chat_id, meta)
+    # Through update_meta, not save_meta. Writing the whole document back here
+    # -- from the copy append_messages just returned -- discarded the token and
+    # cost totals it had only moments earlier rolled up under a lock, whenever
+    # a second turn on the same chat landed in between.
+    if (model and meta.get("model") != model) or (org_id and meta.get("org_id") != org_id):
+        def _stamp(m):
+            if model:
+                m["model"] = model
+            if org_id:
+                m["org_id"] = org_id
+        meta = chat_store.update_meta(username, chat_id, _stamp)
+
+    # One usage record per turn, written after the transcript is safely on
+    # disk. Ordering matters: the ledger is accounting, the transcript is the
+    # work, and if only one of the two can land it should be the work.
+    usage_ledger.record_turn(
+        username, chat_id=chat_id, org_id=org_id, model=model,
+        provider=creds.get("provider"), source=creds.get("source"),
+        usage=final_usage, tool_calls=tool_calls_made, tool_rounds=rounds_used,
+        duration_ms=elapsed_ms(), ok=turn_error is None, error_code=turn_error)
 
     if used_text_tool_calls:
         yield sse("notice", {

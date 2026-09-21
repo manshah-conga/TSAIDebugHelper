@@ -101,8 +101,33 @@ def load_meta(username, chat_id):
 
 
 def save_meta(username, chat_id, meta):
+    """Replace a chat's whole meta document.
+
+    Correct only when the caller genuinely means to replace it. Anything that
+    changes one FIELD must use `update_meta` instead -- a whole-document write
+    computed from an earlier read is exactly how the running token and cost
+    totals were getting lost."""
     meta["updated_at"] = _now()
     storage.write_json(os.path.join(_chat_dir(username, chat_id), "meta.json"), meta)
+
+
+def update_meta(username, chat_id, change):
+    """Change specific fields of a chat's meta under an exclusive lock.
+
+    `change` receives the current meta and mutates it in place. Added because
+    `append_messages` was carefully locked and then its caller immediately
+    undid that by writing the whole document back to set `model` -- rolling
+    the counters straight off again."""
+    chat_id = _safe_id(chat_id)
+    if not chat_id:
+        return {}
+
+    def _apply(meta):
+        change(meta)
+        meta["updated_at"] = _now()
+
+    return storage.mutate_json(
+        os.path.join(_chat_dir(username, chat_id), "meta.json"), _apply, {})
 
 
 def load_messages(username, chat_id):
@@ -155,33 +180,55 @@ def forget_user(username):
     """Account deletion: drop every chat and every share pointing at them."""
     for meta in list_chats(username):
         delete_chat(username, meta["chat_id"])
-    shares = _load_shares()
-    changed = False
-    for token in [t for t, s in shares.items() if s.get("owner") == username]:
-        del shares[token]
-        changed = True
-    if changed:
-        _save_shares(shares)
+    # Under the lock, and touching only this user's tokens. Unlocked, a
+    # colleague sharing a conversation at the same instant either lost their
+    # brand-new link or had a revoked one resurrected.
+    def _drop_mine(shares):
+        for token in [t for t, entry in shares.items() if entry.get("owner") == username]:
+            del shares[token]
+
+    storage.mutate_json(SHARES_PATH, _drop_mine, {})
 
 
 # ---------- appending a turn ----------
 
 def append_messages(username, chat_id, new_messages, usage=None, title_hint=None):
-    """Append to the transcript and roll the counters up into meta."""
-    messages = load_messages(username, chat_id)
-    messages.extend(new_messages)
-    save_messages(username, chat_id, messages)
+    """Append to the transcript and roll the counters up into meta.
 
-    meta = load_meta(username, chat_id) or {}
-    meta["message_count"] = sum(1 for m in messages if m.get("role") in ("user", "assistant"))
-    meta["tool_call_count"] = sum(len(m.get("tool_calls") or []) for m in messages)
-    if usage:
-        meta["total_tokens"] = (meta.get("total_tokens") or 0) + (usage.get("total_tokens") or 0)
-        meta["total_cost"] = round((meta.get("total_cost") or 0.0) + (usage.get("cost") or 0.0), 6)
-    if title_hint and (meta.get("title") in (None, "", "New conversation")):
-        meta["title"] = derive_title(title_hint)
-    save_meta(username, chat_id, meta)
-    return meta
+    Both halves are read-modify-write, which is why they run under
+    `storage.mutate_json` rather than load/modify/save. The same user with the
+    same conversation open in two browser tabs is not a contrived case -- it
+    is how people work -- and unlocked, whichever turn finished second
+    rewrote the whole transcript from the version it read, silently deleting
+    the other turn and the running totals with it.
+    """
+    chat_id = _safe_id(chat_id)
+    if not chat_id:
+        return {}
+    messages_path = os.path.join(_chat_dir(username, chat_id), "messages.json")
+    meta_path = os.path.join(_chat_dir(username, chat_id), "meta.json")
+
+    # In place, and with no `messages or []` rescue: mutate_json always hands
+    # over a real list (the default is materialised for a file that does not
+    # exist yet), and `x or []` would silently swap in a DIFFERENT empty list
+    # whose mutations never reach the document.
+    def _append(messages):
+        messages.extend(new_messages)
+
+    messages = storage.mutate_json(messages_path, _append, [])
+
+    def _roll(meta):
+        meta["message_count"] = sum(1 for m in messages if m.get("role") in ("user", "assistant"))
+        meta["tool_call_count"] = sum(len(m.get("tool_calls") or []) for m in messages)
+        if usage:
+            meta["total_tokens"] = (meta.get("total_tokens") or 0) + (usage.get("total_tokens") or 0)
+            meta["total_cost"] = round((meta.get("total_cost") or 0.0)
+                                       + (usage.get("cost") or 0.0), 6)
+        if title_hint and (meta.get("title") in (None, "", "New conversation")):
+            meta["title"] = derive_title(title_hint)
+        meta["updated_at"] = _now()
+
+    return storage.mutate_json(meta_path, _roll, {})
 
 
 def derive_title(text):
@@ -210,33 +257,43 @@ def create_share(username, chat_id, include_tools=False):
     if not meta:
         return None
     token = meta.get("share_token") or secrets.token_urlsafe(24)
-    shares = _load_shares()
-    shares[token] = {
+    # _shares.json is one document shared by every user in the app, so two
+    # people sharing different conversations at the same moment were racing:
+    # one link worked and the other 404'd for no visible reason.
+    storage.mutate_json(SHARES_PATH, lambda shares: shares.update({token: {
         "owner": username,
         "chat_id": chat_id,
         "created_at": _now(),
         "include_tools": bool(include_tools),
-    }
-    _save_shares(shares)
-    meta["share_token"] = token
-    meta["share_includes_tools"] = bool(include_tools)
-    meta["shared_at"] = _now()
-    save_meta(username, chat_id, meta)
+    }}), {})
+    def _stamp(m):
+        m["share_token"] = token
+        m["share_includes_tools"] = bool(include_tools)
+        m["shared_at"] = _now()
+
+    update_meta(username, chat_id, _stamp)
     return {"token": token, "include_tools": bool(include_tools)}
 
 
 def revoke_share(token):
-    shares = _load_shares()
-    entry = shares.pop(token, None)
+    captured = {}
+
+    def _remove(shares):
+        entry = shares.pop(token, None)
+        if entry:
+            captured.update(entry)
+
+    storage.mutate_json(SHARES_PATH, _remove, {})
+    entry = captured or None
     if entry is None:
         return False
-    _save_shares(shares)
-    meta = load_meta(entry["owner"], entry["chat_id"])
-    if meta:
-        meta["share_token"] = None
-        meta["share_includes_tools"] = False
-        meta["shared_at"] = None
-        save_meta(entry["owner"], entry["chat_id"], meta)
+    def _clear(m):
+        m["share_token"] = None
+        m["share_includes_tools"] = False
+        m["shared_at"] = None
+
+    if load_meta(entry["owner"], entry["chat_id"]):
+        update_meta(entry["owner"], entry["chat_id"], _clear)
     return True
 
 

@@ -397,8 +397,35 @@ for example:
 The token is sent once, used to fetch metadata, and is never written to disk (see
 below).
 
-Fetch progress is polled from the UI automatically; component counts and last-
-refreshed time show up on the Connections tab once it's done.
+### Watching the fetch
+
+A fetch of a real org runs for minutes, and a single status word for all of that
+time is indistinguishable from a hang — whose commonest remedy is clicking the
+button again, which is precisely the wrong thing to do. So a progress panel
+opens over the form and reports:
+
+- a **percentage**, weighted by how long each phase actually takes rather than
+  divided evenly — fetching Apex bodies dominates a real org, so equal slices
+  would sit at 30% for minutes and then sprint through the last five steps;
+- the **current phase** in plain words ("Fetching Apex classes"), with the whole
+  sequence listed and a tick against each finished one, so "still going" becomes
+  "three phases left";
+- **live counts** as each phase completes — 214 objects, 1,893 Apex classes;
+- **elapsed time**, so the panel is visibly alive even during the long stretches.
+
+The panel covers the form deliberately: the one action that must not happen
+during a fetch is starting a second one. **Run in the background** dismisses it
+without cancelling — the fetch continues server-side, the Connections table
+updates when it lands, and the button says what it does rather than "Cancel",
+which would be a lie.
+
+In-flight orgs also show an inline progress bar in the Connected orgs table, so
+a colleague can see that a refresh is already under way rather than finding
+stale counts and reaching for the Refresh button. If they do reach for it, the
+second fetch is refused with a 409 naming the phase the running one is on — two
+concurrent fetches of the same org would each compute their changed/added
+report against a baseline the other had already moved, which is not corrupt but
+is confidently wrong. See `CONCURRENCY.md`.
 
 ### Refreshing an org
 
@@ -567,9 +594,127 @@ from inside the tool, so the agent cannot even confirm it exists.
 
 ### Connecting an LLM
 
-Each user brings their own key (**Ask** dock -> the key chip), choosing between
-two providers. Either way the credentials are checked with a live call before
-they are stored, so a typo fails immediately rather than at the first question.
+**One connection, configured on the server, shared by every user.** A signed-in
+engineer connects an org and starts asking — there is no key to obtain, nothing
+to paste, and nothing to unlock after a restart.
+
+It is set through the server's environment:
+
+```
+TS_LLM_PROVIDER=azure | openrouter
+TS_LLM_API_KEY=<the key>
+TS_LLM_ENDPOINT=<full Azure chat-completions URL — Azure only>
+TS_LLM_DEFAULT_MODEL=<optional; what new chats start on>
+TS_LLM_LOCK_MODEL=1        # optional; non-admins cannot change model
+```
+
+#### Where to put them
+
+Copy `webapp/ts-debug-helper.env.example` to **either** of the two paths the
+app reads, fill it in, and restart:
+
+```
+webapp/.env                        <- simplest, recommended
+webapp/etc/ts-debug-helper.env     <- same filename the systemd unit uses
+```
+
+That works on Windows, on Linux, and however the server is launched — the app
+loads the file itself (`app/env_file.py`), so no shell or service manager has
+to be involved. `TS_ENV_FILE=<path>` overrides the search; if that path does
+not exist the app loads nothing and says so, rather than quietly falling back
+to another file.
+
+**A value already set in the real environment always wins over the file.** So
+under systemd the unit's `EnvironmentFile=/etc/ts-debug-helper.env` still
+takes precedence exactly as before, and you can override one setting for a
+single run from the shell without editing anything.
+
+Keep the production copy at mode 0600, and prefer systemd's `EnvironmentFile`
+to an inline `Environment=` — anything inline is readable by any local user
+through `systemctl show`.
+
+**Never commit your copy.** The repo ignores `*.env` and `webapp/etc/`; only
+the `.example` template belongs in version control. A bare `.env` rule is not
+enough, because it matches only a file named exactly that — which is how
+`webapp/etc/ts-debug-helper.env` slipped past an earlier version of the
+ignore list.
+
+#### Confirming it worked
+
+The startup log says which file was read and whether the connection loaded:
+
+```
+[TS Debug Helper] Loaded configuration from C:\...\webapp\.env
+[TS Debug Helper] Shared LLM connection loaded (provider=azure,
+    deployment=gpt-4o, key 1a2b…9f2a). Available to every signed-in user.
+```
+
+If the file is somewhere the app does not look, it says that instead, and
+lists every path it tried:
+
+```
+[TS Debug Helper] No configuration file found. Looked for: ...\webapp\.env,
+    ...\webapp\etc\ts-debug-helper.env
+```
+
+It also flags a misspelled key (`TS_LLM_APIKEY=` instead of `TS_LLM_API_KEY=`),
+a duplicated key, and any value the file supplied that an existing environment
+variable overrode — each of which otherwise presents identically to "not
+configured".
+
+An admin can see exactly what is loaded — provider, masked key hint, endpoint,
+model, and whether a live call has succeeded — on the **Usage** tab, or via the
+**Ask** dock's LLM chip.
+
+#### Why environment variables and not a settings screen
+
+Because a credential that any signed-in session can change is a credential a
+stolen session can change. Reading it from the environment means changing the
+LLM connection requires access to the server itself — the same privilege
+boundary as "can restart the service", which is not something an in-app role
+can be tricked into crossing.
+
+The cost is real and deliberate: rotating the key needs a config edit and a
+restart. That is a rare action, and the friction is the point. There is no API
+route that writes it, for any role, so there is nothing to misconfigure and
+nothing to exploit.
+
+#### Who can change what
+
+| | Shared connection | Own personal key | Model | Usage report |
+| --- | --- | --- | --- | --- |
+| reader | read-only status | — | yes¹ | own only |
+| user | read-only status | — | yes¹ | own only |
+| admin | read-only status + full detail | create / unlock / remove | yes | everyone |
+
+¹ Unless `TS_LLM_LOCK_MODEL=1`.
+
+A non-admin has no LLM controls in the UI at all, and no endpoint behind them
+either: `POST /api/chat/key`, `DELETE /api/chat/key` and
+`POST /api/chat/unlock` all return 403. What they *can* read is the connection's
+status, because someone whose chat is not working has to be able to see that it
+is a server-side matter and that the person to ask is an admin. That view
+carries the provider, the model and readiness — never the key hint, and never
+the endpoint URL, which names internal Azure infrastructure.
+
+#### An admin's own key (optional override)
+
+The per-user, password-wrapped key store is intact and now serves one purpose:
+an admin who wants *their own* turns billed to *their own* provider account can
+store a personal key from the Ask dock. It applies to their sessions only;
+everyone else stays on the shared connection. Resolution order for any turn is:
+
+1. this admin's own unlocked key, if they have one;
+2. the shared server connection;
+3. otherwise an error that says an administrator needs to configure it.
+
+An admin whose personal key is merely *locked* (the normal state after a
+restart) falls through to step 2 — their chat keeps working, and the dock tells
+them separately that their own key is there to unlock. A demoted admin drops to
+the shared connection immediately, without re-authenticating.
+
+Either way the credentials are checked with a live call before they are stored,
+so a typo fails immediately rather than at the first question.
 
 **OpenRouter** — one key, a catalogue of models, free tiers for testing.
 
@@ -596,22 +741,62 @@ appear under each answer, the dollar figure does not.
 `https` is required except for `localhost`, which is allowed for a local gateway
 or a test double.
 
-**The key is encrypted with your password**, not with a server-side master key
+#### How a personal key is stored
+
+**Encrypted with that admin's password**, not with a server-side master key
 (`app/secrets_store.py`). A random per-user data key encrypts the API key; that
-data key is wrapped with PBKDF2-SHA256(your password, 400k rounds) + AES-GCM, and
+data key is wrapped with PBKDF2-SHA256(the password, 400k rounds) + AES-GCM, and
 only the wrapped form touches disk. A stolen copy of `data/` is therefore useless
 on its own. Three consequences, all surfaced in the UI:
 
 | Event | What happens |
 | --- | --- |
-| Server restarts | Chat shows **Locked -- unlock**. Every other tab keeps working on your existing session. Re-enter your password. |
+| Server restarts | The personal key locks. **Chat keeps working** on the shared connection; the dock offers an unlock. |
 | You change your own password | Nothing. Both passwords are in hand, so the wrapper is silently re-wrapped. |
-| **An admin resets your password** | Your stored key is **destroyed** -- an admin does not know the old password, so nothing can re-derive it. You are told this and re-add the key. |
+| **Another admin resets your password** | Your stored key is **destroyed** -- they do not know the old password, so nothing can re-derive it. You are told this and re-add it. |
 
-The unwrapped key lives only in process memory, keyed by session, so **run a
-single uvicorn worker**. With `--workers 2` a user would be unlocked on one
-worker and locked on another at random. The shipped systemd unit is
-single-worker; scale out with a second host and sticky sessions instead.
+That first row is the one that changed. It used to mean every user's chat was
+dead until they re-entered their password, which is exactly the friction the
+shared connection removes.
+
+**Run a single uvicorn worker.** The unwrapped key lives only in process
+memory, keyed by session, and in-flight org-fetch progress is likewise
+per-process — with `--workers 2` an admin would be unlocked on one worker and
+locked on another at random, and a status poll would land on the worker that
+did not run the fetch. Everything on *disk* is now multi-process safe (every
+shared JSON document is written under a cross-process lock), so scaling out is
+a matter of moving those two pieces of state rather than fixing corruption. See
+`CONCURRENCY.md`.
+
+### Usage tracking (admin)
+
+One shared key means the provider's own dashboard can no longer answer the
+question that matters operationally — *who* spent this. Every call arrives from
+the same credential. So attribution happens here, at the point of use.
+
+Every chat turn writes one record to `data/usage/YYYY-MM-DD.jsonl`: the account,
+the org, the model, token counts, cost, tool calls, duration, and whether it
+succeeded. Turns that failed are recorded too, with their error code — "this
+user tried forty times and the server has no LLM configured" is the single most
+useful thing the report can tell you, and it is invisible if only successes are
+logged.
+
+The **Usage** tab (admin only) shows totals, a per-day trend, and breakdowns by
+user, org and model, over 7/30/90/365 days, with a drilldown to one account.
+Any user can see their own figures from the Ask dock — on a shared key, "is it
+me?" should not require asking an admin.
+
+The ledger is **append-only** for a reason. Running totals in a JSON document
+would need read-modify-write, and several turns finishing at once would lose
+each other's numbers; an append has no read step. One file per UTC day keeps
+every query bounded and makes retention a matter of deleting old files
+(`usage.prune()` if you want to wire it to cron).
+
+Costs come from the provider's usage block, which OpenRouter reports and
+**Azure does not** — Azure bills the subscription, not the call. Every total
+therefore carries `cost_available`, and the UI shows an em dash rather than a
+confident `$0.00` that an admin would reasonably read as "free". Token counts
+are reported by both, so they are the number to plan against on Azure.
 
 ### Choosing the org
 
@@ -881,13 +1066,15 @@ webapp/
     incidents.py         exception/field signature matching for recurrence detection
     auth.py               users, roles, password hashing, API tokens, role dependencies
     org_access.py         per-org visibility: owner, public/private, who may view/manage
-    secrets_store.py      per-user LLM keys, AES-GCM wrapped by a password-derived key
-    llm.py                OpenRouter client: streaming completions + tool-capable model list
+    llm_config.py         the SHARED LLM connection, read from the server's environment
+    secrets_store.py      an admin's optional personal key + credential resolution order
+    usage.py              per-user usage ledger (append-only JSONL) + aggregation
+    llm.py                OpenRouter/Azure client: streaming completions + model list
     chat.py               the agent loop: model <-> MCP tools, streamed as SSE
     chat_store.py         chat transcripts + share links (with redaction)
-    storage.py           the ONLY module that touches disk
+    storage.py           the ONLY module that touches disk -- incl. the file locking
     common_now.py        iso_now() helper
-    main.py               FastAPI app / routes (incl. auth, admin, token, chat endpoints)
+    main.py               FastAPI app / routes (incl. auth, admin, usage, chat endpoints)
   static/                 index.html, app.js, style.css -- the web UI (incl. login, admin, tokens)
     chat.js               the Ask dock: transcript, tool rows, model picker, sharing
     shared.html           standalone read-only page for a shared transcript (no session)
@@ -896,15 +1083,24 @@ webapp/
     test_org_visibility.py     private/public org access across several users
     test_refresh_and_password.py  refresh endpoint + change-your-own-password
     test_refresh_e2e.py        connect -> refresh -> edit -> refresh against the mock org
-    test_chat_secrets.py       key crypto, chat store, share redaction, agent glue
-    test_ui_render.js          suspect ranking, RCA/log rendering, escaping (node)
+    test_chat_secrets.py       key crypto, credential resolution, usage ledger,
+                               concurrent mutate_json, chat store, share redaction
+    test_llm_and_usage_api.py  admin-only LLM gating, usage endpoints, fetch progress,
+                               duplicate-fetch refusal (over real HTTP)
+    test_ui_render.js          suspect ranking, RCA/log rendering, progress panel,
+                               usage dashboard, escaping (node)
   mcp_server.py           local stdio MCP server proxying the web app (sends an API token)
   requirements.txt
   data/                   created at runtime -- org knowledgebases + incidents + auth (flat JSON)
     auth/                 users.json + tokens.json (salted hashes only, never cleartext)
                           llm_keys.json (AES-GCM ciphertext only -- no key material)
     chats/                per-user transcripts + _shares.json (share token -> chat)
+    usage/                YYYY-MM-DD.jsonl -- one append-only record per chat turn
+    .locks/               sidecar lock files guarding each shared JSON document
 ```
+
+`CONCURRENCY.md` documents every multi-user race found, which were fixed and
+how, and the two pieces of in-process state that keep this single-worker.
 
 ## 8. What's validated vs. not
 

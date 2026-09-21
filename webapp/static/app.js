@@ -187,6 +187,7 @@ function showView(name) {
   if (name === "known") loadKnownIssues();
   if (name === "logs") loadLogs();
   if (name === "tokens") loadTokens();
+  if (name === "usage") loadUsageView();
   if (name === "admin") loadUsers();
 }
 
@@ -480,6 +481,25 @@ async function loadOrgs() {
         <td>${o.can_manage ? `<button class="secondary" onclick="event.stopPropagation(); refreshOrg('${escapeHtml(id)}')">Refresh</button>` : ""}</td>`;
       return tr;
     });
+  // A fetch someone else started should be visible here, not just in the
+  // panel of whoever clicked the button -- otherwise a colleague sees an org
+  // with stale counts and no clue that it is mid-refresh, and reaches for the
+  // Refresh button that will now be rejected.
+  markInFlightOrgs();
+}
+
+async function markInFlightOrgs() {
+  for (const id of Object.keys(ORGS)) {
+    const s = await apiJson(`/api/orgs/${encodeURIComponent(id)}/status`, {}, null);
+    if (!s || ["done", "error", "unknown"].includes(s.status)) continue;
+    const cell = [...document.querySelectorAll("#orgsTable tr")]
+      .find(tr => tr.querySelector("a.link")?.textContent === id)?.cells[8];
+    if (!cell) continue;
+    cell.innerHTML = `<div class="muted">${escapeHtml(s.step_label || s.status)} &mdash; ${
+      s.percent || 0}%</div>
+      <div class="progress-track" style="height:5px; margin-top:4px;">
+        <div class="progress-fill" style="width:${s.percent || 0}%"></div></div>`;
+  }
 }
 
 function changesHint(o) {
@@ -571,29 +591,154 @@ async function createOrg() {
     statusEl.className = "status-line error"; return;
   }
   document.getElementById("newAccessToken").value = "";  // don't leave a token sitting in the DOM
-  pollOrgStatus(org_id);
+  pollOrgStatus(org_id, { verb: "Connecting" });
 }
 
-async function pollOrgStatus(org_id, { verb = "Working" } = {}) {
+// ---------- org fetch progress ----------
+//
+// A fetch of a real org runs for minutes. The old UI showed one status word
+// on a single line, which for most of that time was indistinguishable from a
+// hung request -- and the commonest reaction to a page that looks hung is to
+// click the button again, which is exactly the wrong thing to do. So the
+// fetch now gets a modal progress panel: a real percentage, the phase names
+// with ticks against the finished ones, the counts as they come in, and
+// elapsed time so it is visibly alive even during the long Apex phase.
+//
+// It is a modal deliberately. The one action that must not happen during a
+// fetch is starting a second one, and covering the form is the simplest way
+// to make that true.
+
+// `hidden` is per-org and sticky: once someone sends a fetch to the
+// background, the next poll must not pop the panel straight back up.
+let PROGRESS = { orgId: null, timer: null, hidden: {} };
+
+function openProgress(org_id, { verb = "Connecting" } = {}) {
+  closeProgress();
+  const back = document.createElement("div");
+  back.className = "modal-backdrop progress-backdrop";
+  back.id = "orgProgress";
+  back.innerHTML = `
+    <div class="modal progress-modal" role="dialog" aria-modal="true" aria-live="polite">
+      <h3>${escapeHtml(verb)} ${escapeHtml(org_id)}</h3>
+      <div class="progress-phase" id="pgPhase">Queued...</div>
+      <div class="progress-track"><div class="progress-fill" id="pgFill" style="width:0%"></div></div>
+      <div class="progress-meta">
+        <span id="pgPercent">0%</span>
+        <span id="pgElapsed"></span>
+      </div>
+      <ul class="progress-steps" id="pgSteps"></ul>
+      <div class="progress-counts" id="pgCounts"></div>
+      <p class="muted progress-note">This can take a few minutes on a large org. Nothing but the
+        derived knowledgebase is stored &mdash; the access token is used for this fetch only.
+        You can leave this open; it updates itself.</p>
+      <div class="modal-actions">
+        <button type="button" class="secondary" id="pgHide">Run in the background</button>
+      </div>
+    </div>`;
+  document.body.appendChild(back);
+  // Dismissing hides the panel but does NOT cancel the fetch, which keeps
+  // running server-side -- so the button says what it does rather than
+  // "Cancel", which would be a lie.
+  document.getElementById("pgHide").onclick = () => {
+    PROGRESS.hidden[org_id] = true;
+    closeProgress();
+    toast(`${org_id} is still being fetched. The Connections table will update when it finishes.`, "info");
+  };
+  PROGRESS.orgId = org_id;
+  delete PROGRESS.hidden[org_id];
+}
+
+function closeProgress() {
+  const el = document.getElementById("orgProgress");
+  if (el) el.remove();
+  PROGRESS.orgId = null;
+}
+
+/** Paint one poll's worth of progress. Guarded on the panel still existing,
+ *  because the user may have sent the fetch to the background -- polling
+ *  continues either way, since the completion toast and the table refresh
+ *  still have to happen. */
+function renderProgress(s) {
+  const fill = document.getElementById("pgFill");
+  if (!fill) return;
+  const pct = Math.max(0, Math.min(100, s.percent ?? 0));
+  fill.style.width = `${pct}%`;
+  fill.classList.toggle("indeterminate", s.status === "queued");
+  document.getElementById("pgPercent").textContent = `${pct}%`;
+  document.getElementById("pgPhase").textContent =
+    s.step_label || String(s.status || "").replace(/_/g, " ") || "Working";
+
+  const el = document.getElementById("pgElapsed");
+  if (el) {
+    el.textContent = s.elapsed_seconds != null
+      ? `${Math.floor(s.elapsed_seconds / 60)}m ${String(Math.floor(s.elapsed_seconds % 60)).padStart(2, "0")}s`
+      : "";
+  }
+
+  // Phase list with ticks. Showing the whole sequence, not just the current
+  // phase, is what turns "still going" into "three phases left".
+  const stepsHost = document.getElementById("pgSteps");
+  if (stepsHost && (s.steps || []).length) {
+    const current = s.step_index || 0;
+    stepsHost.innerHTML = (s.steps || []).map((step, i) => {
+      const n = i + 1;
+      const cls = s.status === "done" || n < current ? "done" : n === current ? "active" : "";
+      const mark = s.status === "done" || n < current ? "&#10003;" : n === current ? "&#9679;" : "&#9675;";
+      return `<li class="${cls}"><span class="progress-mark">${mark}</span>${escapeHtml(step.label)}</li>`;
+    }).join("");
+  }
+
+  const countsHost = document.getElementById("pgCounts");
+  if (countsHost) {
+    const labels = { objects: "objects", classes: "Apex classes", triggers: "triggers",
+                     flows: "flows", lwc: "LWC bundles",
+                     workflow_field_updates: "field updates", components: "components" };
+    const entries = Object.entries(s.counts || {}).filter(([, v]) => v != null);
+    countsHost.innerHTML = entries.length
+      ? entries.map(([k, v]) => `<span class="count-pill"><b>${v}</b> ${escapeHtml(labels[k] || k)}</span>`).join("")
+      : "";
+  }
+}
+
+async function pollOrgStatus(org_id, { verb = "Working", showPanel = true } = {}) {
   const statusEl = document.getElementById("createStatus");
+  if (showPanel && PROGRESS.orgId !== org_id && !PROGRESS.hidden[org_id]) {
+    openProgress(org_id, { verb });
+  }
+
   const s = await apiJson(`/api/orgs/${encodeURIComponent(org_id)}/status`, {}, null);
-  if (!s) return;
+  if (!s) { closeProgress(); return; }
+
   if (s.status === "error") {
-    statusEl.textContent = "Error: " + s.detail; statusEl.className = "status-line error";
-    toast(`${org_id}: fetch failed.`, "error");
+    closeProgress();
+    statusEl.textContent = "Error: " + s.detail;
+    statusEl.className = "status-line error";
+    // The detail can be a paragraph about proxies and instance URLs, so it
+    // goes in a modal rather than a toast that vanishes in five seconds.
+    modal({ title: `${org_id}: fetch failed`, body: escapeHtml(s.detail || "Unknown error."),
+            fields: [], submitLabel: "Close" });
     return;
   }
+
   if (s.status === "done") {
+    renderProgress(s);
     statusEl.textContent = summariseChanges(org_id, s.changes)
       + (s.warnings?.length ? ` (${s.warnings.length} warning(s) -- see server log)` : "");
     statusEl.className = "status-line ok";
+    // Hold the completed bar on screen for a moment. Snapping it away the
+    // instant it hits 100% robs the user of the confirmation they waited
+    // minutes for.
+    setTimeout(closeProgress, 900);
     toast(`${org_id} is up to date.`, "ok");
     await loadOrgs();
     if (org_id === CURRENT_ORG) loadDashboard();
     return;
   }
-  statusEl.textContent = `${verb}... (${String(s.status).replace(/_/g, " ")})`;
-  setTimeout(() => pollOrgStatus(org_id, { verb }), 1500);
+
+  renderProgress(s);
+  statusEl.textContent = `${verb}... (${s.step_label || String(s.status).replace(/_/g, " ")})`;
+  statusEl.className = "status-line";
+  PROGRESS.timer = setTimeout(() => pollOrgStatus(org_id, { verb, showPanel }), 1500);
 }
 
 function summariseChanges(org_id, ch) {
@@ -1103,6 +1248,7 @@ function applyRole() {
   document.getElementById("userInfo").innerHTML =
     `${escapeHtml(CURRENT_USER.username)}<span class="role-tag">${escapeHtml(role)}</span>`;
   document.getElementById("navAdmin").style.display = role === "admin" ? "" : "none";
+  document.getElementById("navUsage").style.display = role === "admin" ? "" : "none";
   // Hide write-only cards for readers (the server enforces this too).
   const canWrite = role === "user" || role === "admin";
   document.querySelectorAll('[data-requires="user"]').forEach(el => {
@@ -1118,6 +1264,199 @@ function enterApp() {
   // The dock remembers whether it was open, per browser. Guarded because
   // chat.js is a separate script and a cached index.html could load without it.
   if (typeof initChatDock === "function") initChatDock();
+}
+
+// ---------- usage (admin) ----------
+//
+// Every figure here comes from data/usage/*.jsonl, written one record per
+// chat turn. With one shared LLM key the provider's dashboard can only say
+// what the SERVER spent; only this app knows which account asked.
+
+async function loadUsageView() {
+  await Promise.all([renderLlmStatusPanel(), populateUsageUserPicker()]);
+  await loadUsage();
+}
+
+/** The shared connection, read-only. Deliberately a report and not a form:
+ *  the values live in the server's environment, and the panel's job is to say
+ *  what is loaded, whether it works, and which variables to edit. */
+async function renderLlmStatusPanel() {
+  const host = document.getElementById("llmStatusPanel");
+  setBusy(host);
+  const s = await apiJson("/api/llm", {}, null);
+  if (!s) { host.innerHTML = `<p class="status-line error">Could not read the LLM connection.</p>`; return; }
+  const names = { openrouter: "OpenRouter", azure: "Azure OpenAI" };
+  const env = s.env_vars || {};
+
+  let banner;
+  if (s.configured) {
+    banner = `<div class="key-status ok">
+      Connected to <b>${escapeHtml(names[s.provider] || s.provider)}</b>${
+        s.hint ? ` with key <code>${escapeHtml(s.hint)}</code>` : ""}.
+      Every signed-in user chats through this &mdash; they have nothing to configure.
+      ${s.verified_at ? `<div style="margin-top:4px;">Last successful call ${
+        escapeHtml(fmtWhen(s.verified_at))}.</div>` : ""}
+    </div>`;
+  } else if (s.present_but_invalid) {
+    banner = `<div class="key-status warn"><b>Configured but not usable</b> &mdash; nobody can chat.
+      <div style="margin-top:4px;">${escapeHtml(s.config_error || "")}</div></div>`;
+  } else {
+    banner = `<div class="key-status warn"><b>Not configured.</b> Chat is unavailable for everyone.
+      Everything else &mdash; knowledgebases, incidents, known issues, the log normalizer &mdash;
+      works without it.</div>`;
+  }
+
+  host.innerHTML = `${banner}
+    <table class="mini-table" style="margin-top:12px;">
+      <tr><td>Provider</td><td><code>${escapeHtml(s.provider || "-")}</code></td></tr>
+      <tr><td>Model</td><td><code>${escapeHtml(s.default_model || "(chosen per chat)")}</code></td></tr>
+      ${s.endpoint ? `<tr><td>Endpoint</td><td class="mono" style="word-break:break-all; font-size:11px;">${
+        escapeHtml(s.endpoint)}</td></tr>` : ""}
+      <tr><td>Users may change model</td><td>${s.model_locked ? "no (locked)" : "yes"}</td></tr>
+    </table>
+    <details class="raw-json" style="margin-top:12px;">
+      <summary>How to change the connection</summary>
+      <pre>${escapeHtml(env.provider || "TS_LLM_PROVIDER")}=azure | openrouter
+${escapeHtml(env.api_key || "TS_LLM_API_KEY")}=&lt;the key&gt;
+${escapeHtml(env.endpoint || "TS_LLM_ENDPOINT")}=&lt;full Azure chat-completions URL, Azure only&gt;
+${escapeHtml(env.default_model || "TS_LLM_DEFAULT_MODEL")}=&lt;optional&gt;
+${escapeHtml(env.lock_model || "TS_LLM_LOCK_MODEL")}=1   # optional: users cannot change model</pre>
+      <p class="muted">Put these in the service's EnvironmentFile (mode 0600, so the key is not
+        world-readable via <code>systemctl show</code>) and restart. The startup log line reports
+        whether the connection loaded.</p>
+    </details>`;
+}
+
+async function populateUsageUserPicker() {
+  const sel = document.getElementById("usageUser");
+  const current = sel.value;
+  const users = await apiJson("/api/admin/users", {}, {}) || {};
+  sel.innerHTML = `<option value="">Everyone</option>` + Object.keys(users).sort()
+    .map(u => `<option value="${escapeHtml(u)}">${escapeHtml(u)}</option>`).join("");
+  sel.value = current;
+}
+
+async function loadUsage() {
+  const days = document.getElementById("usageDays").value;
+  const username = document.getElementById("usageUser").value;
+  const kpis = document.getElementById("usageKpis");
+  setBusy(kpis);
+  const q = `days=${encodeURIComponent(days)}${username ? `&username=${encodeURIComponent(username)}` : ""}`;
+  const r = await apiJson(`/api/admin/usage?${q}`, {}, null);
+  if (!r) { kpis.innerHTML = `<p class="status-line error">Could not load usage.</p>`; return; }
+
+  const t = r.totals || {};
+  // `cost_available` is false when no provider in the window reported a cost,
+  // which is the Azure case -- Azure bills the subscription, not the call. A
+  // confident "$0.00" there would be read as "this is free", so it says so.
+  const costCell = t.cost_available
+    ? `<div class="kpi-value">${fmtMoney(t.cost)}</div><div class="kpi-label">Cost</div>`
+    : `<div class="kpi-value">&mdash;</div><div class="kpi-label">Cost</div>
+       <div class="kpi-note">not reported by this provider</div>`;
+
+  kpis.innerHTML = `
+    <div class="kpi"><div class="kpi-value">${t.turns || 0}</div><div class="kpi-label">Questions</div></div>
+    <div class="kpi"><div class="kpi-value">${fmtCompact(t.total_tokens)}</div><div class="kpi-label">Tokens</div></div>
+    <div class="kpi">${costCell}</div>
+    <div class="kpi"><div class="kpi-value">${r.active_users || 0}</div><div class="kpi-label">Active users</div></div>
+    <div class="kpi"><div class="kpi-value">${t.tool_calls || 0}</div><div class="kpi-label">Tool calls</div></div>
+    <div class="kpi"><div class="kpi-value">${t.avg_seconds_per_turn || 0}s</div><div class="kpi-label">Avg answer time</div></div>
+    ${t.failed_turns ? `<div class="kpi"><div class="kpi-value">${t.failed_turns}</div>
+      <div class="kpi-label">Failed turns</div>
+      <div class="kpi-note">counted because a failed attempt still explains a quiet period</div></div>` : ""}`;
+
+  renderUsageTrend(r);
+  renderUsageTable("usageByUser", r.by_user, "username", t.total_tokens, 8, true);
+  renderUsageTable("usageByOrg", r.by_org, "org_id", t.total_tokens, 5);
+  renderUsageModels(r.by_model);
+}
+
+/** A per-day bar chart, drawn with divs.
+ *
+ *  No charting library: this is the only chart in the app, and pulling in a
+ *  dependency for it would be the biggest thing the page downloads. Days with
+ *  no activity are drawn as a hairline rather than skipped, because a trend
+ *  that silently omits quiet days makes a flat week look busy. */
+function renderUsageTrend(r) {
+  const host = document.getElementById("usageTrend");
+  const days = r.by_day || [];
+  if (!days.length) { host.innerHTML = ""; return; }
+  const peak = Math.max(1, ...days.map(d => d.total_tokens || 0));
+  const bars = days.map(d => {
+    const v = d.total_tokens || 0;
+    const h = v ? Math.max(2, Math.round((v / peak) * 100)) : 0;
+    const title = `${d.date}: ${fmtCompact(v)} tokens, ${d.turns} question(s)`
+      + (d.cost_available ? `, ${fmtMoney(d.cost)}` : "");
+    return `<div class="usage-bar-wrap" title="${escapeHtml(title)}">
+      <div class="usage-bar ${v ? "" : "empty"}" style="height:${h}%"></div></div>`;
+  }).join("");
+  host.innerHTML = `
+    <div class="usage-chart">${bars}</div>
+    <div class="usage-axis"><span>${escapeHtml(r.from)}</span><span>${escapeHtml(r.to)}</span></div>
+    <div class="usage-legend">Tokens per day. Peak day: ${fmtCompact(peak)} tokens. Hover a bar
+      for that day's figures.</div>`;
+}
+
+function renderUsageTable(tbodyId, rows, keyField, grandTotal, colspan, markSelf = false) {
+  const tbody = document.getElementById(tbodyId);
+  fillTable(tbody, rows || [], colspan, "No usage recorded in this period.", row => {
+    const tr = document.createElement("tr");
+    const share = grandTotal ? Math.round((row.total_tokens / grandTotal) * 100) : 0;
+    const isSelf = markSelf && row[keyField] === currentUsername();
+    if (isSelf) tr.className = "usage-row-self";
+    const label = row[keyField] === "(no org)"
+      ? `<span class="muted">no org selected</span>` : escapeHtml(row[keyField]);
+    const cost = row.cost_available ? fmtMoney(row.cost) : `<span class="muted">&mdash;</span>`;
+    const shareCell = `<td><div class="usage-bar-mini" style="width:${Math.max(2, share)}%"
+        title="${share}% of tokens"></div></td>`;
+    if (keyField === "username") {
+      tr.innerHTML = `<td>${label}${isSelf ? " <span class='badge'>you</span>" : ""}</td>
+        <td class="num">${row.turns}</td><td class="num">${fmtCompact(row.total_tokens)}</td>
+        <td class="num">${cost}</td><td class="num">${row.tool_calls}</td>
+        <td class="num">${row.avg_seconds_per_turn}s</td>
+        <td class="num">${row.failed_turns || "-"}</td>${shareCell}`;
+    } else {
+      tr.innerHTML = `<td>${label}</td><td class="num">${row.turns}</td>
+        <td class="num">${fmtCompact(row.total_tokens)}</td><td class="num">${cost}</td>${shareCell}`;
+    }
+    return tr;
+  });
+}
+
+function renderUsageModels(rows) {
+  const tbody = document.getElementById("usageByModel");
+  fillTable(tbody, rows || [], 5, "No usage recorded in this period.", row => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td class="mono">${escapeHtml(row.model)}</td><td class="num">${row.turns}</td>
+      <td class="num">${fmtCompact(row.total_tokens)}</td>
+      <td class="num">${row.cost_available ? fmtMoney(row.cost) : "<span class='muted'>&mdash;</span>"}</td>
+      <td class="num">${row.avg_seconds_per_turn}s</td>`;
+    return tr;
+  });
+}
+
+/** The signed-in username, or null.
+ *
+ *  A function rather than a direct `CURRENT_USER.username` read at each call
+ *  site: `CURRENT_USER` is a top-level `let`, which is a lexical binding and
+ *  therefore invisible to the render tests' sandbox. Reading it through a
+ *  declared function makes the dependency substitutable, and saves every
+ *  caller from repeating the null guard. */
+function currentUsername() {
+  return CURRENT_USER ? CURRENT_USER.username : null;
+}
+
+function fmtCompact(n) {
+  n = n || 0;
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(1)}k`;
+  return String(n);
+}
+
+function fmtMoney(n) {
+  n = n || 0;
+  if (n === 0) return "$0.00";
+  return n < 0.01 ? `$${n.toFixed(4)}` : `$${n.toFixed(2)}`;
 }
 
 // ---------- API tokens ----------

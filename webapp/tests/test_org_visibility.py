@@ -19,6 +19,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _TMP = tempfile.mkdtemp(prefix="ts-vis-test-")
 os.environ["TS_ADMIN_PASSWORD"] = "adminpassword123"
 
+# Neutralise any local webapp/.env before the app package is imported --
+# otherwise a developer's real LLM connection leaks into the test run and
+# results depend on a file that is not in the repository.
+os.environ["TS_SKIP_ENV_FILE"] = "1"
+
 from app import storage  # noqa: E402
 
 storage.DATA_ROOT = _TMP

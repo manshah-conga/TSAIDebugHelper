@@ -86,72 +86,210 @@ function renderMarkdown(text) {
 // 2. key settings
 // =====================================================================
 
+/** The EFFECTIVE state, not a personal key record.
+ *
+ *  This used to describe one thing: "do you have a key, and is it unlocked".
+ *  Since the LLM connection moved to the server, that question no longer
+ *  determines whether chat works -- almost every user has no key of their own
+ *  and can chat perfectly well on the shared connection. The endpoint now
+ *  returns `ready` / `using` / `can_manage` and this code reads those, so a
+ *  working chat can never sit behind a chip that says "Connect an LLM". */
 async function loadKeyState() {
   CHAT.keyState = await apiJson("/api/chat/key", {}, null);
   if (CHAT.keyState && !CHAT.model) CHAT.model = CHAT.keyState.default_model;
   return CHAT.keyState;
 }
 
-/** One dialog listing every action, rather than a chain of modals.
- *
- *  The chained version hid things badly: when a key was locked (which is the
- *  normal state after any server restart) the only thing on offer was a
- *  password box, so there was no route to switching provider at all -- and
- *  "connect a different provider" was buried behind the submit button of a
- *  dialog that read as purely informational. Everything is a visible button
- *  here, and each state says what it means. */
-async function openKeySettings() {
-  const s = (await loadKeyState()) || {};
-  const provName = { openrouter: "OpenRouter", azure: "Azure OpenAI" };
+function llmReady() {
+  return !!(CHAT.keyState && CHAT.keyState.ready);
+}
 
-  let status, statusClass;
-  if (!s.configured && s.cleared_reason === "password_reset_by_admin") {
-    statusClass = "warn";
-    status = "Your saved key was cleared when an admin reset your password. It could not be " +
-             "recovered, because only your password could decrypt it. Add a key again below.";
-  } else if (!s.configured) {
-    statusClass = "";
-    status = "No LLM is connected yet. Pick a provider to get started.";
-  } else if (!s.unlocked) {
-    statusClass = "warn";
-    status = `Your <b>${escapeHtml(provName[s.provider] || s.provider)}</b> key is saved but ` +
-             `<b>locked</b>. This is normal after the server restarts &mdash; the unlock ` +
-             `material is only ever held in memory, never on disk. Enter your password to unlock.`;
+function canManageLlm() {
+  return !!(CHAT.keyState && CHAT.keyState.can_manage);
+}
+
+const PROVIDER_NAME = { openrouter: "OpenRouter", azure: "Azure OpenAI" };
+
+/** What a NON-admin sees. Informational only, with no controls at all.
+ *
+ *  A user has nothing to configure and nothing to fix, so offering them a
+ *  provider button would be offering a door that is locked from the other
+ *  side. What they do need, when chat is not working, is to be told that it
+ *  is a server-side matter and that the person to ask is an admin -- so that
+ *  is the whole dialog. */
+async function openLlmInfo() {
+  const s = (await loadKeyState()) || {};
+  const shared = s.shared || {};
+  const ready = !!s.ready;
+
+  let body;
+  if (ready) {
+    body = `<div class="key-status ok">Chat is connected through this server's shared
+        <b>${escapeHtml(PROVIDER_NAME[s.provider] || s.provider || "LLM")}</b> connection.
+        There is nothing for you to set up.</div>
+      ${s.default_model ? `<p class="muted">Model: <code>${escapeHtml(s.default_model)}</code>${
+        s.model_locked ? " &mdash; fixed by this server's configuration." : ""}</p>` : ""}`;
+  } else if (shared.present_but_invalid) {
+    body = `<div class="key-status warn">This server's LLM connection is configured but not
+        working, so chat is unavailable. An administrator needs to correct it on the server.</div>
+      <p class="muted">Reported problem: ${escapeHtml(shared.config_error || "unknown")}</p>`;
   } else {
-    statusClass = "ok";
-    status = `Connected to <b>${escapeHtml(provName[s.provider] || s.provider)}</b> with key ` +
-             `<code>${escapeHtml(s.hint || "")}</code>.` +
-             (s.endpoint ? `<div class="mono" style="font-size:11px; word-break:break-all; margin-top:4px;">${
-               escapeHtml(s.endpoint)}</div>` : "") +
-             (s.verified_at ? `<div style="margin-top:4px;">Last verified ${
-               escapeHtml(fmtWhen(s.verified_at))}.</div>` : "");
+    body = `<div class="key-status warn">This server has no LLM connection configured yet, so
+        chat is unavailable. Ask an administrator to set one up.</div>
+      <p class="muted">Everything else in the app &mdash; org knowledgebases, incidents, known
+        issues and the log normalizer &mdash; works without it.</p>`;
+  }
+
+  await new Promise(resolve => {
+    const back = chatEl("div", "modal-backdrop");
+    back.innerHTML = `
+      <div class="modal" role="dialog" aria-modal="true" style="width:460px;">
+        <h3>LLM connection</h3>
+        ${body}
+        <p class="muted" style="margin-top:12px;">The LLM connection is managed centrally by
+          administrators, so every signed-in account shares it. Your usage is recorded against
+          your own account.</p>
+        <div class="modal-actions">
+          <button type="button" class="secondary" data-a="usage">My usage</button>
+          <button type="button" class="primary" data-cancel>Close</button>
+        </div>
+      </div>`;
+    const close = () => { document.removeEventListener("keydown", onKey); back.remove(); resolve(); };
+    const onKey = e => { if (e.key === "Escape") close(); };
+    back.querySelector("[data-cancel]").onclick = close;
+    back.querySelector("[data-a='usage']").onclick = () => { close(); showMyUsage(); };
+    back.onclick = e => { if (e.target === back) close(); };
+    document.addEventListener("keydown", onKey);
+    document.body.appendChild(back);
+  });
+}
+
+/** Everyone can see their own consumption. On a shared key, "is it me
+ *  burning the budget?" should not require asking an admin. */
+async function showMyUsage() {
+  const data = await apiJson("/api/usage/me?days=30", {}, null);
+  if (!data) { toast("Could not load your usage.", "error"); return; }
+  const t = data.totals || {};
+  await modal({
+    title: "Your usage (last 30 days)",
+    body: `<table class="mini-table">
+        <tr><td>Questions asked</td><td><b>${t.turns || 0}</b></td></tr>
+        <tr><td>Tokens</td><td><b>${fmtTokens(t.total_tokens)}</b></td></tr>
+        <tr><td>Cost</td><td><b>${t.cost_available ? fmtCost(t.cost)
+          : "<span class='muted'>not reported by this provider</span>"}</b></td></tr>
+        <tr><td>Tool calls</td><td><b>${t.tool_calls || 0}</b></td></tr>
+        <tr><td>Average answer time</td><td><b>${t.avg_seconds_per_turn || 0}s</b></td></tr>
+      </table>`,
+    fields: [], submitLabel: "Close",
+  });
+}
+
+/** The ADMIN dialog. Two clearly separated halves, because they are governed
+ *  differently and conflating them is what made the old single "LLM settings"
+ *  screen misleading:
+ *
+ *   - The SHARED connection is read-only here by design. It comes from the
+ *     server's environment, which means changing it requires server access
+ *     rather than a session -- so this panel reports what is loaded and names
+ *     the variables to edit, instead of pretending to be a form.
+ *   - A PERSONAL key is still fully editable, because it is genuinely this
+ *     admin's own credential, encrypted under their own password.
+ */
+async function openKeySettings() {
+  if (!canManageLlm()) return openLlmInfo();
+
+  const s = (await loadKeyState()) || {};
+  const shared = s.shared || {};
+  const personal = s.personal || {};
+  const env = shared.env_vars || {};
+
+  let sharedStatus, sharedClass;
+  if (shared.configured) {
+    sharedClass = "ok";
+    sharedStatus = `Serving every signed-in user through
+      <b>${escapeHtml(PROVIDER_NAME[shared.provider] || shared.provider)}</b>` +
+      (shared.hint ? ` with key <code>${escapeHtml(shared.hint)}</code>` : "") + `.` +
+      (shared.endpoint ? `<div class="mono" style="font-size:11px; word-break:break-all; margin-top:4px;">${
+        escapeHtml(shared.endpoint)}</div>` : "") +
+      (shared.default_model ? `<div style="margin-top:4px;">Model:
+        <code>${escapeHtml(shared.default_model)}</code>${
+        shared.model_locked ? " (locked for non-admins)" : ""}</div>` : "") +
+      (shared.verified_at ? `<div style="margin-top:4px;">Last successful call
+        ${escapeHtml(fmtWhen(shared.verified_at))}.</div>` : "");
+  } else if (shared.present_but_invalid) {
+    sharedClass = "warn";
+    sharedStatus = `Configured but <b>not usable</b>, so nobody can chat.<div style="margin-top:4px;">${
+      escapeHtml(shared.config_error || "")}</div>`;
+  } else {
+    sharedClass = "warn";
+    sharedStatus = `<b>Not configured.</b> Nobody on this server can chat until it is set.`;
+  }
+
+  let personalStatus;
+  if (!personal.configured && personal.cleared_reason === "password_reset_by_admin") {
+    personalStatus = `Your personal key was cleared when your password was reset &mdash; only
+      that password could decrypt it. Add one again below if you still want it.`;
+  } else if (!personal.configured) {
+    personalStatus = `None. Your chats run on the shared connection above, which is usually
+      what you want.`;
+  } else if (!personal.unlocked) {
+    personalStatus = `Saved but <b>locked</b> (normal after a server restart). Your chats are
+      running on the shared connection meanwhile &mdash; nothing is broken.`;
+  } else {
+    personalStatus = `Active: <b>${escapeHtml(PROVIDER_NAME[personal.provider] || personal.provider)}</b>,
+      key <code>${escapeHtml(personal.hint || "")}</code>. <b>Your</b> turns use this instead of
+      the shared connection; everyone else still uses the shared one.`;
   }
 
   const choice = await new Promise(resolve => {
     const back = chatEl("div", "modal-backdrop");
     back.innerHTML = `
-      <div class="modal" role="dialog" aria-modal="true" style="width:500px;">
-        <h3>LLM settings</h3>
-        <div class="key-status ${statusClass}">${status}</div>
-        ${s.configured && !s.unlocked
+      <div class="modal" role="dialog" aria-modal="true" style="width:560px;">
+        <h3>LLM connection</h3>
+
+        <div class="llm-section-title">Shared server connection <span class="badge">all users</span></div>
+        <div class="key-status ${sharedClass}">${sharedStatus}</div>
+        <details class="raw-json" style="margin-top:8px;">
+          <summary>How to change it</summary>
+          <p class="muted">This connection is read from the server's environment on purpose: a
+            credential that any signed-in session could rewrite is a credential a stolen session
+            could rewrite. Changing it means editing the server's configuration and restarting
+            the service &mdash; deliberate friction, for a rare action.</p>
+          <pre>${escapeHtml(env.provider || "TS_LLM_PROVIDER")}=azure | openrouter
+${escapeHtml(env.api_key || "TS_LLM_API_KEY")}=<the key>
+${escapeHtml(env.endpoint || "TS_LLM_ENDPOINT")}=<Azure chat-completions URL, Azure only>
+${escapeHtml(env.default_model || "TS_LLM_DEFAULT_MODEL")}=<optional, new chats start here>
+${escapeHtml(env.lock_model || "TS_LLM_LOCK_MODEL")}=1   # optional: users cannot change model</pre>
+          <p class="muted">On systemd, put these in the unit's EnvironmentFile (mode 0600) and
+            run <code>systemctl restart ts-debug-helper</code>. The startup log line reports
+            whether the connection loaded.</p>
+        </details>
+
+        <div class="llm-section-title" style="margin-top:18px;">Your personal key
+          <span class="badge">just you, optional</span></div>
+        <div class="key-status">${personalStatus}</div>
+        ${personal.configured && !personal.unlocked
           ? `<button type="button" class="key-action primary-action" data-a="unlock">
                Unlock with your password</button>` : ""}
         <button type="button" class="key-action" data-a="azure">
-          <b>Connect Azure OpenAI</b>
-          <span>Your own deployment and key. Data stays in your Azure tenant.</span>
+          <b>${personal.configured ? "Replace with" : "Use"} an Azure OpenAI key</b>
+          <span>Your own deployment. Only your own turns use it.</span>
         </button>
         <button type="button" class="key-action" data-a="openrouter">
-          <b>Connect OpenRouter</b>
-          <span>One key, a catalogue of models. Free tiers for testing.</span>
+          <b>${personal.configured ? "Replace with" : "Use"} an OpenRouter key</b>
+          <span>Your own account and model catalogue. Only your own turns use it.</span>
         </button>
-        ${s.configured ? `<button type="button" class="key-action danger" data-a="remove">
-          <b>Remove the stored key</b>
-          <span>Chat stops working until you add one. Conversations are kept.</span>
+        ${personal.configured ? `<button type="button" class="key-action danger" data-a="remove">
+          <b>Remove your personal key</b>
+          <span>Your chats fall back to the shared connection. Conversations are kept.</span>
         </button>` : ""}
-        <p class="muted" style="margin-top:12px;">Your key is encrypted with your password before
-          it is stored. Nobody &mdash; including an admin &mdash; can read it back out of the
-          server's files.</p>
-        <div class="modal-actions"><button type="button" class="secondary" data-cancel>Close</button></div>
+        <p class="muted" style="margin-top:12px;">A personal key is encrypted with your own
+          password before it is stored, so no other admin can read it out of the server's files
+          &mdash; and a password reset by someone else destroys it.</p>
+        <div class="modal-actions">
+          <button type="button" class="secondary" data-a="usage">Usage report</button>
+          <button type="button" class="secondary" data-cancel>Close</button>
+        </div>
       </div>`;
     const close = v => { document.removeEventListener("keydown", onKey); back.remove(); resolve(v); };
     const onKey = e => { if (e.key === "Escape") close(null); };
@@ -163,6 +301,7 @@ async function openKeySettings() {
   });
 
   if (!choice) return;
+  if (choice === "usage") { showView("usage"); toggleChatDock(false); return; }
   if (choice === "remove") { await removeKey(); return; }
   if (choice === "unlock") { await unlockKey(); return; }
 
@@ -172,7 +311,7 @@ async function openKeySettings() {
   if (isAzure) {
     fields.push({
       name: "endpoint", label: "Azure chat completions URL (includes the deployment and api-version)",
-      type: "text", value: s.endpoint || "",
+      type: "text", value: personal.endpoint || "",
       placeholder: "https://<resource>.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-08-01-preview",
     });
   }
@@ -185,14 +324,15 @@ async function openKeySettings() {
   fields.push({ name: "password", label: "Your password (encrypts the key)", type: "password" });
 
   const answer = await modal({
-    title: s.configured ? "Replace your API key" : "Connect an LLM",
+    title: personal.configured ? "Replace your personal key" : "Use your own key",
     body: (isAzure
         ? "Paste the <b>full chat completions URL</b> from the Azure portal, not just the " +
           "resource root &mdash; the deployment in its path is what selects the model. "
         : "Paste an OpenRouter API key. ") +
-      "The key is encrypted with your password before it is stored, so it cannot be read from " +
-      "the server's files without you. <b>An admin resetting your password will destroy it</b> " +
-      "&mdash; you would add it again." +
+      "This affects <b>only your own</b> chats; everyone else keeps using the shared server " +
+      "connection. The key is encrypted with your password before it is stored, so it cannot " +
+      "be read from the server's files without you &mdash; and <b>another admin resetting your " +
+      "password will destroy it</b>." +
       (isAzure ? "<br><br>Saving sends a one-token test call, which is the only way to confirm " +
                  "the deployment name and api-version are right." : ""),
     fields,
@@ -212,17 +352,17 @@ async function openKeySettings() {
   CHAT.keyState = await res.json();
   CHAT.model = CHAT.keyState.default_model || CHAT.model;
   CHAT.models = [];
-  toast(isAzure ? `Connected to ${CHAT.model}.` : "Connected. Pick a model to start.", "ok");
+  toast(isAzure ? `Your turns now use ${CHAT.model}.` : "Saved. Your turns now use your own key.", "ok");
   await loadModels(true);
   renderDock();
 }
 
 async function unlockKey() {
   const answer = await modal({
-    title: "Unlock your LLM key",
-    body: "Your key is saved but locked. This happens after the server restarts, because the " +
-          "material that decrypts it is only ever held in memory &mdash; never written to disk. " +
-          "Enter your password to unlock it.",
+    title: "Unlock your personal key",
+    body: "Your own key is saved but locked. This happens after the server restarts, because " +
+          "the material that decrypts it is only ever held in memory &mdash; never written to " +
+          "disk. Your chats have been running on the shared server connection meanwhile.",
     fields: [{ name: "password", label: "Your password", type: "password" }],
     submitLabel: "Unlock",
   });
@@ -235,15 +375,21 @@ async function unlockKey() {
   CHAT.keyState = await res.json();
   CHAT.model = CHAT.keyState.default_model || CHAT.model;
   CHAT.models = [];
-  toast("Chat unlocked.", "ok");
+  toast("Your personal key is unlocked.", "ok");
   renderDock();
 }
 
 async function removeKey() {
-  if (!await confirmModal("Remove your stored API key?",
-      "Chat stops working until you add a key again. Your conversations are kept.", "Remove")) return;
+  if (!await confirmModal("Remove your personal API key?",
+      "Your chats fall back to the shared server connection, so chat keeps working. Your " +
+      "conversations are kept.", "Remove")) return;
   const res = await api("/api/chat/key", { method: "DELETE" });
-  if (res.ok) { CHAT.keyState = await res.json(); toast("Key removed.", "ok"); renderDock(); }
+  if (res.ok) {
+    CHAT.keyState = await res.json();
+    CHAT.models = [];
+    toast("Personal key removed. You are back on the shared connection.", "ok");
+    renderDock();
+  }
 }
 
 // =====================================================================
@@ -318,9 +464,16 @@ function chatOrgChanged() {
 }
 
 async function openModelPicker() {
-  if (!CHAT.keyState || !CHAT.keyState.unlocked) { openKeySettings(); return; }
+  // Readiness, not "do you personally hold an unlocked key" -- the shared
+  // connection has a model catalogue of its own, and a user on it was
+  // previously bounced into a settings dialog they could do nothing with.
+  if (!llmReady()) { openKeySettings(); return; }
+  if (CHAT.keyState && CHAT.keyState.model_locked) {
+    toast("The model is fixed by this server's configuration.", "info");
+    return;
+  }
   await loadModels();
-  if (!CHAT.models.length) { toast("Could not load the model list from OpenRouter.", "error"); return; }
+  if (!CHAT.models.length) { toast("Could not load the model list from the LLM provider.", "error"); return; }
 
   // Agentic score is the number that matters for this workload -- multi-round
   // tool calling over long JSON results. Banding it is more honest than
@@ -608,8 +761,14 @@ async function sendTurn(text, confirmToolIds) {
   const chatId = await ensureChat();
   if (!chatId) return;
 
-  if (!CHAT.keyState || !CHAT.keyState.configured) { openKeySettings(); return; }
-  if (!CHAT.keyState.unlocked) { openKeySettings(); return; }
+  // One readiness gate instead of two key-state checks. For the great
+  // majority of users this passes without their ever having configured
+  // anything -- which is the whole point of the shared server connection.
+  if (!llmReady()) {
+    await loadKeyState();                       // it may have been configured since page load
+    renderDock();
+    if (!llmReady()) { openKeySettings(); return; }
+  }
   if (!CHAT.model) { await loadModels(); if (!CHAT.model) { openModelPicker(); return; } }
 
   if (!confirmToolIds.length) {
@@ -891,15 +1050,38 @@ function renderDock() {
   if (!bar) return;
   const s = CHAT.keyState || {};
 
+  // The LLM chip reports the EFFECTIVE state. It used to read "Connect an
+  // LLM" whenever the signed-in user had no key of their own -- which is now
+  // almost everybody, all of whom can chat fine on the shared connection. A
+  // call to action nobody can act on is worse than no chip at all.
   let keyChip;
-  if (!s.configured) keyChip = `<button type="button" class="chip warn" data-act="key">Connect an LLM</button>`;
-  else if (!s.unlocked) keyChip = `<button type="button" class="chip warn" data-act="key">Locked &mdash; unlock</button>`;
-  else keyChip = `<button type="button" class="chip" data-act="key">${escapeHtml(s.hint || "key")}</button>`;
+  if (!s.ready) {
+    keyChip = `<button type="button" class="chip warn" data-act="key">${
+      s.can_manage ? "LLM not configured" : "chat unavailable"}</button>`;
+  } else if (s.using === "personal") {
+    keyChip = `<button type="button" class="chip" data-act="key">your key</button>`;
+  } else if (s.personal_key_locked) {
+    // Admin only, and informational: chat is working on the shared
+    // connection, their own key is merely waiting to be unlocked.
+    keyChip = `<button type="button" class="chip" data-act="key">shared &middot; unlock yours</button>`;
+  } else if (s.can_manage) {
+    keyChip = `<button type="button" class="chip" data-act="key">shared LLM</button>`;
+  } else {
+    // A plain user gets no LLM chip at all. There is nothing to change, and
+    // the information is still one click away from the header's own controls.
+    keyChip = "";
+  }
+
+  const modelChip = s.model_locked
+    ? `<span class="chip" title="Fixed by this server's configuration">${
+        escapeHtml(CHAT.model || s.default_model || "model")}</span>`
+    : `<button type="button" class="chip" data-act="model">${
+        escapeHtml(CHAT.model || "pick a model")} &#9662;</button>`;
 
   bar.innerHTML = `
     <button type="button" class="chip ${CURRENT_ORG ? "acc" : "warn"}" data-act="org">
       ${CURRENT_ORG ? `org: ${escapeHtml(CURRENT_ORG)}` : "no org"} &#9662;</button>
-    <button type="button" class="chip" data-act="model">${escapeHtml(CHAT.model || "pick a model")} &#9662;</button>
+    ${modelChip}
     ${keyChip}
     ${CHAT.meta && CHAT.meta.share_token ? '<span class="chip acc">shared</span>' : ""}`;
 

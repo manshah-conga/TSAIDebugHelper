@@ -26,8 +26,11 @@ from . import org_access
 from . import secrets_store
 from . import chat_store
 from . import chat as chat_agent
+from . import env_file
 from . import llm
-from .onboarding import run_onboarding, JOBS
+from . import llm_config
+from . import usage as usage_ledger
+from .onboarding import run_onboarding, JOBS, progress_payload, job_in_flight
 from .log_normalizer import parse_log_text
 from .rca import assemble_context, lookup_field_writers
 from .incidents import file_incident
@@ -41,6 +44,13 @@ async def lifespan(app: FastAPI):
     MCP Streamable HTTP session manager open for the life of the process --
     POST /mcp returns a 500 if that manager was never started."""
     auth.bootstrap_admin()
+    # Say plainly at boot which config file was used and whether chat will
+    # work. An operator who mistyped a variable -- or who created the file
+    # somewhere the app does not look -- finds out here, at startup, rather
+    # than from a user reporting broken chat an hour later.
+    for line in env_file.startup_report():
+        print(line, flush=True)
+    print(llm_config.startup_report(), flush=True)
     async with mcp_lifespan(app):
         yield
 
@@ -238,6 +248,9 @@ def admin_delete_user(username: str, request: Request):
         raise HTTPException(400, str(e))
     secrets_store.forget_user(username)
     chat_store.forget_user(username)
+    # Otherwise a deleted account's name lives on in the admin usage report
+    # forever, which is both untidy and a small privacy problem.
+    usage_ledger.forget_user(username)
     return {"ok": True}
 
 
@@ -297,6 +310,19 @@ class VisibilityRequest(BaseModel):
 @app.post("/api/orgs", dependencies=Dep_user)
 def create_org(req: NewOrgRequest, background_tasks: BackgroundTasks,
                ident=Depends(auth.require_user)):
+    # Refuse a second fetch of the same org while one is already running.
+    # Two concurrent onboardings write the same knowledgebase files and the
+    # same content-hash manifest, so each one's changed/added/removed report
+    # is computed against a baseline the other already moved -- the result is
+    # not corrupt, but it is confidently wrong, which is worse. This is the
+    # one multi-user case locking cannot make safe, so it is refused instead.
+    if job_in_flight(req.org_id):
+        job = JOBS.get(req.org_id, {})
+        raise HTTPException(
+            409, f"A fetch of '{req.org_id}' is already running "
+                 f"({job.get('step_label') or job.get('status')}). Wait for it to finish "
+                 f"-- it may have been started by someone else.")
+
     registry = storage.load_registry()
     existing_entry = registry.get(req.org_id)
 
@@ -335,6 +361,12 @@ def list_orgs(ident=Depends(auth.require_reader)):
 
 @app.get("/api/orgs/{org_id}/status", dependencies=Dep_reader)
 def org_status(org_id: str, ident=Depends(auth.require_reader)):
+    """Live progress for an in-flight fetch.
+
+    The payload carries a percentage, the current phase's human label, the
+    full phase list, per-phase counts and elapsed seconds -- everything the
+    progress bar needs. A large org takes minutes, and a single status word
+    was indistinguishable from a hang for most of that time."""
     job = JOBS.get(org_id)
     registry = storage.load_registry()
     if org_id in registry:
@@ -344,9 +376,7 @@ def org_status(org_id: str, ident=Depends(auth.require_reader)):
         # whoever queued the job.
         if ident["role"] != "admin" and job.get("owner") != ident["username"]:
             raise HTTPException(404, f"No org '{org_id}' (or you do not have access to it).")
-    if not job:
-        return {"status": "unknown", "detail": "", "warnings": []}
-    return {k: v for k, v in job.items() if k != "owner"}
+    return progress_payload(job)
 
 
 @app.get("/api/orgs/{org_id}/visibility", dependencies=Dep_reader)
@@ -383,6 +413,12 @@ def refresh_org(org_id: str, req: RefreshRequest, background_tasks: BackgroundTa
     instance URL, owner and visibility all come from the registry, and each
     component's content hash decides what actually counts as changed. Owner or
     admin only, same as any other management action on an org."""
+    if job_in_flight(org_id):
+        job = JOBS.get(org_id, {})
+        raise HTTPException(
+            409, f"A fetch of '{org_id}' is already running "
+                 f"({job.get('step_label') or job.get('status')}). Wait for it to finish "
+                 f"-- it may have been started by someone else.")
     entry = org_access.assert_can_manage(org_id, ident)
     instance_url = (req.instance_url or entry.get("instance_url") or "").strip()
     if not instance_url:
@@ -515,15 +551,28 @@ async def create_incident(
             if w["component"] in kb["org_index"]:
                 context_pack["primary_components"][w["component"]] = kb["org_index"][w["component"]]
 
-    known = storage.load_known_issues(org_id)
     now = iso_now()
     timestamp_slug = now.replace(":", "").replace("-", "")
     default_label = (os.path.splitext(log_filename)[0] if log_filename else field) or "incident"
     incident_id = f"{timestamp_slug}_{label or default_label}"
 
-    signature, recurrence, prior, sig_source = file_incident(known, incident_id, normalized, field)
-    if signature:
-        storage.save_known_issues(org_id, known)
+    # Signature matching and the recurrence bump have to happen inside one
+    # lock. Two engineers filing against the same org read the same index,
+    # each bumped its counter, and the second write discarded the first --
+    # losing exactly the recurrence history this feature exists to build.
+    outcome = {}
+
+    def _file(known):
+        signature, recurrence, prior, sig_source = file_incident(
+            known, incident_id, normalized, field)
+        outcome.update({"signature": signature, "recurrence": recurrence,
+                        "prior": prior, "sig_source": sig_source})
+
+    storage.mutate_known_issues(org_id, _file)
+    signature = outcome["signature"]
+    recurrence = outcome["recurrence"]
+    prior = outcome["prior"]
+    sig_source = outcome["sig_source"]
 
     meta = {
         "incident_id": incident_id, "org_id": org_id, "timestamp": now,
@@ -558,13 +607,22 @@ class ResolveRequest(BaseModel):
 
 @app.post("/api/orgs/{org_id}/resolve", dependencies=Dep_org_write)
 def resolve_incident(org_id: str, req: ResolveRequest):
-    known = storage.load_known_issues(org_id)
-    if req.signature not in known:
+    missing = [False]
+    result = {}
+
+    def _resolve(known):
+        entry = known.get(req.signature)
+        if entry is None:
+            missing[0] = True
+            return
+        entry["resolution"] = req.resolution
+        entry["resolution_recorded_at"] = iso_now()
+        result.update(entry)
+
+    storage.mutate_known_issues(org_id, _resolve)
+    if missing[0]:
         raise HTTPException(404, f"No known issue with signature '{req.signature}' for org '{org_id}'.")
-    known[req.signature]["resolution"] = req.resolution
-    known[req.signature]["resolution_recorded_at"] = iso_now()
-    storage.save_known_issues(org_id, known)
-    return known[req.signature]
+    return result
 
 
 @app.get("/api/orgs/{org_id}/known-issues", dependencies=Dep_org_view)
@@ -645,13 +703,27 @@ def download_log(log_id: str):
     )
 
 
-# ---------- LLM key management ----------
+# ---------- LLM connection ----------
 #
-# The key is encrypted at rest under a key derived from the user's own
-# password (see app/secrets_store.py). That buys real resistance to a stolen
-# copy of data/, and costs two things the UI has to be honest about: a server
-# restart locks chat until the user re-enters their password, and an ADMIN
-# password reset destroys the stored key for good.
+# Two layers, and the split is the whole point of this section.
+#
+# 1. The SHARED connection (app/llm_config.py) comes from the server's
+#    environment and serves every signed-in user. Nothing to paste, nothing
+#    to unlock, works immediately after a restart. It cannot be changed
+#    through the API by anyone -- changing it means editing the server's
+#    config and restarting, which is a privilege no session can be tricked
+#    into exercising.
+#
+# 2. A PERSONAL key (app/secrets_store.py) is an ADMIN-ONLY override,
+#    encrypted at rest under that admin's own password. Every route that
+#    creates, unlocks or removes one now requires the `admin` role, which is
+#    what "only admins can change the LLM connection" means in practice: an
+#    ordinary user has no endpoint to call and no control to click.
+#
+# GET /api/chat/key stays open to any signed-in account, because a user
+# whose chat is not working has to be able to find out why. It returns the
+# effective state -- which connection is in use and whether chat is ready --
+# and never any key material.
 
 class StoreKeyRequest(BaseModel):
     api_key: str
@@ -673,12 +745,37 @@ class DefaultModelRequest(BaseModel):
 
 @app.get("/api/chat/key", dependencies=Dep_reader)
 def get_key_state(ident=Depends(auth.require_reader)):
-    return secrets_store.public_state(ident["username"], ident.get("token_id"))
+    """Which connection this session will use, and whether chat is ready.
+
+    Open to every role on purpose. The shape is `effective_state`, not the
+    raw personal-key record: a user with no personal key -- which is now
+    almost everyone -- can chat perfectly well on the shared connection, and
+    a screen reading "not configured" beside a working chat box is worse than
+    no screen at all."""
+    return secrets_store.effective_state(ident)
 
 
-@app.post("/api/chat/key", dependencies=Dep_reader)
-async def store_key(req: StoreKeyRequest, ident=Depends(auth.require_reader)):
-    """Verify the key actually works, then wrap and store it.
+@app.get("/api/llm", dependencies=Dep_reader)
+def llm_connection(ident=Depends(auth.require_reader)):
+    """The shared server connection on its own.
+
+    Admins get the operational detail -- masked key hint, the Azure endpoint,
+    and the names of the environment variables to edit -- because they are
+    the people who will be asked to fix it. Everyone else gets provider,
+    model and readiness, which is enough to understand their own situation
+    and nothing that names internal infrastructure."""
+    return llm_config.admin_state() if ident["role"] == "admin" else llm_config.public_state()
+
+
+@app.post("/api/chat/key", dependencies=Dep_admin)
+async def store_key(req: StoreKeyRequest, ident=Depends(auth.require_admin)):
+    """Store a PERSONAL key for this admin. Admin-only -- see the section
+    comment above.
+
+    This is an override, not the way chat is provisioned. Ordinary users are
+    served by the shared server connection and never reach this route; an
+    admin uses it when they want their own turns billed to their own provider
+    account.
 
     The password is re-asked here rather than reused from the session on
     purpose: it is the encryption material, and requiring it confirms the
@@ -722,39 +819,61 @@ async def store_key(req: StoreKeyRequest, ident=Depends(auth.require_reader)):
     if provider == llm.PROVIDER_AZURE:
         secrets_store.set_default_model(ident["username"], llm.azure_deployment(endpoint))
     secrets_store.mark_verified(ident["username"])
-    return secrets_store.public_state(ident["username"], ident.get("token_id"))
+    return secrets_store.effective_state(ident)
 
 
-@app.delete("/api/chat/key", dependencies=Dep_reader)
-def delete_key(ident=Depends(auth.require_reader)):
+@app.delete("/api/chat/key", dependencies=Dep_admin)
+def delete_key(ident=Depends(auth.require_admin)):
+    """Drop this admin's personal key. Chat does not stop -- their sessions
+    fall back to the shared server connection, which is the point of having
+    it."""
     secrets_store.remove_key(ident["username"], ident.get("token_id"))
-    return secrets_store.public_state(ident["username"], ident.get("token_id"))
+    return secrets_store.effective_state(ident)
 
 
-@app.post("/api/chat/unlock", dependencies=Dep_reader)
-def unlock_key(req: UnlockRequest, ident=Depends(auth.require_reader)):
-    """Post-restart path. The wrapped key survived; the in-memory copy did
-    not, so the password re-derives it."""
+@app.post("/api/chat/unlock", dependencies=Dep_admin)
+def unlock_key(req: UnlockRequest, ident=Depends(auth.require_admin)):
+    """Post-restart path for an admin's personal key. The wrapped key
+    survived; the in-memory copy did not, so the password re-derives it.
+
+    This is no longer on anyone's critical path. Before the shared
+    connection existed, every user hit this after every restart or chat was
+    dead; now a locked personal key just means the admin's turns run on the
+    shared connection until they unlock it."""
     try:
         secrets_store.unlock(ident["username"], req.password, ident.get("token_id"))
     except secrets_store.KeyMissing as e:
         raise HTTPException(404, str(e))
     except secrets_store.BadPassword as e:
         raise HTTPException(403, str(e))
-    return secrets_store.public_state(ident["username"], ident.get("token_id"))
+    return secrets_store.effective_state(ident)
 
 
 @app.post("/api/chat/default-model", dependencies=Dep_reader)
 def set_default_model(req: DefaultModelRequest, ident=Depends(auth.require_reader)):
+    """Remembering which model to start new chats on.
+
+    Choosing a model is not changing the connection, so it stays open to
+    every role -- unless the operator set TS_LLM_LOCK_MODEL, which is there
+    for a deployment that wants one approved model and no experimentation."""
+    state = secrets_store.effective_state(ident)
+    if state["model_locked"]:
+        raise HTTPException(
+            403, "The model is fixed by this server's configuration. Ask an administrator "
+                 "if you need a different one.")
     secrets_store.set_default_model(ident["username"], req.model)
-    return secrets_store.public_state(ident["username"], ident.get("token_id"))
+    return secrets_store.effective_state(ident)
 
 
 @app.get("/api/chat/models", dependencies=Dep_reader)
 async def get_models(ident=Depends(auth.require_reader), refresh: bool = False):
     """The model picker's source. Filtered to tool-capable models only --
     most free models on OpenRouter cannot call tools, and a chat using one
-    silently never touches the org knowledgebase, it just improvises."""
+    silently never touches the org knowledgebase, it just improvises.
+
+    Note that this now works for an ordinary user with no key of their own:
+    `require_creds` resolves to the shared server connection, and the
+    catalogue it returns is the shared connection's catalogue."""
     try:
         creds = secrets_store.require_creds(ident)
     except secrets_store.KeyLocked as e:
@@ -765,11 +884,40 @@ async def get_models(ident=Depends(auth.require_reader), refresh: bool = False):
         models = await llm.list_models_for(creds, force=refresh)
     except llm.LLMError as e:
         raise HTTPException(502, str(e))
-    note = ("This is your Azure deployment. Point the endpoint at a different deployment "
-            "in LLM settings to change model."
-            if creds["provider"] == llm.PROVIDER_AZURE
-            else "Only models that support tool calling are listed, best agentic score first.")
-    return {"models": models, "note": note, "provider": creds["provider"]}
+    if creds["provider"] == llm.PROVIDER_AZURE:
+        note = ("This is the server's Azure deployment. The deployment decides the model, "
+                "so changing it means changing the server's configuration.")
+    else:
+        note = "Only models that support tool calling are listed, best agentic score first."
+    return {"models": models, "note": note, "provider": creds["provider"],
+            "source": creds.get("source"), "locked": secrets_store.effective_state(ident)["model_locked"]}
+
+
+# ---------- usage ----------
+#
+# One shared key means the provider's own dashboard can no longer say WHO
+# spent what -- every call arrives from the same credential. Attribution
+# happens in app/usage.py, at the point of use, and these two routes are how
+# it is read back.
+
+
+@app.get("/api/admin/usage", dependencies=Dep_admin)
+def admin_usage(days: int = usage_ledger.DEFAULT_DAYS, username: Optional[str] = None):
+    """The whole usage picture for a window: totals, per user, per day, per
+    org, per model. Optionally narrowed to one account for a drilldown.
+
+    Returned as one payload rather than four endpoints because the screen
+    shows all of it at once -- and four requests over the same day files
+    could straddle a midnight rollover and disagree with each other."""
+    return usage_ledger.report(days=days, username=username)
+
+
+@app.get("/api/usage/me", dependencies=Dep_reader)
+def my_usage(days: int = usage_ledger.DEFAULT_DAYS, ident=Depends(auth.require_reader)):
+    """Your own consumption. Not admin-gated: on a shared key, "is it me
+    burning the budget?" is a fair question to be able to answer without
+    asking an admin to look it up."""
+    return usage_ledger.my_summary(ident["username"], days=days)
 
 
 # ---------- chat ----------
@@ -796,12 +944,53 @@ def list_chats(ident=Depends(auth.require_reader)):
     return chat_store.list_chats(ident["username"])
 
 
+def _resolve_model(ident, requested, stored, required=True):
+    """Which model this turn actually runs on.
+
+    Two bugs live here if it is done inline, and both did.
+
+    First, the fallback must come from `effective_state`, not from the
+    caller's personal key record. A user with no personal key -- now the
+    normal case -- has no `default_model` of their own, so reading the
+    personal record meant the server's own TS_LLM_DEFAULT_MODEL never reached
+    a turn and the request failed with "Pick a model first". The browser
+    masked it by always sending a model explicitly; an API or MCP client got
+    a flat 400.
+
+    Second, TS_LLM_LOCK_MODEL has to be enforced *here*. Refusing the
+    "remember my model" route alone is theatre: a client that puts `model` in
+    the turn body, or in the body of `POST /api/chats`, bypasses the pin
+    entirely and spends the shared key on whatever it likes. When the model
+    is locked the request's own value is ignored outright rather than
+    rejected, so an older client that keeps sending one still works -- it
+    just does not get to choose.
+
+    `required=False` for creating a conversation: the UI's flow is to open a
+    chat and then pick a model, so a null there is legitimate. A turn, by
+    contrast, cannot run without one.
+    """
+    state = secrets_store.effective_state(ident)
+    if state["model_locked"]:
+        if not state["default_model"]:
+            raise HTTPException(
+                500, "This server pins the model (TS_LLM_LOCK_MODEL) but has not said which "
+                     "one (TS_LLM_DEFAULT_MODEL is unset). An administrator needs to set it.")
+        return state["default_model"]
+    model = requested or stored or state["default_model"]
+    if not model and required:
+        raise HTTPException(400, "Pick a model first.")
+    return model
+
+
 @app.post("/api/chats", dependencies=Dep_user)
 def create_chat(req: NewChatRequest, ident=Depends(auth.require_user)):
     if req.org_id:
         org_access.assert_can_view(req.org_id, ident)
+    # Resolved rather than taken verbatim, so a pinned model cannot be
+    # sidestepped by naming a different one at creation time.
     return chat_store.create_chat(ident["username"], org_id=req.org_id,
-                                  title=req.title, model=req.model)
+                                  title=req.title,
+                                  model=_resolve_model(ident, req.model, None, required=False))
 
 
 @app.get("/api/chats/{chat_id}", dependencies=Dep_reader)
@@ -841,10 +1030,7 @@ async def send_message(chat_id: str, req: SendMessageRequest, request: Request,
         entry = org_access.assert_can_view(org_id, ident)
         org_label = entry.get("name")
 
-    model = req.model or meta.get("model") \
-        or secrets_store.public_state(ident["username"], ident.get("token_id")).get("default_model")
-    if not model:
-        raise HTTPException(400, "Pick a model first.")
+    model = _resolve_model(ident, req.model, meta.get("model"))
 
     # The MCP tools loop back into this app's HTTP API and need a real Bearer
     # token to do it. The caller's own session token is exactly right: same

@@ -23,6 +23,11 @@ for var in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY
     os.environ.pop(var, None)
 os.environ["NO_PROXY"] = os.environ["no_proxy"] = "127.0.0.1,localhost"
 
+# Neutralise any local webapp/.env before the app package is imported --
+# otherwise a developer's real LLM connection leaks into the test run and
+# results depend on a file that is not in the repository.
+os.environ["TS_SKIP_ENV_FILE"] = "1"
+
 from app import storage  # noqa: E402
 
 storage.DATA_ROOT = _TMP

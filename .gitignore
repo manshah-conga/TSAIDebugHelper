@@ -26,6 +26,21 @@
 /scripts/**/knowledge_base/
 /scripts/**/incidents/
 
+# ---------------------------------------------------------------------------
+# SECRETS. The LLM connection is configured by environment variables, and the
+# usual way to supply them is a file -- which means a live API key sits on
+# disk next to the code. A bare `.env` rule is NOT enough: it matches only a
+# file called exactly that, so `webapp/etc/ts-debug-helper.env` sailed
+# straight past it and would have been committed.
+#
+# Match the extension anywhere, plus the local-config directory by name.
+# ---------------------------------------------------------------------------
+*.env
+.env
+.env.*
+!*.env.example
+/webapp/etc/
+
 # Python / editor / OS noise
 __pycache__/
 *.pyc
@@ -33,7 +48,6 @@ __pycache__/
 *.tmp
 .venv/
 venv/
-.env
 .DS_Store
 Thumbs.db
 node_modules/

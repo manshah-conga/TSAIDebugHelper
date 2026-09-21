@@ -24,6 +24,11 @@ sys.path.insert(0, WEBAPP)
 # that computes paths at import time.
 _TMP = tempfile.mkdtemp(prefix="ts-chat-test-")
 
+# Neutralise any local webapp/.env before the app package is imported --
+# otherwise a developer's real LLM connection leaks into the test run and
+# results depend on a file that is not in the repository.
+os.environ["TS_SKIP_ENV_FILE"] = "1"
+
 from app import storage  # noqa: E402
 
 storage.DATA_ROOT = _TMP
@@ -34,7 +39,7 @@ storage.AUTH_ROOT = os.path.join(_TMP, "auth")
 storage.USERS_PATH = os.path.join(storage.AUTH_ROOT, "users.json")
 storage.TOKENS_PATH = os.path.join(storage.AUTH_ROOT, "tokens.json")
 
-from app import secrets_store, chat_store, chat  # noqa: E402
+from app import secrets_store, chat_store, chat, llm_config, usage  # noqa: E402
 
 secrets_store.LLM_KEYS_PATH = os.path.join(storage.AUTH_ROOT, "llm_keys.json")
 chat_store.CHATS_ROOT = os.path.join(_TMP, "chats")
@@ -49,6 +54,17 @@ PW = "correct horse battery"
 KEY = "sk-or-v1-abcdef0123456789abcdef0123456789abcdef0123456789abcdef019f2a"
 
 FAILURES = []
+
+# State handed from one check to the next (the chat id these tests build on,
+# then the share token minted from it).
+#
+# A dict rather than function arguments, because pytest reads a test
+# function's parameters as FIXTURE NAMES -- `def test_share_redaction(cid)`
+# made pytest look for a fixture called `cid`, fail to find one, and error
+# out three of these tests. They passed when the file was run directly, which
+# is how that went unnoticed. pytest preserves definition order within a
+# module, so the sequence still holds either way.
+STATE = {}
 
 
 def check(name, condition, detail=""):
@@ -161,25 +177,466 @@ def test_admin_reset_destroys_key():
 
 
 def test_require_key_errors():
-    print("\nkey storage: require_key raises the right kind of failure")
-    ident = {"username": USER, "token_id": "tok1"}
-    check("returns the key when unlocked", secrets_store.require_key(ident) == KEY)
+    """Credential resolution, with no shared connection in the environment.
+
+    The personal key is now an admin-only override, so the identity has to
+    carry `role: admin` for it to be reachable -- a demoted admin falls back
+    to the shared connection like everyone else, and with no shared
+    connection configured there is nothing to fall back to.
+    """
+    print("\nkey storage: require_key resolves and fails in the right order")
+    _clear_shared_env()
+    admin = {"username": USER, "token_id": "tok1", "role": "admin"}
+    check("returns the admin's own key when unlocked", secrets_store.require_key(admin) == KEY)
+
+    plain = {"username": USER, "token_id": "tok1", "role": "user"}
+    try:
+        secrets_store.require_key(plain)
+        check("a non-admin cannot use a personal key", False)
+    except secrets_store.KeyMissing:
+        check("a non-admin cannot use a personal key", True)
 
     secrets_store._KEYRING.clear()
     try:
-        secrets_store.require_key(ident)
-        check("raises KeyLocked when locked", False)
-    except secrets_store.KeyLocked:
-        check("raises KeyLocked when locked", True)
-    except secrets_store.KeyMissing:
-        check("raises KeyLocked when locked", False, "raised KeyMissing instead")
+        secrets_store.require_key(admin)
+        check("a locked personal key with no shared connection raises", False)
+    except (secrets_store.KeyLocked, secrets_store.KeyMissing):
+        check("a locked personal key with no shared connection raises", True)
 
     try:
-        secrets_store.require_key({"username": "nobody", "token_id": "tokX"})
+        secrets_store.require_key({"username": "nobody", "token_id": "tokX", "role": "admin"})
         check("raises KeyMissing when absent", False)
     except secrets_store.KeyMissing:
         check("raises KeyMissing when absent", True)
     secrets_store.unlock(USER, PW, "tok1")
+
+
+def _clear_shared_env():
+    for var in (llm_config.ENV_PROVIDER, llm_config.ENV_API_KEY, llm_config.ENV_ENDPOINT,
+                llm_config.ENV_DEFAULT_MODEL, llm_config.ENV_LOCK_MODEL):
+        os.environ.pop(var, None)
+
+
+def _set_shared_env(provider="openrouter", api_key="sk-or-v1-shared000000000000000000000000",
+                    endpoint=None, default_model=None, lock=None):
+    _clear_shared_env()
+    os.environ[llm_config.ENV_PROVIDER] = provider
+    os.environ[llm_config.ENV_API_KEY] = api_key
+    if endpoint:
+        os.environ[llm_config.ENV_ENDPOINT] = endpoint
+    if default_model:
+        os.environ[llm_config.ENV_DEFAULT_MODEL] = default_model
+    if lock:
+        os.environ[llm_config.ENV_LOCK_MODEL] = lock
+
+
+SHARED_KEY = "sk-or-v1-shared000000000000000000000000"
+
+
+def test_shared_connection_serves_everyone():
+    """The headline behaviour: one server-side connection, and every user can
+    chat on it with nothing of their own to configure."""
+    print("\nshared connection: one env-configured key serves every user")
+    _set_shared_env(default_model="anthropic/claude-sonnet-4.5")
+    secrets_store._KEYRING.clear()
+
+    for role in ("reader", "user", "admin"):
+        ident = {"username": f"person_{role}", "token_id": f"t_{role}", "role": role}
+        creds = secrets_store.require_creds(ident)
+        check(f"{role} resolves to the shared key", creds["api_key"] == SHARED_KEY)
+        check(f"{role} is tagged as using the shared source", creds["source"] == "shared")
+        state = secrets_store.effective_state(ident)
+        check(f"{role} chat is ready with no key of their own", state["ready"] is True)
+        check(f"{role} is told it is the shared connection", state["using"] == "shared")
+
+    check("default model comes from the environment",
+          secrets_store.effective_state({"username": "x", "token_id": "t", "role": "user"})
+          ["default_model"] == "anthropic/claude-sonnet-4.5")
+
+
+def test_admin_personal_key_overrides_shared():
+    print("\nshared connection: an admin's own unlocked key takes precedence")
+    _set_shared_env()
+    secrets_store.store_key(USER, PW, KEY, token_id="tokA")
+    admin = {"username": USER, "token_id": "tokA", "role": "admin"}
+    creds = secrets_store.require_creds(admin)
+    check("admin's own key wins", creds["api_key"] == KEY)
+    check("tagged as personal", creds["source"] == "personal")
+    check("effective state agrees", secrets_store.effective_state(admin)["using"] == "personal")
+
+    # Locked, not absent: chat must keep working on the shared connection
+    # rather than dying, which is the whole reason the fallback exists.
+    secrets_store.evict("tokA")
+    creds = secrets_store.require_creds(admin)
+    check("a locked personal key falls back to shared", creds["source"] == "shared")
+    state = secrets_store.effective_state(admin)
+    check("chat still reported ready", state["ready"] is True)
+    check("but the admin is told their own key is locked",
+          state["personal_key_locked"] is True)
+
+    # A demoted admin loses the override immediately, without re-authenticating.
+    secrets_store.unlock(USER, PW, "tokA")
+    demoted = {"username": USER, "token_id": "tokA", "role": "user"}
+    check("a demoted admin falls back to shared",
+          secrets_store.require_creds(demoted)["source"] == "shared")
+    check("and is shown no personal-key panel",
+          secrets_store.effective_state(demoted)["personal"] is None)
+
+
+def test_env_file_loading():
+    """The env-file loader (app/env_file.py).
+
+    This exists because the documented way to configure the shared LLM
+    connection was systemd's `EnvironmentFile=` -- a systemd directive that
+    nothing in this app read. On Windows, creating the file had no effect at
+    all, silently: the app reported "no shared LLM connection configured"
+    while a correct-looking file sat on disk.
+    """
+    print("\nenv file: parsing")
+    from app import env_file
+
+    def one(line):
+        k, v, _n = env_file.parse(line)[0]
+        return v
+
+    # The Azure endpoint carries its own '=' in ?api-version=. A naive split
+    # truncates it, and the resulting URL fails validation for a reason that
+    # points nowhere near the real cause.
+    azure = ("https://r.openai.azure.com/openai/deployments/gpt-4o"
+             "/chat/completions?api-version=2024-08-01-preview")
+    check("an Azure endpoint's own '=' survives",
+          one(f"TS_LLM_ENDPOINT={azure}") == azure, one(f"TS_LLM_ENDPOINT={azure}"))
+    check("a spaced trailing comment is stripped", one("TS_LLM_LOCK_MODEL=1   # optional") == "1")
+    check("a '#' inside a value is kept", one("TS_ADMIN_PASSWORD=pa#ss") == "pa#ss")
+    check("double quotes are stripped", one('TS_LLM_PROVIDER="azure"') == "azure")
+    check("single quotes are stripped", one("TS_LLM_PROVIDER='azure'") == "azure")
+    check("a shell 'export ' prefix is tolerated", one("export TS_LLM_PROVIDER=azure") == "azure")
+    check("space around the '=' is trimmed", one("  TS_LLM_PROVIDER = azure  ") == "azure")
+    check("an empty value is allowed", one("TS_LLM_DEFAULT_MODEL=") == "")
+    check("comments, blanks and junk lines are skipped",
+          env_file.parse("# c\n\n   \nnojunkhere\n") == [])
+
+    print("\nenv file: loading, precedence and diagnostics")
+    path = os.path.join(_TMP, "probe.env")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("TS_LLM_PROVIDER=openrouter\n"
+                "TS_LLM_API_KEY=sk-or-v1-fromthefile00000000000000\n"
+                "TS_LLM_LOCK_MODEL=1\n"
+                "TS_LLM_APIKEY=typo\n"              # a misspelling must be reported
+                "TS_LLM_PROVIDER=duplicate\n")
+
+    saved = {k: os.environ.get(k) for k in
+             ("TS_ENV_FILE", "TS_SKIP_ENV_FILE", "TS_LLM_PROVIDER", "TS_LLM_API_KEY",
+              "TS_LLM_LOCK_MODEL", "TS_LLM_APIKEY")}
+    try:
+        os.environ.pop("TS_SKIP_ENV_FILE", None)
+        os.environ["TS_ENV_FILE"] = path
+        for k in ("TS_LLM_PROVIDER", "TS_LLM_API_KEY", "TS_LLM_APIKEY"):
+            os.environ.pop(k, None)
+        # Pre-set, exactly as systemd or an explicit shell override would be.
+        os.environ["TS_LLM_LOCK_MODEL"] = "0"
+
+        applied = env_file.load(verbose=False)
+        check("values absent from the environment are filled in",
+              applied.get("TS_LLM_PROVIDER") == "openrouter")
+        check("the file is reported so the operator can see WHICH one was used",
+              env_file.LOADED_FROM == path)
+        check("a pre-set environment variable is NOT overwritten",
+              os.environ["TS_LLM_LOCK_MODEL"] == "0", os.environ["TS_LLM_LOCK_MODEL"])
+        check("and that override is reported, not silent",
+              any("already set" in n and "TS_LLM_LOCK_MODEL" in n for n in env_file._REPORT))
+
+        # A typo is the failure mode this has to catch. Without it the app just
+        # says "not configured" and the operator stares at a correct-looking file.
+        check("an unrecognised key is flagged as a probable typo",
+              any("TS_LLM_APIKEY" in n and "spelling" in n for n in env_file._REPORT),
+              str(env_file._REPORT))
+        check("a duplicated key is flagged", any("more than once" in n for n in env_file._REPORT))
+        check("the first of a duplicated pair wins",
+              os.environ["TS_LLM_PROVIDER"] == "openrouter")
+
+        # The whole point: the connection becomes usable purely from the file.
+        check("the shared connection is configured from the file alone",
+              llm_config.configured() is True)
+
+        # Opt-out, so a developer's real key cannot leak into a test run.
+        os.environ["TS_SKIP_ENV_FILE"] = "1"
+        env_file.load(verbose=False)
+        check("TS_SKIP_ENV_FILE disables the file entirely",
+              env_file.LOADED_FROM is None)
+        check("and says so rather than looking like a missing file",
+              any("TS_SKIP_ENV_FILE" in n for n in env_file._REPORT))
+
+        # A named-but-missing file must NOT fall back to a different one. The
+        # app coming up on settings the operator did not choose, and cannot
+        # see, is worse than it coming up unconfigured.
+        os.environ.pop("TS_SKIP_ENV_FILE", None)
+        missing = os.path.join(_TMP, "does-not-exist.env")
+        os.environ["TS_ENV_FILE"] = missing
+        env_file.load(verbose=False)
+        check("an explicitly named missing file loads nothing",
+              env_file.LOADED_FROM is None, str(env_file.LOADED_FROM))
+        check("and does not silently fall back to another file",
+              not any(p.endswith(".env") and p != missing
+                      for p in [env_file.LOADED_FROM or ""]))
+        check("naming the path that was missing",
+              any(missing in n for n in env_file._REPORT), str(env_file._REPORT))
+
+        # No file anywhere is normal, not an error -- it is the systemd case,
+        # where the variables are already exported.
+        os.environ.pop("TS_ENV_FILE", None)
+        report = " ".join(env_file.startup_report())
+        check("with no file at all, the report lists every path searched",
+              "Looked for" in report or "Loaded configuration" in report, report[:200])
+
+        check("no secret value is ever printed in the report",
+              "sk-or-v1-fromthefile00000000000000" not in " ".join(env_file.startup_report()))
+        desc = env_file.describe_loaded()
+        check("diagnostics report a secret as present, never its value",
+              desc["settings"].get("TS_LLM_API_KEY") in (None, "(set)"),
+              str(desc["settings"].get("TS_LLM_API_KEY")))
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        os.environ["TS_SKIP_ENV_FILE"] = "1"
+        env_file.load(verbose=False)
+
+
+def test_shared_connection_validation():
+    print("\nshared connection: bad configuration is reported, not swallowed")
+    _clear_shared_env()
+    check("unset means not configured", llm_config.configured() is False)
+    check("and chat is not ready",
+          secrets_store.effective_state({"username": "x", "token_id": "t",
+                                         "role": "user"})["ready"] is False)
+
+    os.environ[llm_config.ENV_API_KEY] = "some-key"
+    os.environ[llm_config.ENV_PROVIDER] = "not-a-provider"
+    check("an unknown provider is rejected", llm_config.configured() is False)
+    state = llm_config.public_state()
+    check("and says so specifically", "not recognised" in (state["config_error"] or ""))
+    check("distinguishing 'present but wrong' from 'absent'",
+          state["present_but_invalid"] is True)
+
+    os.environ[llm_config.ENV_PROVIDER] = "azure"
+    os.environ[llm_config.ENV_ENDPOINT] = "https://foo.openai.azure.com"
+    check("an Azure resource root without the deployment path is rejected",
+          llm_config.configured() is False)
+    os.environ[llm_config.ENV_ENDPOINT] = (
+        "https://foo.openai.azure.com/openai/deployments/gpt-4o/chat/completions"
+        "?api-version=2024-08-01-preview")
+    check("a full Azure chat-completions URL is accepted", llm_config.configured() is True)
+    check("and the deployment becomes the model",
+          llm_config.default_model() == "gpt-4o", llm_config.default_model())
+
+    os.environ[llm_config.ENV_LOCK_MODEL] = "1"
+    check("a locked model binds a user",
+          secrets_store.effective_state({"username": "x", "token_id": "t",
+                                         "role": "user"})["model_locked"] is True)
+    check("but never an admin",
+          secrets_store.effective_state({"username": "y", "token_id": "t2",
+                                         "role": "admin"})["model_locked"] is False)
+
+    # No admin key hint or endpoint should ever reach a non-admin payload.
+    user_view = llm_config.public_state()
+    check("a non-admin view carries no key hint", "hint" not in user_view)
+    check("a non-admin view carries no endpoint", "endpoint" not in user_view)
+    check("an admin view does", llm_config.admin_state()["hint"] is not None)
+    _clear_shared_env()
+
+
+# ---------------------------------------------------------------- usage ledger
+
+def test_usage_ledger():
+    print("\nusage: per-user, per-day and per-org attribution")
+    for path in __import__("glob").glob(os.path.join(storage.usage_root(), "*.jsonl")):
+        os.remove(path)
+
+    usage.record_turn("alice", chat_id="c1", org_id="acme_prod", model="m1",
+                      provider="openrouter", source="shared",
+                      usage={"prompt_tokens": 100, "completion_tokens": 50,
+                             "total_tokens": 150, "cost": 0.002},
+                      tool_calls=3, tool_rounds=2, duration_ms=4000)
+    usage.record_turn("alice", chat_id="c2", org_id="acme_prod", model="m1",
+                      usage={"total_tokens": 50, "cost": 0.001}, duration_ms=2000)
+    usage.record_turn("bob", chat_id="c3", org_id="other_org", model="m2",
+                      usage={"total_tokens": 900, "cost": 0.05}, duration_ms=9000)
+    # No org: normalizing a standalone log needs no connection at all.
+    usage.record_turn("bob", chat_id="c4", model="m2", usage={"total_tokens": 10})
+    # A failed turn still counts as an attempt.
+    usage.record_turn("carol", ok=False, error_code="key_missing")
+
+    r = usage.report(days=2)
+    check("every turn counted", r["totals"]["turns"] == 5, r["totals"]["turns"])
+    check("failures counted separately", r["totals"]["failed_turns"] == 1)
+    check("tokens summed", r["totals"]["total_tokens"] == 1110, r["totals"]["total_tokens"])
+    check("three users active", r["active_users"] == 3)
+
+    by_user = {row["username"]: row for row in r["by_user"]}
+    check("alice's tokens attributed to alice", by_user["alice"]["total_tokens"] == 200)
+    check("bob's tokens attributed to bob", by_user["bob"]["total_tokens"] == 910)
+    check("ranked by consumption, heaviest first", r["by_user"][0]["username"] == "bob")
+    check("alice's tool calls counted", by_user["alice"]["tool_calls"] == 3)
+    check("average turn duration derived", by_user["alice"]["avg_seconds_per_turn"] == 3.0,
+          by_user["alice"]["avg_seconds_per_turn"])
+
+    by_org = {row["org_id"]: row for row in r["by_org"]}
+    check("per-org breakdown present", by_org["acme_prod"]["total_tokens"] == 200)
+    check("orgless turns get their own bucket", "(no org)" in by_org)
+
+    check("the day series covers the window", len(r["by_day"]) == 2)
+    check("the series is chronological", r["by_day"][0]["date"] < r["by_day"][1]["date"])
+    today = r["by_day"][-1]
+    check("today's bucket holds today's turns", today["turns"] == 5, today["turns"])
+
+    check("cost is reported when the provider gives one",
+          r["totals"]["cost_available"] is True)
+
+    # Azure reports no cost. $0.00 and "cannot say" must not look alike.
+    for path in __import__("glob").glob(os.path.join(storage.usage_root(), "*.jsonl")):
+        os.remove(path)
+    usage.record_turn("dave", model="gpt-4o", provider="azure",
+                      usage={"total_tokens": 500})
+    az = usage.report(days=1)
+    check("an Azure-only window reports tokens", az["totals"]["total_tokens"] == 500)
+    check("and admits cost is unavailable rather than showing $0",
+          az["totals"]["cost_available"] is False)
+
+    mine = usage.my_summary("dave", days=1)
+    check("a user can read their own summary", mine["totals"]["total_tokens"] == 500)
+    check("a user's own summary excludes other people",
+          usage.my_summary("alice", days=1)["totals"]["turns"] == 0)
+
+    usage.forget_user("dave")
+    check("deleting an account removes its usage records",
+          usage.report(days=1)["totals"]["turns"] == 0)
+
+
+def test_usage_concurrent_appends():
+    """The reason the ledger is append-only rather than a totals document.
+
+    Twenty threads writing at once, which is what an unlocked
+    read-modify-write over shared counters cannot survive.
+    """
+    print("\nusage: concurrent writers do not lose records")
+    import threading
+    for path in __import__("glob").glob(os.path.join(storage.usage_root(), "*.jsonl")):
+        os.remove(path)
+
+    def worker(n):
+        for i in range(10):
+            usage.record_turn(f"u{n}", usage={"total_tokens": 1})
+
+    threads = [threading.Thread(target=worker, args=(n,)) for n in range(20)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    r = usage.report(days=1)
+    check("all 200 records survived", r["totals"]["turns"] == 200, r["totals"]["turns"])
+    check("and every token is accounted for", r["totals"]["total_tokens"] == 200)
+    check("across all 20 users", r["active_users"] == 20)
+
+
+def test_mutator_cannot_replace_the_whole_store():
+    """`mutate_json` treats a non-None return as a replacement document.
+
+    That makes `lambda d: d.pop(k, None) and None` a trap: it reads as
+    "remove and return nothing", but `{} and None` is `{}`, so popping a
+    falsy record replaced the ENTIRE store with an empty dict -- every other
+    user's wrapped key destroyed. `forget_user` was written that way. This
+    pins the corrected behaviour.
+    """
+    print("\nstorage: deleting one record cannot wipe the store")
+    records = storage.read_json(secrets_store.LLM_KEYS_PATH, {})
+    records["ghost"] = {}                     # the falsy record that triggered it
+    storage.write_json(secrets_store.LLM_KEYS_PATH, records)
+
+    secrets_store.forget_user("ghost")
+    after = storage.read_json(secrets_store.LLM_KEYS_PATH, {})
+    check("the targeted record is gone", "ghost" not in after)
+    check("every other record survives", USER in after, str(list(after)))
+    check("and the surviving key material is intact",
+          bool(after.get(USER, {}).get("ciphertext")))
+
+    # And the contract directly: the return value must be IGNORED, so that
+    # the dangerous one-liner behaves the same as the careful named function.
+    probe = os.path.join(_TMP, "mutator_contract.json")
+    storage.write_json(probe, {"a": 1, "b": {}})
+    storage.mutate_json(probe, lambda d: d.pop("b", None), {})
+    check("a mutator's return value is ignored, so pop() cannot replace the document",
+          storage.read_json(probe, {}) == {"a": 1}, str(storage.read_json(probe, {})))
+    storage.mutate_json(probe, lambda d: d.pop("a", None), {})
+    check("even when what it returns is truthy",
+          storage.read_json(probe, {}) == {}, str(storage.read_json(probe, {})))
+
+    # Replacing the whole document is still possible -- it just has to say so.
+    def _replace(d):
+        d.clear()
+        d.update({"replaced": True})
+
+    storage.mutate_json(probe, _replace, {})
+    check("an explicit clear+update replaces it",
+          storage.read_json(probe, {}) == {"replaced": True})
+
+    # A list document, and a caller's default that must not be mutated.
+    shared_default = []
+    fresh = os.path.join(_TMP, "mutator_list.json")
+    storage.mutate_json(fresh, lambda items: items.append(1), shared_default)
+    check("a list document is appended to", storage.read_json(fresh, None) == [1])
+    check("the caller's default object is left alone", shared_default == [])
+
+
+def test_locked_mutation_is_serialised():
+    """`storage.mutate_json` under contention.
+
+    The pattern being tested is the one that was losing data all over the
+    app: read a shared document, change one entry, write the whole thing
+    back. Unlocked, the assertion below fails by a wide margin.
+    """
+    print("\nstorage: mutate_json does not lose concurrent updates")
+    import threading
+    path = os.path.join(_TMP, "concurrency_probe.json")
+    if os.path.exists(path):
+        os.remove(path)
+
+    def bump(key):
+        for i in range(25):
+            storage.mutate_json(path, lambda d: d.update({f"{key}_{i}": i}), {})
+
+    threads = [threading.Thread(target=bump, args=(f"k{n}",)) for n in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    final = storage.read_json(path, {})
+    check("all 200 keys present", len(final) == 200, f"got {len(final)}")
+
+    # And a counter, which is the harsher test: every increment must see the
+    # previous one, not a stale snapshot.
+    counter_path = os.path.join(_TMP, "counter_probe.json")
+    if os.path.exists(counter_path):
+        os.remove(counter_path)
+
+    def increment():
+        for _ in range(50):
+            storage.mutate_json(counter_path,
+                                lambda d: d.update({"n": (d.get("n") or 0) + 1}), {})
+
+    threads = [threading.Thread(target=increment) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    check("counter reached 400 with no lost increments",
+          storage.read_json(counter_path, {}).get("n") == 400,
+          str(storage.read_json(counter_path, {}).get("n")))
+
+    check("locks are re-entrant within a thread",
+          storage.mutate_json(path, lambda d: storage.write_json(path, d)) is not None)
 
 
 # ---------------------------------------------------------------- chat store
@@ -204,7 +661,7 @@ def test_chat_crud():
     check("cost rolled up", abs(meta["total_cost"] - 0.021) < 1e-9)
     check("tool calls counted", meta["tool_call_count"] == 1)
     check("appears in the list", any(c["chat_id"] == cid for c in chat_store.list_chats(USER)))
-    return cid
+    STATE["cid"] = cid
 
 
 def test_chat_id_traversal():
@@ -213,7 +670,8 @@ def test_chat_id_traversal():
         check(f"rejects {bad!r}", chat_store.load_meta(USER, bad) is None)
 
 
-def test_share_redaction(cid):
+def test_share_redaction():
+    cid = STATE["cid"]
     print("\nsharing: tool internals are hidden by default")
     share = chat_store.create_share(USER, cid, include_tools=False)
     shared = chat_store.resolve_share(share["token"])
@@ -234,10 +692,11 @@ def test_share_redaction(cid):
     check("tool result content included", "APTS_PricingTrigger" in blob)
     check("same token reused, so sent links keep working",
           share["token"] == chat_store.load_meta(USER, cid)["share_token"])
-    return share["token"]
+    STATE["token"] = share["token"]
 
 
-def test_share_revoke(cid, token):
+def test_share_revoke():
+    cid, token = STATE["cid"], STATE["token"]
     print("\nsharing: revoking is immediate and total")
     check("resolves before revoke", chat_store.resolve_share(token) is not None)
     check("revoke reports success", chat_store.revoke_share(token) is True)
@@ -246,7 +705,8 @@ def test_share_revoke(cid, token):
     check("unknown token is indistinguishable", chat_store.resolve_share("made-up-token") is None)
 
 
-def test_delete_chat(cid):
+def test_delete_chat():
+    cid = STATE["cid"]
     print("\nchat store: delete")
     check("delete reports success", chat_store.delete_chat(USER, cid) is True)
     check("gone from the list", not any(c["chat_id"] == cid for c in chat_store.list_chats(USER)))
@@ -350,12 +810,20 @@ def main():
         test_self_password_change_rewraps()
         test_admin_reset_destroys_key()
         test_require_key_errors()
+        test_shared_connection_serves_everyone()
+        test_admin_personal_key_overrides_shared()
+        test_env_file_loading()
+        test_shared_connection_validation()
+        test_usage_ledger()
+        test_usage_concurrent_appends()
+        test_mutator_cannot_replace_the_whole_store()
+        test_locked_mutation_is_serialised()
 
-        cid = test_chat_crud()
+        test_chat_crud()
         test_chat_id_traversal()
-        token = test_share_redaction(cid)
-        test_share_revoke(cid, token)
-        test_delete_chat(cid)
+        test_share_redaction()
+        test_share_revoke()
+        test_delete_chat()
 
         test_schema_sanitizer()
         test_tool_policy()

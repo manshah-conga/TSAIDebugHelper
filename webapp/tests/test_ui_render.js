@@ -200,6 +200,128 @@ check("a real refresh names what moved",
     changed_sample: ["classes/QuoteHandler.cls"],
   }), "QuoteHandler.cls"));
 
+// =====================================================================
+// progress panel + usage dashboard
+// ---------------------------------------------------------------------
+// These render into the live DOM rather than returning a string, so they
+// need a stub that remembers elements by id instead of handing out a fresh
+// blank one per lookup. Installed only for this section.
+// =====================================================================
+
+const registry = {};
+function trackedEl(id) {
+  const children = [];
+  const el = {
+    id, innerHTML: "", textContent: "", value: "", className: "", style: {},
+    dataset: {}, children,
+    classList: { toggle() {}, add() {}, remove() {} },
+    appendChild(c) { children.push(c); },
+    remove() {}, focus() {}, addEventListener() {},
+    querySelector: () => fakeEl(), querySelectorAll: () => [],
+    get cells() { return children; },
+  };
+  return el;
+}
+sandbox.document.getElementById = id => (registry[id] = registry[id] || trackedEl(id));
+sandbox.document.createElement = () => trackedEl("created");
+
+console.log("\n-- org fetch progress --");
+sandbox.renderProgress({
+  status: "fetching_classes", percent: 18, step_index: 3, step_count: 10,
+  step_label: "Fetching Apex classes", elapsed_seconds: 95,
+  counts: { objects: 214, classes: 1893 },
+  steps: [
+    { name: "connecting", label: "Verifying the connection" },
+    { name: "fetching_objects", label: "Reading the object model" },
+    { name: "fetching_classes", label: "Fetching Apex classes" },
+    { name: "fetching_triggers", label: "Fetching Apex triggers" },
+  ],
+});
+check("the bar reflects the reported percentage", registry.pgFill.style.width === "18%",
+  registry.pgFill.style.width);
+check("the percentage is shown as a number too", registry.pgPercent.textContent === "18%");
+check("the current phase is named in human terms",
+  registry.pgPhase.textContent === "Fetching Apex classes", registry.pgPhase.textContent);
+check("elapsed time is shown as minutes and seconds",
+  registry.pgElapsed.textContent === "1m 35s", registry.pgElapsed.textContent);
+check("finished phases are ticked", has(registry.pgSteps.innerHTML, "done"));
+check("the active phase is marked", has(registry.pgSteps.innerHTML, "active"));
+check("upcoming phases are listed, not hidden",
+  has(registry.pgSteps.innerHTML, "Fetching Apex triggers"));
+check("live counts are surfaced with readable labels",
+  has(registry.pgCounts.innerHTML, "1893") && has(registry.pgCounts.innerHTML, "Apex classes"));
+
+// A queued job has no honest figure to report, so the bar must sweep rather
+// than assert a number.
+sandbox.renderProgress({ status: "queued", percent: 0, steps: [], counts: {} });
+check("a queued job reports 0% rather than guessing", registry.pgPercent.textContent === "0%");
+
+sandbox.renderProgress({
+  status: "done", percent: 100, step_index: 10, elapsed_seconds: 240,
+  counts: { components: 2500 },
+  steps: [{ name: "connecting", label: "Verifying the connection" },
+          { name: "saving", label: "Saving" }],
+});
+check("completion fills the bar", registry.pgFill.style.width === "100%");
+check("completion ticks every phase",
+  !has(registry.pgSteps.innerHTML, 'class="active"'), registry.pgSteps.innerHTML);
+
+console.log("\n-- usage trend --");
+sandbox.renderUsageTrend({
+  from: "2026-09-15", to: "2026-09-21",
+  by_day: [
+    { date: "2026-09-15", total_tokens: 12000, turns: 4, cost: 0.12, cost_available: true },
+    { date: "2026-09-16", total_tokens: 0, turns: 0, cost: 0, cost_available: false },
+    { date: "2026-09-17", total_tokens: 48000, turns: 15, cost: 0.51, cost_available: true },
+  ],
+});
+const trend = registry.usageTrend.innerHTML;
+check("a bar is drawn per day in the window",
+  (trend.match(/usage-bar-wrap/g) || []).length === 3);
+check("the peak day is drawn at full height", has(trend, "height:100%"));
+check("an idle day is drawn as empty, not skipped", has(trend, "usage-bar empty"));
+check("each bar carries its own figures on hover", has(trend, "2026-09-17: 48.0k tokens"));
+check("the window's date range is labelled", has(trend, "2026-09-15") && has(trend, "2026-09-21"));
+
+console.log("\n-- usage tables --");
+// `CURRENT_USER` is a top-level `let`, so it is a lexical binding the sandbox
+// cannot reach. app.js reads it through this declared function for exactly
+// that reason, which makes it substitutable here.
+sandbox.currentUsername = () => "manshah";
+sandbox.renderUsageTable("usageByUser", [
+  { username: "manshah", turns: 20, total_tokens: 80000, cost: 1.2, cost_available: true,
+    tool_calls: 44, avg_seconds_per_turn: 8.1, failed_turns: 0 },
+  { username: "bob", turns: 5, total_tokens: 20000, cost: 0.3, cost_available: true,
+    tool_calls: 9, avg_seconds_per_turn: 6.0, failed_turns: 2 },
+], "username", 100000, 8, true);
+const userRows = registry.usageByUser.children;
+check("one row per account", userRows.length === 2, String(userRows.length));
+check("the signed-in admin's own row is marked",
+  userRows[0].className === "usage-row-self" && has(userRows[0].innerHTML, ">you<"));
+check("token totals are shown compactly", has(userRows[0].innerHTML, "80.0k"));
+check("a share bar is drawn per row", has(userRows[0].innerHTML, "usage-bar-mini"));
+check("failed turns are visible, not hidden", has(userRows[1].innerHTML, ">2<"));
+
+// Azure reports no per-call cost. "$0.00" would read as free, so it must not
+// be shown at all -- this is the check that keeps that honest.
+sandbox.renderUsageTable("usageByOrg", [
+  { org_id: "acme_prod", turns: 9, total_tokens: 30000, cost: 0, cost_available: false },
+  { org_id: "(no org)", turns: 2, total_tokens: 500, cost: 0, cost_available: false },
+], "org_id", 30500, 5);
+const orgRows = registry.usageByOrg.children;
+check("an unreported cost shows a dash, never $0.00",
+  has(orgRows[0].innerHTML, "&mdash;") && !has(orgRows[0].innerHTML, "$0.00"));
+check("orgless turns are labelled in plain language",
+  has(orgRows[1].innerHTML, "no org selected"));
+
+console.log("\n-- usage formatting --");
+check("fmtCompact abbreviates thousands", sandbox.fmtCompact(48000) === "48.0k");
+check("fmtCompact abbreviates millions", sandbox.fmtCompact(2500000) === "2.5M");
+check("fmtCompact leaves small numbers alone", sandbox.fmtCompact(42) === "42");
+check("fmtCompact tolerates no value", sandbox.fmtCompact(undefined) === "0");
+check("fmtMoney keeps sub-cent costs visible", sandbox.fmtMoney(0.0012) === "$0.0012");
+check("fmtMoney rounds real money to cents", sandbox.fmtMoney(12.345) === "$12.35");
+
 console.log();
 if (failures.length) {
   console.log(`${failures.length} FAILURE(S):`);

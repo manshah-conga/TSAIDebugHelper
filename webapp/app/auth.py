@@ -85,54 +85,84 @@ def create_user(username, password, role):
         raise ValueError(f"role must be one of {ROLES}")
     if not password or len(password) < 8:
         raise ValueError("password must be at least 8 characters")
-    users = storage.load_users()
-    if username in users:
+    # The existence check and the insert have to happen under one lock, or
+    # two admins creating the same username at the same moment both pass the
+    # check and the second silently overwrites the first one's password.
+    clash = [False]
+
+    def _insert(users):
+        if username in users:
+            clash[0] = True
+            return
+        users[username] = {"password": hash_password(password), "role": role,
+                           "disabled": False, "created_at": _now()}
+
+    storage.mutate_users(_insert)
+    if clash[0]:
         raise ValueError(f"user '{username}' already exists")
-    users[username] = {"password": hash_password(password), "role": role,
-                       "disabled": False, "created_at": _now()}
-    storage.save_users(users)
     return {"username": username, "role": role}
+
+
+def _update_user(username, change):
+    """Apply one field change to one account under an exclusive lock.
+
+    Every mutator below used to load the whole users document, change one
+    nested value and write it all back. Concurrently -- an admin flipping a
+    role while another disables a different account -- one of those two
+    changes disappeared. Funnelling them through here means a change to user
+    A can never erase a change to user B.
+    """
+    missing = [False]
+
+    def _apply(users):
+        if username not in users:
+            missing[0] = True
+            return
+        change(users[username])
+
+    storage.mutate_users(_apply)
+    if missing[0]:
+        raise ValueError(f"no such user '{username}'")
 
 
 def set_role(username, role):
     if role not in ROLES:
         raise ValueError(f"role must be one of {ROLES}")
-    users = storage.load_users()
-    if username not in users:
-        raise ValueError(f"no such user '{username}'")
-    users[username]["role"] = role
-    storage.save_users(users)
+    _update_user(username, lambda u: u.update({"role": role}))
 
 
 def set_disabled(username, disabled):
-    users = storage.load_users()
-    if username not in users:
-        raise ValueError(f"no such user '{username}'")
-    users[username]["disabled"] = bool(disabled)
-    storage.save_users(users)
+    _update_user(username, lambda u: u.update({"disabled": bool(disabled)}))
 
 
 def reset_password(username, new_password):
     if not new_password or len(new_password) < 8:
         raise ValueError("password must be at least 8 characters")
-    users = storage.load_users()
-    if username not in users:
-        raise ValueError(f"no such user '{username}'")
-    users[username]["password"] = hash_password(new_password)
-    storage.save_users(users)
+    hashed = hash_password(new_password)
+    _update_user(username, lambda u: u.update({"password": hashed}))
 
 
 def delete_user(username):
-    users = storage.load_users()
-    if username not in users:
+    missing = [False]
+
+    def _drop(users):
+        if username not in users:
+            missing[0] = True
+            return
+        del users[username]
+
+    storage.mutate_users(_drop)
+    if missing[0]:
         raise ValueError(f"no such user '{username}'")
-    del users[username]
-    storage.save_users(users)
-    # revoke that user's tokens too
-    tokens = storage.load_tokens()
-    for tid in [t for t, d in tokens.items() if d.get("username") == username]:
-        del tokens[tid]
-    storage.save_tokens(tokens)
+
+    # Revoke that user's tokens too. Separate lock, separate document -- and
+    # under it, so a login happening right now for someone else does not get
+    # wiped out by this cleanup.
+    def _revoke(tokens):
+        for tid in [t for t, d in tokens.items() if d.get("username") == username]:
+            del tokens[tid]
+
+    storage.mutate_tokens(_revoke)
 
 
 def authenticate(username, password):
@@ -155,16 +185,19 @@ def create_token(username, role, kind="api", label=None, ttl_days=None):
     stored -- only its hash is kept."""
     raw = secrets.token_urlsafe(32)
     token_id = secrets.token_hex(8)
-    tokens = storage.load_tokens()
     expires_at = None
     if ttl_days:
         expires_at = (datetime.datetime.utcnow() + datetime.timedelta(days=ttl_days)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    tokens[token_id] = {
+    entry = {
         "id": token_id, "hash": _hash_token(raw), "username": username, "role": role,
         "kind": kind, "label": label, "created_at": _now(), "expires_at": expires_at,
         "last_used": None,
     }
-    storage.save_tokens(tokens)
+    # Two people signing in at the same instant each mint a session token. An
+    # unlocked read-modify-write here meant one of those two sessions was
+    # never persisted -- and the user it belonged to got bounced back to the
+    # login screen on their very next request, with nothing to explain it.
+    storage.mutate_tokens(lambda tokens: tokens.update({token_id: entry}))
     return token_id, raw
 
 
@@ -191,14 +224,32 @@ def verify_token(raw):
             # to avoid rewriting tokens.json on every single polled request, and
             # (b) best-effort: a failed write must never turn a valid request
             # into a 500. Auth succeeds regardless of whether the stamp lands.
+            #
+            # This was the most damaging race in the app. Every authenticated
+            # request could rewrite the ENTIRE tokens document from a snapshot
+            # read moments earlier, so a stamp landing at the same time as
+            # someone's login deleted that brand-new session token -- and the
+            # UI polls status every 1.5 seconds, so the collision window was
+            # open more or less continuously. Now only the one field is
+            # touched, inside the lock.
             if _should_stamp(d.get("last_used"), now):
-                d["last_used"] = _now()
                 try:
-                    storage.save_tokens(tokens)
+                    _stamp_last_used(tid)
                 except Exception:
                     pass
             return {"username": d["username"], "role": user["role"], "token_id": tid, "kind": d.get("kind")}
     return None
+
+
+def _stamp_last_used(token_id):
+    stamp = _now()
+
+    def _apply(tokens):
+        entry = tokens.get(token_id)
+        if entry is not None:
+            entry["last_used"] = stamp
+
+    storage.mutate_tokens(_apply)
 
 
 def _should_stamp(last_used, now):
@@ -223,14 +274,19 @@ def list_tokens(username=None):
 
 
 def revoke_token(token_id, username=None):
-    tokens = storage.load_tokens()
-    if token_id not in tokens:
-        return False
-    if username is not None and tokens[token_id].get("username") != username:
-        return False
-    del tokens[token_id]
-    storage.save_tokens(tokens)
-    return True
+    removed = [False]
+
+    def _apply(tokens):
+        entry = tokens.get(token_id)
+        if entry is None:
+            return
+        if username is not None and entry.get("username") != username:
+            return
+        del tokens[token_id]
+        removed[0] = True
+
+    storage.mutate_tokens(_apply)
+    return removed[0]
 
 
 # ---------- bootstrap ----------
@@ -240,15 +296,21 @@ def bootstrap_admin():
     'admin' account; the password comes from TS_ADMIN_PASSWORD if set,
     otherwise a random one is generated and printed to the server console
     once (so a local operator can log in and then change it)."""
-    users = storage.load_users()
-    if any(d.get("role") == "admin" and not d.get("disabled") for d in users.values()):
-        return
-    if "admin" in users:
-        return
     password = os.environ.get("TS_ADMIN_PASSWORD") or secrets.token_urlsafe(12)
-    users["admin"] = {"password": hash_password(password), "role": "admin",
-                      "disabled": False, "created_at": _now()}
-    storage.save_users(users)
+    created = [False]
+
+    def _apply(users):
+        if any(d.get("role") == "admin" and not d.get("disabled") for d in users.values()):
+            return
+        if "admin" in users:
+            return
+        users["admin"] = {"password": hash_password(password), "role": "admin",
+                          "disabled": False, "created_at": _now()}
+        created[0] = True
+
+    storage.mutate_users(_apply)
+    if not created[0]:
+        return
     generated = not os.environ.get("TS_ADMIN_PASSWORD")
     print("=" * 68, flush=True)
     print("[TS Debug Helper] Created initial admin account.", flush=True)

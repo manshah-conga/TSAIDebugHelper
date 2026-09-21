@@ -513,3 +513,162 @@ button.key-action.danger b { color: var(--high); }
 .shared-meta { margin-bottom: 14px; }
 .shared-transcript { display: flex; flex-direction: column; gap: 14px; margin-top: 16px; }
 .shared-transcript .chat-bubble { max-width: 80%; }
+
+/* =====================================================================
+   org fetch progress
+   ---------------------------------------------------------------------
+   A real org fetch runs for minutes. The panel exists so that time reads
+   as progress rather than as a hang -- a percentage, the phase list with
+   ticks, live counts and a clock.
+   ===================================================================== */
+
+.progress-modal { width: 480px; }
+.progress-phase {
+  font-size: var(--conga-font-size-base); font-weight: var(--conga-font-weight-medium);
+  color: var(--conga-color-text); margin-bottom: var(--conga-space-3);
+}
+.progress-track {
+  height: 10px; background: var(--conga-color-surface-subtle);
+  border-radius: var(--conga-radius-pill); overflow: hidden;
+}
+.progress-fill {
+  height: 100%; border-radius: var(--conga-radius-pill);
+  background: linear-gradient(90deg, var(--conga-color-brand), var(--conga-color-brand-accent));
+  /* Eased, not linear: the bar advances in weighted jumps as each phase
+     lands, and a smooth glide between them reads as continuous work. */
+  transition: width 600ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+/* Before the background task is picked up there is genuinely nothing to
+   report, so the bar sweeps instead of claiming a figure it does not have. */
+.progress-fill.indeterminate {
+  width: 35% !important;
+  background: linear-gradient(90deg,
+    var(--conga-color-surface-subtle), var(--conga-color-brand-accent),
+    var(--conga-color-surface-subtle));
+  animation: progress-sweep 1.3s ease-in-out infinite;
+}
+@keyframes progress-sweep {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(285%); }
+}
+.progress-meta {
+  display: flex; justify-content: space-between; margin-top: var(--conga-space-2);
+  font-size: var(--conga-font-size-sm); color: var(--conga-color-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.progress-steps {
+  list-style: none; padding: 0; margin: var(--conga-space-5) 0 0;
+  display: grid; grid-template-columns: 1fr 1fr; gap: var(--conga-space-1) var(--conga-space-4);
+  font-size: var(--conga-font-size-sm); color: var(--conga-color-text-muted);
+}
+.progress-steps li { display: flex; align-items: center; gap: var(--conga-space-2); }
+.progress-steps li.done { color: var(--conga-color-status-success); }
+.progress-steps li.active {
+  color: var(--conga-color-brand); font-weight: var(--conga-font-weight-medium);
+}
+.progress-mark { width: 12px; display: inline-block; text-align: center; }
+/* The active phase pulses. It is the one signal that survives a user
+   glancing at the panel from across the desk. */
+.progress-steps li.active .progress-mark { animation: progress-pulse 1.1s ease-in-out infinite; }
+@keyframes progress-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+.progress-counts {
+  display: flex; flex-wrap: wrap; gap: var(--conga-space-2);
+  margin-top: var(--conga-space-4); min-height: 22px;
+}
+.count-pill {
+  background: var(--conga-color-surface-brand-subtle); color: var(--conga-color-brand);
+  border-radius: var(--conga-radius-pill); padding: var(--conga-space-1) 10px;
+  font-size: var(--conga-font-size-xs);
+}
+.progress-note { margin-top: var(--conga-space-4); }
+/* A fetch must not be interrupted by starting a second one, so the panel
+   covers the form rather than sitting beside it. */
+.progress-backdrop { cursor: default; }
+
+@media (prefers-reduced-motion: reduce) {
+  .progress-fill { transition: none; }
+  .progress-fill.indeterminate,
+  .progress-steps li.active .progress-mark { animation: none; }
+}
+
+/* =====================================================================
+   LLM settings sections
+   ===================================================================== */
+
+.llm-section-title {
+  font-family: var(--conga-font-family-heading); font-size: var(--conga-font-size-md);
+  font-weight: var(--conga-font-weight-medium); color: var(--conga-color-brand);
+  margin-bottom: var(--conga-space-3); display: flex; align-items: center;
+  gap: var(--conga-space-3);
+}
+.llm-section-title .badge { background: var(--conga-color-status-neutral); }
+.mini-table { width: 100%; font-size: var(--conga-font-size-md); }
+.mini-table td { padding: var(--conga-space-2) 0; border-bottom: 1px solid var(--conga-color-border); }
+.mini-table td:last-child { text-align: right; }
+
+/* =====================================================================
+   usage dashboard (admin)
+   ===================================================================== */
+
+.usage-controls {
+  display: flex; gap: var(--conga-space-3); align-items: flex-end;
+  flex-wrap: wrap; margin-bottom: var(--conga-space-5);
+}
+.usage-controls label { margin: 0; }
+.usage-controls select, .usage-controls input { width: auto; min-width: 160px; }
+.usage-controls button { margin-top: 0; }
+
+.usage-kpis {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: var(--conga-space-4); margin-bottom: var(--conga-space-6);
+}
+.kpi {
+  background: var(--conga-color-surface-subtle); border-radius: var(--conga-radius-md);
+  padding: var(--conga-space-4) var(--conga-space-5);
+  border-left: 3px solid var(--conga-color-brand-accent);
+}
+.kpi-value {
+  font-family: var(--conga-font-family-heading); font-size: 22px;
+  font-weight: var(--conga-font-weight-medium); color: var(--conga-color-brand);
+  font-variant-numeric: tabular-nums;
+}
+.kpi-label {
+  font-size: var(--conga-font-size-xs); color: var(--conga-color-text-muted);
+  text-transform: uppercase; letter-spacing: 0.04em; margin-top: var(--conga-space-1);
+}
+.kpi-note { font-size: var(--conga-font-size-xs); color: var(--conga-color-text-muted); margin-top: var(--conga-space-1); }
+
+/* Trend chart. Hand-drawn bars rather than a charting library: this is the
+   only chart in the app, and a dependency for it would be the largest thing
+   the page downloads. */
+.usage-chart {
+  display: flex; align-items: flex-end; gap: 2px; height: 140px;
+  padding: var(--conga-space-4) 0 0; border-bottom: 1px solid var(--conga-color-border);
+}
+.usage-bar-wrap {
+  flex: 1 1 0; display: flex; flex-direction: column; justify-content: flex-end;
+  height: 100%; min-width: 3px; position: relative;
+}
+.usage-bar {
+  background: var(--conga-color-brand-accent); border-radius: 2px 2px 0 0;
+  /* A day with activity but a tiny share of the peak still has to be
+     visibly non-zero, or a quiet day and an idle day look identical. */
+  min-height: 2px; transition: background 120ms ease;
+}
+.usage-bar-wrap:hover .usage-bar { background: var(--conga-color-brand); }
+.usage-bar.empty { background: var(--conga-color-border); min-height: 1px; }
+.usage-axis {
+  display: flex; justify-content: space-between;
+  font-size: var(--conga-font-size-xs); color: var(--conga-color-text-muted);
+  margin-top: var(--conga-space-2);
+}
+.usage-legend {
+  font-size: var(--conga-font-size-sm); color: var(--conga-color-text-muted);
+  margin-top: var(--conga-space-3);
+}
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+tr.usage-row-self td:first-child { font-weight: var(--conga-font-weight-medium); }
+.usage-bar-mini {
+  height: 6px; background: var(--conga-color-brand-accent);
+  border-radius: var(--conga-radius-pill); min-width: 2px;
+}

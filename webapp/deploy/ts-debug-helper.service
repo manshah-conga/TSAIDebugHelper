@@ -22,8 +22,59 @@ WorkingDirectory=/opt/ts-debug-helper/webapp
 ; Bound to loopback on purpose. Nothing reaches this port from outside the
 ; VM -- nginx terminates TLS on 443 and proxies here. If you bind 0.0.0.0
 ; instead, plain HTTP on 8000 is exposed and the tokens travel in the clear.
+; Single worker, deliberately. Two pieces of state live in process memory and
+; are not shared between workers: the in-flight org-fetch jobs (app/onboarding
+; JOBS) and the unwrapped copy of an admin's personal LLM key (the keyring in
+; app/secrets_store). With two workers, a status poll would land on whichever
+; worker did not run the fetch and report "unknown", and an admin would appear
+; unlocked on one worker and locked on the other at random.
+;
+; Everything on DISK is now safe for multiple processes -- every shared JSON
+; document is written under a cross-process file lock (see app/storage.py) --
+; so scaling out is a matter of moving those two pieces of state, not of
+; fixing data corruption. See CONCURRENCY.md.
 ExecStart=/opt/ts-debug-helper/venv/bin/python -m uvicorn app.main:app \
-    --host 127.0.0.1 --port 8000 --proxy-headers --forwarded-allow-ips=127.0.0.1
+    --host 127.0.0.1 --port 8000 --workers 1 --proxy-headers --forwarded-allow-ips=127.0.0.1
+
+; ---------------------------------------------------------------------------
+; The shared LLM connection.
+;
+; This is what makes chat work for every signed-in user with nothing for them
+; to paste and nothing to unlock. It lives here, in the server's environment,
+; on purpose: a credential that any signed-in session could rewrite is a
+; credential a stolen session could rewrite, so changing it requires access to
+; this machine rather than a role in the app.
+;
+; NOTE: the app ALSO reads webapp/.env or webapp/etc/ts-debug-helper.env by
+; itself (see app/env_file.py) -- that is how it gets configured for local
+; development on Windows, where there is no systemd to read an
+; EnvironmentFile. Anything exported here WINS over that file, so this unit
+; stays authoritative in production.
+;
+; It goes in an EnvironmentFile, NOT inline as Environment=, because anything
+; inline is readable by any local user via `systemctl show ts-debug-helper`.
+; Create it with:
+;
+;   sudo install -m 600 -o root -g root /dev/null /etc/ts-debug-helper.env
+;   sudo editor /etc/ts-debug-helper.env
+;
+; and put these in it (Azure example):
+;
+;   TS_LLM_PROVIDER=azure
+;   TS_LLM_API_KEY=<your Azure OpenAI key>
+;   TS_LLM_ENDPOINT=https://<resource>.openai.azure.com/openai/deployments/<deployment>/chat/completions?api-version=2024-08-01-preview
+;
+; or, for OpenRouter:
+;
+;   TS_LLM_PROVIDER=openrouter
+;   TS_LLM_API_KEY=sk-or-v1-...
+;   TS_LLM_DEFAULT_MODEL=anthropic/claude-sonnet-4.5
+;   #TS_LLM_LOCK_MODEL=1        # optional: users cannot change model
+;
+; After editing: systemctl restart ts-debug-helper. The startup log line
+; ("Shared LLM connection loaded ...") confirms it took, and names the
+; problem if it did not.
+EnvironmentFile=-/etc/ts-debug-helper.env
 
 ; Set on first run only, to choose the bootstrap admin password instead of
 ; letting one be generated into the journal. Remove it afterwards.
