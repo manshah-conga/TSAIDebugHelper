@@ -284,6 +284,25 @@ def current_identity(request: Request):
     return _identity_from_request(request)
 
 
+def raw_token_from_request(request: Request):
+    """The caller's raw token string, not just their identity.
+
+    The chat agent needs this because the MCP tools it runs loop back into
+    this app's own HTTP API and must present a real Bearer token there. A
+    session cookie IS a token of kind="session", so handing it straight back
+    makes the loopback act as the same user with the same role and the same
+    org visibility -- no second credential to mint, expire, or leak."""
+    auth_header = request.headers.get("authorization", "")
+    if auth_header.lower().startswith("bearer "):
+        raw = auth_header[7:].strip()
+        if raw and verify_token(raw):
+            return raw
+    cookie = request.cookies.get(SESSION_COOKIE)
+    if cookie and verify_token(cookie):
+        return cookie
+    return ""
+
+
 def require(min_role):
     """FastAPI dependency factory: require an authenticated identity of at
     least `min_role`."""

@@ -16,13 +16,17 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 from fastapi import FastAPI, BackgroundTasks, UploadFile, File, Form, HTTPException, Depends, Request, Response
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import storage
 from . import auth
 from . import org_access
+from . import secrets_store
+from . import chat_store
+from . import chat as chat_agent
+from . import llm
 from .onboarding import run_onboarding, JOBS
 from .log_normalizer import parse_log_text
 from .rca import assemble_context, lookup_field_writers
@@ -90,13 +94,18 @@ def login(req: LoginRequest, response: Response):
     ident = auth.authenticate(req.username, req.password)
     if not ident:
         raise HTTPException(401, "Invalid username or password (or the account is disabled).")
-    _tid, raw = auth.create_token(ident["username"], ident["role"], kind="session",
-                                  label="web login", ttl_days=auth.SESSION_TTL_DAYS)
+    tid, raw = auth.create_token(ident["username"], ident["role"], kind="session",
+                                 label="web login", ttl_days=auth.SESSION_TTL_DAYS)
     response.set_cookie(
         auth.SESSION_COOKIE, raw, httponly=True, samesite="lax",
         max_age=auth.SESSION_TTL_DAYS * 86400,
     )
-    return {"username": ident["username"], "role": ident["role"]}
+    # This is the one moment the plaintext password is in hand, so it is the
+    # only moment a password-wrapped LLM key can be unwrapped without asking
+    # again. Deliberately silent: login must succeed whether or not a key
+    # exists, and a user with no key must not be told anything about it.
+    unlocked = secrets_store.unlock_quietly(ident["username"], req.password, tid)
+    return {"username": ident["username"], "role": ident["role"], "llm_unlocked": unlocked}
 
 
 @app.post("/api/auth/logout")
@@ -105,6 +114,7 @@ def logout(request: Request, response: Response):
     if cookie:
         ident = auth.verify_token(cookie)
         if ident and ident.get("token_id"):
+            secrets_store.evict(ident["token_id"])
             auth.revoke_token(ident["token_id"])
     response.delete_cookie(auth.SESSION_COOKIE)
     return {"ok": True}
@@ -127,7 +137,17 @@ def change_own_password(req: ChangePasswordRequest, ident=Depends(auth.require_r
         auth.reset_password(ident["username"], req.new_password)
     except ValueError as e:
         raise HTTPException(400, str(e))
-    return {"ok": True}
+    # Both passwords are in hand here, which is exactly what makes a
+    # self-service change survivable for the stored LLM key: re-wrap the DEK
+    # under the new password. Best-effort -- a failure here must not leave the
+    # account with a password that changed and a UI that says it did not.
+    rewrapped = None
+    try:
+        rewrapped = secrets_store.rewrap_for_new_password(
+            ident["username"], req.current_password, req.new_password)
+    except Exception:
+        rewrapped = False
+    return {"ok": True, "llm_key_rewrapped": rewrapped}
 
 
 @app.get("/api/auth/me")
@@ -194,11 +214,17 @@ def admin_set_disabled(username: str, req: DisabledRequest, request: Request):
 
 @app.post("/api/admin/users/{username}/reset-password", dependencies=Dep_admin)
 def admin_reset_password(username: str, req: PasswordRequest):
+    """Note the LLM-key consequence. An admin does not know the old password,
+    so the key-encryption key cannot be re-derived and the user's stored LLM
+    key is unrecoverable by construction. Clearing the record here is what
+    lets the UI say so plainly, instead of leaving that user staring at a
+    'locked' chat that no password will ever open."""
     try:
         auth.reset_password(username, req.password)
     except ValueError as e:
         raise HTTPException(400, str(e))
-    return {"username": username, "ok": True}
+    key_cleared = secrets_store.note_password_reset_by_admin(username)
+    return {"username": username, "ok": True, "llm_key_cleared": key_cleared}
 
 
 @app.delete("/api/admin/users/{username}", dependencies=Dep_admin)
@@ -210,6 +236,8 @@ def admin_delete_user(username: str, request: Request):
         auth.delete_user(username)
     except ValueError as e:
         raise HTTPException(400, str(e))
+    secrets_store.forget_user(username)
+    chat_store.forget_user(username)
     return {"ok": True}
 
 
@@ -244,6 +272,7 @@ def revoke_token(token_id: str, request: Request, _ident=Depends(auth.require_re
     username = None if _ident["role"] == "admin" else _ident["username"]
     if not auth.revoke_token(token_id, username=username):
         raise HTTPException(404, "No such token (or not yours to revoke).")
+    secrets_store.evict(token_id)   # that session's unwrapped LLM key dies with it
     return {"ok": True}
 
 
@@ -614,6 +643,271 @@ def download_log(log_id: str):
         content=result["normalized_log"],
         headers={"Content-Disposition": f'attachment; filename="{log_id}.normalized.json"'},
     )
+
+
+# ---------- LLM key management ----------
+#
+# The key is encrypted at rest under a key derived from the user's own
+# password (see app/secrets_store.py). That buys real resistance to a stolen
+# copy of data/, and costs two things the UI has to be honest about: a server
+# restart locks chat until the user re-enters their password, and an ADMIN
+# password reset destroys the stored key for good.
+
+class StoreKeyRequest(BaseModel):
+    api_key: str
+    password: str
+    provider: Optional[str] = None
+    # Azure only: the full chat-completions URL including ?api-version=...
+    # The deployment in its path is what selects the model, so there is no
+    # separate model name to send.
+    endpoint: Optional[str] = None
+
+
+class UnlockRequest(BaseModel):
+    password: str
+
+
+class DefaultModelRequest(BaseModel):
+    model: Optional[str] = None
+
+
+@app.get("/api/chat/key", dependencies=Dep_reader)
+def get_key_state(ident=Depends(auth.require_reader)):
+    return secrets_store.public_state(ident["username"], ident.get("token_id"))
+
+
+@app.post("/api/chat/key", dependencies=Dep_reader)
+async def store_key(req: StoreKeyRequest, ident=Depends(auth.require_reader)):
+    """Verify the key actually works, then wrap and store it.
+
+    The password is re-asked here rather than reused from the session on
+    purpose: it is the encryption material, and requiring it confirms the
+    person at the keyboard is the account owner and not a walk-up on an
+    unlocked browser."""
+    if not auth.authenticate(ident["username"], req.password):
+        raise HTTPException(403, "That password is incorrect.")
+    api_key = (req.api_key or "").strip()
+    if not api_key:
+        raise HTTPException(400, "Paste an API key.")
+
+    provider = (req.provider or secrets_store.DEFAULT_PROVIDER).strip().lower()
+    endpoint = (req.endpoint or "").strip()
+    if provider == llm.PROVIDER_AZURE:
+        # Validate the URL shape before spending a call on it: the two usual
+        # mistakes (resource root instead of the deployment path, missing
+        # api-version) are recognisable without touching the network.
+        try:
+            endpoint = llm.validate_azure_endpoint(endpoint)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+    # A live call, not just a format check -- on Azure this is also the only
+    # way to prove the deployment name and api-version are right.
+    try:
+        await llm.verify_creds(llm.creds(provider, api_key, endpoint))
+    except llm.LLMError as e:
+        raise HTTPException(400, f"That did not work: {e}")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+    try:
+        secrets_store.store_key(ident["username"], req.password, api_key,
+                                provider=provider, token_id=ident.get("token_id"),
+                                endpoint=endpoint or None)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+    # On Azure the deployment IS the model, so there is nothing for the user to
+    # pick -- set it for them rather than leaving the picker empty.
+    if provider == llm.PROVIDER_AZURE:
+        secrets_store.set_default_model(ident["username"], llm.azure_deployment(endpoint))
+    secrets_store.mark_verified(ident["username"])
+    return secrets_store.public_state(ident["username"], ident.get("token_id"))
+
+
+@app.delete("/api/chat/key", dependencies=Dep_reader)
+def delete_key(ident=Depends(auth.require_reader)):
+    secrets_store.remove_key(ident["username"], ident.get("token_id"))
+    return secrets_store.public_state(ident["username"], ident.get("token_id"))
+
+
+@app.post("/api/chat/unlock", dependencies=Dep_reader)
+def unlock_key(req: UnlockRequest, ident=Depends(auth.require_reader)):
+    """Post-restart path. The wrapped key survived; the in-memory copy did
+    not, so the password re-derives it."""
+    try:
+        secrets_store.unlock(ident["username"], req.password, ident.get("token_id"))
+    except secrets_store.KeyMissing as e:
+        raise HTTPException(404, str(e))
+    except secrets_store.BadPassword as e:
+        raise HTTPException(403, str(e))
+    return secrets_store.public_state(ident["username"], ident.get("token_id"))
+
+
+@app.post("/api/chat/default-model", dependencies=Dep_reader)
+def set_default_model(req: DefaultModelRequest, ident=Depends(auth.require_reader)):
+    secrets_store.set_default_model(ident["username"], req.model)
+    return secrets_store.public_state(ident["username"], ident.get("token_id"))
+
+
+@app.get("/api/chat/models", dependencies=Dep_reader)
+async def get_models(ident=Depends(auth.require_reader), refresh: bool = False):
+    """The model picker's source. Filtered to tool-capable models only --
+    most free models on OpenRouter cannot call tools, and a chat using one
+    silently never touches the org knowledgebase, it just improvises."""
+    try:
+        creds = secrets_store.require_creds(ident)
+    except secrets_store.KeyLocked as e:
+        raise HTTPException(409, str(e))
+    except secrets_store.KeyMissing as e:
+        raise HTTPException(404, str(e))
+    try:
+        models = await llm.list_models_for(creds, force=refresh)
+    except llm.LLMError as e:
+        raise HTTPException(502, str(e))
+    note = ("This is your Azure deployment. Point the endpoint at a different deployment "
+            "in LLM settings to change model."
+            if creds["provider"] == llm.PROVIDER_AZURE
+            else "Only models that support tool calling are listed, best agentic score first.")
+    return {"models": models, "note": note, "provider": creds["provider"]}
+
+
+# ---------- chat ----------
+
+class NewChatRequest(BaseModel):
+    org_id: Optional[str] = None
+    title: Optional[str] = None
+    model: Optional[str] = None
+
+
+class SendMessageRequest(BaseModel):
+    content: str
+    org_id: Optional[str] = None
+    model: Optional[str] = None
+    confirm_tool_ids: Optional[list] = None
+
+
+class ShareRequest(BaseModel):
+    include_tools: bool = False
+
+
+@app.get("/api/chats", dependencies=Dep_reader)
+def list_chats(ident=Depends(auth.require_reader)):
+    return chat_store.list_chats(ident["username"])
+
+
+@app.post("/api/chats", dependencies=Dep_user)
+def create_chat(req: NewChatRequest, ident=Depends(auth.require_user)):
+    if req.org_id:
+        org_access.assert_can_view(req.org_id, ident)
+    return chat_store.create_chat(ident["username"], org_id=req.org_id,
+                                  title=req.title, model=req.model)
+
+
+@app.get("/api/chats/{chat_id}", dependencies=Dep_reader)
+def get_chat(chat_id: str, ident=Depends(auth.require_reader)):
+    meta = chat_store.load_meta(ident["username"], chat_id)
+    if not meta:
+        raise HTTPException(404, "No such conversation.")
+    return {"meta": meta, "messages": chat_store.load_messages(ident["username"], chat_id)}
+
+
+@app.delete("/api/chats/{chat_id}", dependencies=Dep_reader)
+def delete_chat(chat_id: str, ident=Depends(auth.require_reader)):
+    if not chat_store.delete_chat(ident["username"], chat_id):
+        raise HTTPException(404, "No such conversation.")
+    return {"ok": True}
+
+
+@app.post("/api/chats/{chat_id}/messages", dependencies=Dep_user)
+async def send_message(chat_id: str, req: SendMessageRequest, request: Request,
+                       ident=Depends(auth.require_user)):
+    """Run one turn, streamed as Server-Sent Events.
+
+    Note the manual visibility check. The generic `_org_view_dep` gate reads
+    `org_id` out of the PATH, and this route carries it in the body, so the
+    gate would never fire -- it has to be called explicitly or an org the user
+    cannot see would be reachable through chat.
+    """
+    meta = chat_store.load_meta(ident["username"], chat_id)
+    if not meta:
+        raise HTTPException(404, "No such conversation.")
+    if not (req.content or "").strip():
+        raise HTTPException(400, "Type a question first.")
+
+    org_id = req.org_id or meta.get("org_id")
+    org_label = None
+    if org_id:
+        entry = org_access.assert_can_view(org_id, ident)
+        org_label = entry.get("name")
+
+    model = req.model or meta.get("model") \
+        or secrets_store.public_state(ident["username"], ident.get("token_id")).get("default_model")
+    if not model:
+        raise HTTPException(400, "Pick a model first.")
+
+    # The MCP tools loop back into this app's HTTP API and need a real Bearer
+    # token to do it. The caller's own session token is exactly right: same
+    # user, same role, same org visibility, nothing new to mint or expire.
+    ident = dict(ident)
+    ident["_raw_token"] = auth.raw_token_from_request(request)
+
+    stream = chat_agent.run_turn(ident, chat_id, req.content.strip(), org_id, org_label,
+                                 model, confirmed_tool_ids=req.confirm_tool_ids)
+    return StreamingResponse(
+        stream,
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            # nginx buffers proxied responses by default, which would hold the
+            # whole turn back and deliver it in one lump at the end.
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+# ---------- shared transcripts ----------
+
+@app.post("/api/chats/{chat_id}/share", dependencies=Dep_reader)
+def share_chat(chat_id: str, req: ShareRequest, ident=Depends(auth.require_reader)):
+    """Mint (or re-fetch) a public link to a transcript.
+
+    `include_tools` defaults to false and should stay false for anything
+    leaving Conga: tool results carry org internals -- component cards, field
+    maps, incident packs -- and an anonymous viewer has no org visibility to
+    evaluate them against."""
+    result = chat_store.create_share(ident["username"], chat_id,
+                                     include_tools=req.include_tools)
+    if not result:
+        raise HTTPException(404, "No such conversation.")
+    return {"token": result["token"], "url": f"/shared/{result['token']}",
+            "include_tools": result["include_tools"]}
+
+
+@app.delete("/api/chats/{chat_id}/share", dependencies=Dep_reader)
+def unshare_chat(chat_id: str, ident=Depends(auth.require_reader)):
+    meta = chat_store.load_meta(ident["username"], chat_id)
+    if not meta:
+        raise HTTPException(404, "No such conversation.")
+    if meta.get("share_token"):
+        chat_store.revoke_share(meta["share_token"])
+    return {"ok": True}
+
+
+@app.get("/api/shared/{token}")
+def read_shared(token: str):
+    """Public, unauthenticated, read-only. A revoked token is indistinguishable
+    from one that never existed."""
+    result = chat_store.resolve_share(token)
+    if not result:
+        raise HTTPException(404, "This shared conversation is not available.")
+    return result
+
+
+@app.get("/shared/{token}")
+def shared_page(token: str):
+    return FileResponse(os.path.join(STATIC_DIR, "shared.html"))
 
 
 # ---------- frontend ----------

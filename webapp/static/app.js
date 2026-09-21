@@ -216,6 +216,10 @@ function setActiveOrg(id) {
   document.getElementById("fieldWriterResults").innerHTML = "";
   renderOrgPicker();
   loadDashboard(); loadIncidents(); loadKnownIssues();
+  // The chat dock scopes its tools to CURRENT_ORG, so it has to hear about
+  // this too -- otherwise its org chip quietly disagrees with the rest of the
+  // app and the assistant answers about the wrong org.
+  if (typeof chatOrgChanged === "function") chatOrgChanged();
 }
 
 // =====================================================================
@@ -412,6 +416,13 @@ function renderFieldWriters(data, field) {
       <p class="muted">These don't write the field, but they branch on it -- a wrong value here changes what runs.</p>
       <div>${criteria.map(c => `<span class="pill">${escapeHtml(typeof c === "string" ? c : c.component || JSON.stringify(c))}</span>`).join(" ")}</div>`;
   }
+  if (typeof askAbout === "function") {
+    html += `<div class="ask-about-bar">
+      <button class="secondary" onclick="askAbout(${JSON.stringify(
+        `${field} is getting the wrong value. Rank these writers by which most likely set it last, and tell me what to check.`
+      ).replace(/"/g, "&quot;")})">Ask about this field</button>
+    </div>`;
+  }
   return html;
 }
 
@@ -451,6 +462,9 @@ function renderComponentCard(id, card) {
 async function loadOrgs() {
   ORGS = await apiJson("/api/orgs", {}, {}) || {};
   renderOrgPicker();
+  // The dock can mount before this resolves (enterApp does not await it), so
+  // its org chip would otherwise be stuck on whatever it saw first.
+  if (typeof chatOrgChanged === "function") chatOrgChanged();
   const tbody = document.getElementById("orgsTable");
   fillTable(tbody, Object.entries(ORGS), 10,
     "No orgs you can see yet. Connect one above, or ask a colleague to make theirs public.",
@@ -741,6 +755,17 @@ async function showIncidentDetail(incidentId) {
   const m = data.meta, pack = data.rca_context_pack || {};
   const n = pack.normalized_log || data.normalized_log || {};
   const parts = [];
+
+  // Context handoff: the engineer is already looking at this incident, so the
+  // question should not have to restate it. Pre-fills the composer rather than
+  // sending, so they can edit first.
+  if (typeof askAbout === "function") {
+    parts.push(`<div class="ask-about-bar">
+      <button class="secondary" onclick="askAbout(${JSON.stringify(
+        `Walk me through incident ${m.incident_id}. What is the most likely root cause, and what should I check first?`
+      ).replace(/"/g, "&quot;")})">Ask about this incident</button>
+    </div>`);
+  }
 
   // --- verdict banner: the first thing worth knowing ---
   if (m.recurrence) {
@@ -1090,6 +1115,9 @@ function enterApp() {
   document.getElementById("appRoot").style.display = "";
   applyRole();
   loadOrgs();
+  // The dock remembers whether it was open, per browser. Guarded because
+  // chat.js is a separate script and a cached index.html could load without it.
+  if (typeof initChatDock === "function") initChatDock();
 }
 
 // ---------- API tokens ----------

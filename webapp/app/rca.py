@@ -103,9 +103,78 @@ def lookup_field_writers(field, org_index, field_touch_map, file_hashes=None):
         age_days = None
         if last_changed:
             age_days = round((now - datetime.datetime.strptime(last_changed, "%Y-%m-%dT%H:%M:%SZ")).total_seconds() / 86400, 1)
+        is_test, how = _test_class_verdict(w["component"], card)
         enriched.append({
             **w, "card_type": card.get("type"), "card_file": card.get("file"),
             "last_changed": last_changed, "age_days": age_days,
+            # Whether a writer is a test class is the single most important
+            # filter on this answer -- a test class cannot affect a user's
+            # record -- and it was previously absent from the tool's output
+            # entirely. Consumers were left inferring it from the class name,
+            # which only a strong model does reliably.
+            "is_test_class": is_test,
+            "test_class_detected_by": how,
+            "is_customer_authored": card.get("is_customer_authored", True),
+            "namespace": card.get("namespace"),
         })
-    return {"field": field, "writers": enriched,
-            "used_in_entry_criteria_of": used_in_entry_criteria_of}
+
+    # Production writers first, then by risk, so the answer leads with what can
+    # actually affect a record. Ordering is guidance a weak model will follow
+    # even when it ignores the flags.
+    risk_rank = {"high": 0, "medium": 1, "declarative": 2, "low": 3}
+    enriched.sort(key=lambda w: (w["is_test_class"],
+                                 risk_rank.get(w.get("risk"), 9),
+                                 w["component"]))
+
+    production = [w for w in enriched if not w["is_test_class"]]
+    tests = [w for w in enriched if w["is_test_class"]]
+    persisting = [w for w in production if w.get("persistence") == "persisted"]
+
+    return {
+        "field": field,
+        # A summary before the list, because the shape of the answer is the
+        # first thing a reader (human or model) needs: "20 writers" and
+        # "6 writers that can affect production" are very different findings.
+        "summary": {
+            "total_writers": len(enriched),
+            "production_writers": len(production),
+            "test_class_writers": len(tests),
+            "production_writers_with_confirmed_dml": len(persisting),
+            "guidance": (
+                "Answer from `production_writers`. Test classes cannot change a user's record, "
+                "so exclude them unless the user asks about test coverage. Among production "
+                "writers, `persistence` tells you what happened to the value: 'persisted' means "
+                "a DML in the same method committed it; 'unpersisted_or_unresolved' means the "
+                "write was made in memory and no commit was seen -- a classic source of a value "
+                "that looks set but never lands, or is overwritten by a later stale-object DML; "
+                "'passed_to_callee' means another method received the object and may commit it."
+            ),
+        },
+        "production_writers": production,
+        "test_class_writers": tests,
+        # Kept for backward compatibility: the web UI and any existing caller
+        # still read `writers`. Same objects, production first.
+        "writers": enriched,
+        "used_in_entry_criteria_of": used_in_entry_criteria_of,
+    }
+
+
+# Naming conventions Salesforce teams actually use for test classes, as a
+# fallback for knowledgebases extracted before `is_test_class` was recorded --
+# without it this fix would do nothing until every org was re-fetched.
+_TEST_NAME_HINTS = ("test", "tests", "_test_", "testing", "mock", "testdata", "testsetup")
+
+
+def _test_class_verdict(component_id, card):
+    """(is_test_class, how_we_know). The card's own flag is authoritative --
+    it comes from an @isTest annotation. The name heuristic only speaks when
+    the flag is absent, and says so, because 'BillingTransaction' and
+    'CPQ_TestDataSetupUtility' must not be treated with equal confidence."""
+    if card.get("is_test_class") is True:
+        return True, "isTest_annotation"
+    if card.get("is_test_class") is False:
+        return False, "isTest_annotation"
+    name = (component_id or "").lower()
+    if any(h in name for h in _TEST_NAME_HINTS):
+        return True, "name_heuristic"
+    return False, "no_annotation_recorded"
