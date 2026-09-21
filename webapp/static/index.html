@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>TS Intelligent Debug Helper</title>
-<link rel="stylesheet" href="/static/style.css?v=6">
+<link rel="stylesheet" href="/static/style.css?v=7">
 </head>
 <body>
 
@@ -12,7 +12,7 @@
 <div id="loginOverlay" class="login-overlay">
   <div class="login-card">
     <h1>TS Intelligent Debug Helper</h1>
-    <div class="sub" style="color:var(--grey); margin-bottom:16px;">Sign in to continue</div>
+    <div class="sub" style="color:var(--conga-color-text-muted); margin-bottom:16px;">Sign in to continue</div>
     <label>Username</label>
     <input id="loginUser" autocomplete="username" onkeydown="if(event.key==='Enter') doLogin()">
     <label>Password</label>
@@ -42,7 +42,7 @@
   <button data-view="tokens">API Tokens</button>
   <button data-view="admin" id="navAdmin" style="display:none;">Admin</button>
   <button onclick="changeOwnPassword()" style="margin-left:auto;">Change password</button>
-  <button onclick="doLogout()" style="color:var(--high);">Sign out</button>
+  <button onclick="doLogout()" style="color:var(--conga-color-status-error);">Sign out</button>
 </nav>
 <main>
 
@@ -226,6 +226,6 @@
 
 </main>
 </div>
-<script src="/static/app.js?v=6"></script>
+<script src="/static/app.js?v=7"></script>
 </body>
 </html>
