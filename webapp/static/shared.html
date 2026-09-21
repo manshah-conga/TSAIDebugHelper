@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Shared transcript -- TS Intelligent Debug Helper</title>
+<link rel="stylesheet" href="/static/style.css?v=10">
+</head>
+<body class="shared-body">
+
+<header>
+  <div>
+    <h1>TS Intelligent Debug Helper</h1>
+    <div class="sub">Shared RCA transcript &mdash; read only</div>
+  </div>
+</header>
+
+<main class="shared-main">
+  <div class="card" id="sharedCard">
+    <p class="muted loading">Loading</p>
+  </div>
+</main>
+
+<script>
+/* Deliberately standalone: this page is served to people with no account, so
+ * it loads no app.js, holds no session, and calls exactly one public,
+ * unauthenticated endpoint. Tool arguments and results are only present in
+ * the payload if the sharer explicitly opted in -- the server filters them,
+ * this page just renders whatever survived that filter. */
+
+function escapeHtml(s) {
+  return String(s ?? "").replace(/[&<>"']/g, c =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+function renderMarkdown(text) {
+  let s = escapeHtml(text || "");
+  s = s.replace(/```([\s\S]*?)```/g, (m, code) => `<pre class="chat-code">${code.trim()}</pre>`);
+  s = s.replace(/`([^`\n]+)`/g, '<code>$1</code>');
+  s = s.replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>");
+  s = s.replace(/^### (.+)$/gm, "<h4>$1</h4>");
+  s = s.replace(/^[-*] (.+)$/gm, "<li>$1</li>");
+  s = s.replace(/(<li>[\s\S]*?<\/li>)(?!\s*<li>)/g, "<ul>$1</ul>");
+  s = s.replace(/\n{2,}/g, "</p><p>");
+  s = s.replace(/\n/g, "<br>");
+  return `<p>${s}</p>`;
+}
+
+function fmtWhen(ts) {
+  if (!ts) return "";
+  return String(ts).replace("T", " ").replace("Z", " UTC");
+}
+
+function toolRow(c, includeTools) {
+  const state = c.ok === false ? "error" : "ok";
+  const args = includeTools && c.args
+    ? `<div class="tool-detail"><div class="tool-label">Arguments</div>
+       <pre>${escapeHtml(JSON.stringify(c.args, null, 2))}</pre></div>` : "";
+  return `<details class="tool-row ${state}">
+      <summary>
+        <span class="tool-dot"></span>
+        <span class="tool-name mono">${escapeHtml(c.name)}</span>
+        <span class="tool-preview">${includeTools ? "" : "result hidden"}</span>
+        <span class="tool-ms">${c.ms !== null && c.ms !== undefined ? escapeHtml(c.ms + "ms") : ""}</span>
+      </summary>
+      ${args || '<div class="tool-detail"><p class="muted">The person who shared this chose not to include tool arguments or results.</p></div>'}
+    </details>`;
+}
+
+async function load() {
+  const token = window.location.pathname.split("/").filter(Boolean).pop();
+  const card = document.getElementById("sharedCard");
+  let res;
+  try {
+    res = await fetch(`/api/shared/${encodeURIComponent(token)}`);
+  } catch (e) {
+    card.innerHTML = '<h2>Could not load</h2><p class="muted">The server is unreachable.</p>';
+    return;
+  }
+  if (!res.ok) {
+    card.innerHTML = `<h2>This link is not available</h2>
+      <p class="muted">It may have been revoked, or it may never have existed.
+      Ask whoever sent it for a new link.</p>`;
+    return;
+  }
+  const data = await res.json();
+  const meta = data.meta || {};
+  const includeTools = !!meta.include_tools;
+
+  const head = `
+    <h2>${escapeHtml(meta.title || "Shared transcript")}</h2>
+    <div class="shared-meta muted">
+      Shared by ${escapeHtml(meta.shared_by || "")}
+      ${meta.org_label ? ` &middot; org <span class="pill">${escapeHtml(meta.org_label)}</span>` : ""}
+      ${meta.model ? ` &middot; <span class="mono">${escapeHtml(meta.model)}</span>` : ""}
+      &middot; ${escapeHtml(fmtWhen(meta.updated_at))}
+    </div>
+    <div class="banner new">
+      <div class="banner-title">Read-only transcript</div>
+      <div class="banner-body">This is a snapshot of an AI-assisted root-cause investigation.
+        Conclusions in it were produced by a language model against an org knowledgebase and
+        should be verified before acting on them.</div>
+    </div>`;
+
+  const body = (data.messages || []).map(m => {
+    if (m.role === "tool") return "";
+    if (m.role === "user") {
+      return `<div class="chat-msg user"><div class="chat-bubble">${renderMarkdown(m.content)}</div></div>`;
+    }
+    const tools = (m.tool_calls || []).map(c => toolRow(c, includeTools)).join("");
+    const usage = m.usage
+      ? `<div class="chat-usage">${m.usage.total_tokens || 0} tokens${
+          m.usage.cost !== null && m.usage.cost !== undefined ? ` &middot; $${Number(m.usage.cost).toFixed(4)}` : ""}</div>`
+      : "";
+    return `<div class="chat-msg assistant">${tools}
+      ${m.content ? `<div class="chat-body">${renderMarkdown(m.content)}</div>` : ""}${usage}</div>`;
+  }).join("");
+
+  card.innerHTML = head + `<div class="shared-transcript">${body}</div>`;
+}
+load();
+</script>
+</body>
+</html>

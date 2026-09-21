@@ -6,3 +6,7 @@ python-multipart>=0.0.9
 # the server API, so an unpinned `mcp>=1.0` on a fresh install breaks both
 # mcp_server.py and app/mcp_http.py.
 mcp>=1.9,<2
+# AES-GCM for per-user LLM API keys (app/secrets_store.py). The stdlib has
+# PBKDF2 and SHA-256 but no authenticated encryption, and hand-rolling AEAD is
+# the classic place to get nonce handling wrong.
+cryptography>=42.0

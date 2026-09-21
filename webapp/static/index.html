@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>TS Intelligent Debug Helper</title>
-<link rel="stylesheet" href="/static/style.css?v=6">
+<link rel="stylesheet" href="/static/style.css?v=10">
 </head>
 <body>
 
@@ -41,7 +41,8 @@
   <button data-view="logs">Log Normalizer</button>
   <button data-view="tokens">API Tokens</button>
   <button data-view="admin" id="navAdmin" style="display:none;">Admin</button>
-  <button onclick="changeOwnPassword()" style="margin-left:auto;">Change password</button>
+  <button onclick="toggleChatDock()" id="navChat" class="nav-chat" style="margin-left:auto;">Ask &#9662;</button>
+  <button onclick="changeOwnPassword()">Change password</button>
   <button onclick="doLogout()" style="color:var(--high);">Sign out</button>
 </nav>
 <main>
@@ -225,7 +226,16 @@
   </section>
 
 </main>
+
+<!-- The chat dock rides alongside every tab rather than being a tab of its
+     own, so "explain this" means something: it already knows the selected
+     org and whatever the engineer is looking at. -->
+<aside id="chatDock" class="chat-dock">
+  <div class="chat-dock-inner"></div>
+</aside>
+
 </div>
-<script src="/static/app.js?v=6"></script>
+<script src="/static/app.js?v=10"></script>
+<script src="/static/chat.js?v=10"></script>
 </body>
 </html>
