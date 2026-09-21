@@ -1205,7 +1205,7 @@ async function loadUsers() {
     </select>`;
     tr.innerHTML = `<td>${escapeHtml(name)}${isSelf ? ' <span class="muted">(you)</span>' : ""}</td>
       <td>${roleSel}</td>
-      <td>${u.disabled ? "<span style='color:var(--high)'>disabled</span>" : "active"}</td>
+      <td>${u.disabled ? "<span style='color:var(--conga-color-status-error)'>disabled</span>" : "active"}</td>
       <td>${fmtWhen(u.created_at)}</td>
       <td>
         <button class="secondary" onclick="resetUserPassword('${escapeHtml(name)}')">Reset password</button>
