@@ -22,6 +22,8 @@ from pydantic import BaseModel
 
 from . import storage
 from . import auth
+from . import limits as limits_policy
+from . import rate_limit
 from . import org_access
 from . import secrets_store
 from . import chat_store
@@ -99,8 +101,71 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class SignupRequest(BaseModel):
+    username: str
+    password: str
+    role: Optional[str] = None
+
+
+@app.get("/api/auth/signup-config")
+def signup_config():
+    """What the login screen needs to know before anyone is signed in:
+    whether to offer a "create account" link at all, and which roles it may
+    offer. Served unauthenticated because it is consumed by the one screen
+    that by definition has no session yet, and it discloses nothing beyond
+    the shape of the form."""
+    return {"enabled": auth.signup_enabled(),
+            "roles": auth.SIGNUP_ROLES,
+            "default_role": auth.SIGNUP_DEFAULT_ROLE,
+            "username_rule": auth.USERNAME_RULE,
+            "min_password_length": auth.MIN_PASSWORD_LENGTH}
+
+
+@app.post("/api/auth/signup")
+def signup(req: SignupRequest, request: Request, response: Response):
+    """Self-service registration, then straight in.
+
+    Signing in immediately is deliberate: the alternative is to bounce a
+    brand-new account to the login form to retype the password it just
+    chose, which reads as a failure. There is nothing to unlock here --
+    `secrets_store.unlock_quietly` is skipped because a new account cannot
+    have a password-wrapped LLM key yet.
+    """
+    # Order matters. The "is registration even open" check is free and has no
+    # side effect, so it goes first -- otherwise a closed endpoint still
+    # spends the caller's allowance and answers 429 instead of saying it is
+    # closed. Then the loose attempt limiter, and only once the request looks
+    # like a real registration does it count against the tight
+    # accounts-created allowance.
+    if not auth.signup_enabled():
+        raise HTTPException(403, "Self-registration is disabled on this server.")
+    rate_limit.enforce("signup_attempt", request)
+    try:
+        auth.normalize_username(req.username)
+        auth.validate_password(req.password)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    rate_limit.enforce("signup", request)
+    try:
+        created = auth.signup_user(req.username, req.password, req.role)
+    except PermissionError as e:
+        raise HTTPException(403, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    tid, raw = auth.create_token(created["username"], created["role"], kind="session",
+                                 label="web signup", ttl_days=auth.SESSION_TTL_DAYS)
+    response.set_cookie(
+        auth.SESSION_COOKIE, raw, httponly=True, samesite="lax",
+        max_age=auth.SESSION_TTL_DAYS * 86400,
+    )
+    quota = limits_policy.quota_status(created["username"], auth.get_user(created["username"]))
+    return {"username": created["username"], "role": created["role"],
+            "llm_unlocked": False, "quota": quota}
+
+
 @app.post("/api/auth/login")
-def login(req: LoginRequest, response: Response):
+def login(req: LoginRequest, request: Request, response: Response):
+    rate_limit.enforce("login", request)
     ident = auth.authenticate(req.username, req.password)
     if not ident:
         raise HTTPException(401, "Invalid username or password (or the account is disabled).")
@@ -115,7 +180,9 @@ def login(req: LoginRequest, response: Response):
     # again. Deliberately silent: login must succeed whether or not a key
     # exists, and a user with no key must not be told anything about it.
     unlocked = secrets_store.unlock_quietly(ident["username"], req.password, tid)
-    return {"username": ident["username"], "role": ident["role"], "llm_unlocked": unlocked}
+    quota = limits_policy.quota_status(ident["username"], auth.get_user(ident["username"]))
+    return {"username": ident["username"], "role": ident["role"],
+            "llm_unlocked": unlocked, "quota": quota}
 
 
 @app.post("/api/auth/logout")
@@ -188,17 +255,115 @@ class DisabledRequest(BaseModel):
     disabled: bool
 
 
+class VerifiedRequest(BaseModel):
+    verified: bool
+
+
+class UserLimitsRequest(BaseModel):
+    # Absent means "leave that field alone"; explicit null means unlimited.
+    # `clear` is the third state -- drop the override entirely so the account
+    # follows its tier again -- which neither of the other two can express.
+    daily_tokens: Optional[int] = None
+    monthly_tokens: Optional[int] = None
+    clear: bool = False
+
+
+class TierLimitsRequest(BaseModel):
+    tiers: Optional[dict] = None
+    window_days: Optional[int] = None
+
+
 @app.get("/api/admin/users", dependencies=Dep_admin)
 def admin_list_users():
-    return auth.list_users()
+    """Every account, with its quota position alongside it.
+
+    The quota figures are joined in here rather than fetched per row by the
+    UI: the admin screen shows a table, and a per-row request would be one
+    ledger read per user on every render.
+    """
+    users = auth.list_users()
+    config = limits_policy.load_config()
+    raw = storage.load_users()
+    for username, row in users.items():
+        row["quota"] = limits_policy.quota_status(username, raw.get(username), config)
+    return users
 
 
 @app.post("/api/admin/users", dependencies=Dep_admin)
-def admin_create_user(req: NewUserRequest):
+def admin_create_user(req: NewUserRequest, request: Request):
+    ident = auth.current_identity(request)
     try:
-        return auth.create_user(req.username, req.password, req.role)
+        return auth.create_user(req.username, req.password, req.role,
+                                created_by=f"admin:{ident['username']}")
     except ValueError as e:
         raise HTTPException(400, str(e))
+
+
+@app.patch("/api/admin/users/{username}/verified", dependencies=Dep_admin)
+def admin_set_verified(username: str, req: VerifiedRequest, request: Request):
+    """Vouch for an account, which moves it to the verified quota tier.
+
+    Grants no permission of its own -- see auth.set_verified for why that
+    separation is deliberate.
+    """
+    ident = auth.current_identity(request)
+    try:
+        result = auth.set_verified(username, req.verified, by=ident["username"])
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    result["quota"] = limits_policy.quota_status(username, auth.get_user(username))
+    return result
+
+
+@app.patch("/api/admin/users/{username}/limits", dependencies=Dep_admin)
+def admin_set_user_limits(username: str, req: UserLimitsRequest):
+    """Set or clear one account's quota override."""
+    override = None
+    if not req.clear:
+        override = {}
+        if req.daily_tokens is not None:
+            override["daily_tokens"] = req.daily_tokens
+        if req.monthly_tokens is not None:
+            override["monthly_tokens"] = req.monthly_tokens
+    try:
+        result = auth.set_user_limits(username, override)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    result["quota"] = limits_policy.quota_status(username, auth.get_user(username))
+    return result
+
+
+@app.get("/api/admin/limits", dependencies=Dep_admin)
+def admin_get_limits():
+    """The tier defaults, editable from the admin screen.
+
+    These are configuration rather than code precisely so that moving a cap
+    does not need a deploy -- the first numbers are a guess at what a support
+    engineer consumes, and guesses need adjusting by whoever is watching the
+    usage report.
+    """
+    return {"config": limits_policy.load_config(),
+            "fallback": limits_policy.DEFAULT_CONFIG,
+            "tiers": list(limits_policy.TIERS)}
+
+
+@app.put("/api/admin/limits", dependencies=Dep_admin)
+def admin_put_limits(req: TierLimitsRequest, request: Request):
+    ident = auth.current_identity(request)
+    # Built by hand rather than with `model_dump(exclude_unset=True)`: inside
+    # the tier dicts an explicit null means "unlimited", so the distinction
+    # between absent and null has to survive, and it does that reliably here
+    # regardless of which pydantic major version is installed.
+    patch = {}
+    if req.tiers is not None:
+        patch["tiers"] = req.tiers
+    if req.window_days is not None:
+        patch["window_days"] = req.window_days
+    try:
+        config = limits_policy.save_config(patch, updated_by=ident["username"])
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"config": config}
 
 
 @app.patch("/api/admin/users/{username}/role", dependencies=Dep_admin)
@@ -328,9 +493,41 @@ def create_org(req: NewOrgRequest, background_tasks: BackgroundTasks,
 
     if existing_entry is not None:
         # Re-connecting an org that already exists is a refresh of someone's
-        # knowledgebase -- only its owner (or an admin) may do that, and a
-        # private org you can't see reports 404 rather than "already taken".
-        org_access.assert_can_manage(req.org_id, ident, registry)
+        # knowledgebase -- only its owner (or an admin) may do that.
+        #
+        # The org id is a GLOBAL name chosen by whoever connects first, so a
+        # second person picking the same id is a name collision, not an
+        # access attempt. Answering it the way a read is answered -- 404,
+        # "No org 'X' (or you do not have access to it)" -- told someone
+        # filling in the Connect form that the thing they are trying to
+        # create does not exist, which is both confusing and unactionable.
+        # Worse, it is what every non-admin saw for any id already in the
+        # registry, including the pre-ownership orgs that are now
+        # admin-only, so a new user's first attempt could hit it.
+        #
+        # So a create says the id is taken and to pick another. That does
+        # reveal that *something* holds the id, which the 404 deliberately
+        # hid -- an accepted trade, and a narrow one: no name, no owner, no
+        # data, only "you cannot have this name". There is no way to run a
+        # create endpoint on a shared namespace without telling the caller
+        # their chosen name is unavailable, and the alternative (a silent
+        # refusal, or letting them overwrite someone's org) is worse than
+        # the disclosure.
+        if not org_access.can_manage(existing_entry, ident):
+            if not org_access.can_view(existing_entry, ident):
+                raise HTTPException(
+                    409,
+                    f"The Org ID '{req.org_id}' is already in use by an org you do not have "
+                    f"access to. Choose a different Org ID, or ask an admin -- if this is an "
+                    f"org you should be able to see, they can share it with you.")
+            existing_owner = org_access.owner_of(existing_entry)
+            who = (f"'{existing_owner}'" if existing_owner
+                   else "nobody yet (it predates org ownership, so only an admin can claim it)")
+            raise HTTPException(
+                409,
+                f"The Org ID '{req.org_id}' already belongs to an org owned by {who}. Only its "
+                f"owner or an admin can re-connect it. Choose a different Org ID to connect a "
+                f"new org, or ask them to refresh it.")
         owner = org_access.owner_of(existing_entry) or ident["username"]
         default_visibility = org_access.visibility_of(existing_entry)
     else:
@@ -917,7 +1114,13 @@ def my_usage(days: int = usage_ledger.DEFAULT_DAYS, ident=Depends(auth.require_r
     """Your own consumption. Not admin-gated: on a shared key, "is it me
     burning the budget?" is a fair question to be able to answer without
     asking an admin to look it up."""
-    return usage_ledger.my_summary(ident["username"], days=days)
+    summary = usage_ledger.my_summary(ident["username"], days=days)
+    # Their own quota position travels with their own usage, so the screen
+    # that answers "what have I spent" also answers "how much is left" --
+    # which is the question actually being asked.
+    summary["quota"] = limits_policy.quota_status(ident["username"],
+                                                  auth.get_user(ident["username"]))
+    return summary
 
 
 # ---------- chat ----------

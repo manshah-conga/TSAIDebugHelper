@@ -80,9 +80,35 @@ LOGS_ROOT = os.path.join(DATA_ROOT, "normalized_logs")
 AUTH_ROOT = os.path.join(DATA_ROOT, "auth")
 USERS_PATH = os.path.join(AUTH_ROOT, "users.json")
 TOKENS_PATH = os.path.join(AUTH_ROOT, "tokens.json")
+# LLM quota policy: the per-tier token allowances an admin edits from the UI.
+# Deliberately a stored document rather than environment variables, because
+# changing a cap must not require an operator with shell access and a
+# service restart -- see app/limits.py.
 # Per-user LLM usage ledger. Append-only JSONL, one file per UTC day -- see
 # app/usage.py for why that shape was chosen over a single JSON document.
 USAGE_ROOT = os.path.join(DATA_ROOT, "usage")
+
+
+def limits_path():
+    """Late-bound, like `usage_root`: no module constant to keep in sync.
+
+    The older stores each have a module-level constant that every test has to
+    remember to repoint at its scratch directory (see the list in
+    `tests/test_org_visibility.py`). Deriving this one at call time means a
+    test that moves `DATA_ROOT` gets the quota store moved with it for free,
+    and nothing can write policy into the real data directory by accident."""
+    return os.path.join(DATA_ROOT, "auth", "limits.json")
+
+
+def load_limits():
+    return read_json(limits_path(), {})
+
+
+def mutate_limits(mutator):
+    """One admin raising a tier default while another sets a per-user
+    override are two writes to the same document. Same lock discipline as
+    every other shared store here."""
+    return mutate_json(limits_path(), mutator, {})
 
 
 def usage_root():

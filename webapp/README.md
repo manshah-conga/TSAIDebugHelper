@@ -96,7 +96,32 @@ like:
 ```
 
 Sign in at `http://127.0.0.1:8000` with that account, then create the users you need
-from the **Admin** tab.
+from the **Admin** tab -- or let them create their own (see below).
+
+### Self-registration
+
+The login screen offers **Create one**, and anyone who can reach the app can register
+themselves. That is only safe because the app is reachable **only over the Conga
+VPN**: everyone who can load the form is already inside the company, so there is no
+email address to verify and no invite to issue.
+
+At signup a person picks their username, their password, and either **Writer** (the
+default, the `user` role) or **Reader**. They cannot ask to be an admin -- the role
+whitelist is enforced in `app/auth.py`, not merely hidden in the form. Usernames are
+lowercased and limited to `[a-z0-9._-]`, 3-32 characters, and a handful of reserved
+names (`admin`, `root`, `system`, ...) are refused.
+
+Two things bound the blast radius of an open form:
+
+- A self-registered account starts **unverified**, which puts it on a smaller LLM
+  token allowance until an admin verifies it (see *LLM quotas* below). Nothing else
+  about it is restricted -- a writer is a writer.
+- Both `/api/auth/signup` and `/api/auth/login` are rate limited per source address.
+  Accounts *created* and attempts *made* are counted separately, so fumbling the form
+  never uses up the account-creation allowance.
+
+Set `TS_SIGNUP_ENABLED=0` to close registration without a code change. The **Create
+one** link disappears when it is off, and the endpoint answers 403.
 
 There are three roles:
 
@@ -115,6 +140,45 @@ on any write, regardless of what the UI shows.
 Passwords are stored only as salted PBKDF2-SHA256 hashes (stdlib, no extra
 dependency); the cleartext is never written to disk.
 
+### LLM quotas
+
+One shared API key serves everybody, so the only place spend can be attributed --
+or limited -- is inside this app. Every account has a **token** budget, in two
+windows: a daily cap (contains a runaway afternoon) and a rolling 30-day cap
+(contains steady over-use that no single day would catch).
+
+Tokens rather than dollars, deliberately: Azure OpenAI reports no per-call cost, so a
+currency cap would never trigger on the provider this app actually runs on.
+
+Which budget applies is resolved in this order, first match wins:
+
+1. a **per-account override** an admin set for one person;
+2. **verified** -- an admin created the account, or verified it afterwards;
+3. **unverified** -- it signed itself up and nobody has vouched for it yet;
+4. **admins are never capped** (an admin out of quota could not raise their own).
+
+Both tier defaults, the window length, and any per-account override are edited from
+the **Admin** tab and stored in `data/auth/limits.json`. They are *not* environment
+variables, because these numbers are a first guess at what a support engineer
+consumes and will need adjusting by whoever is reading the usage report -- not by
+whoever has shell access. `app/limits.py` holds only the values used to seed the file
+on first run.
+
+Verifying an account is a quota decision, not a permission one: it grants nothing
+except the higher allowance, so an admin can raise somebody's budget without widening
+what they can reach. Un-verifying lowers it again immediately, which is the lever to
+pull when an account is burning budget, without disabling someone mid-investigation.
+
+Enforcement happens **before a turn starts**, and that is the only promise it can
+make -- token counts are not knowable in advance, so a turn already streaming runs to
+completion. An account can therefore finish at most one question over its cap. The
+alternative, killing a stream the user is already reading, destroys more than it
+saves.
+
+Everyone can see their own consumption and their own allowance on the **Usage** tab;
+only admins see the cross-user reports there. When someone is within 25% of a cap,
+the chat composer says so, because that is where the limit gets hit.
+
 ### Org visibility: private vs public
 
 Roles say *what kind* of action you may take; **visibility** says *which orgs* you
@@ -127,6 +191,13 @@ a visibility setting:
   confirms that someone else's org is there.
 - **public** -- every signed-in account can see it, at whatever role that account
   already has (a reader still only reads).
+
+Orgs connected before ownership was tracked have neither field. They read as
+**private with no owner**, which means **admins only**. That default was reversed
+when self-registration arrived: it used to be public so nothing disappeared from an
+existing install, but "public" now means a self-registered colleague inherits sight
+of exactly the orgs nobody has reviewed. An admin can see them and adopt one by
+setting its visibility, which stamps them as its owner.
 
 Managing an org -- changing its visibility, or re-connecting/refreshing it -- is
 restricted to its **owner or an admin**, even when it is public. Public means
@@ -576,13 +647,29 @@ hundred characters -- but if your policy requires zero verbatim substrings of an
 length, that's the place to tighten further (drop `raw_example`/`example` or hash
 them instead).
 
-## 4b. The Ask dock (built-in chat)
+## 4b. Ask (built-in chat)
 
-The **Ask** button in the top-right opens a chat dock that rides alongside every
-tab. It is not a separate tab on purpose: it already knows which org is selected
-and which incident is open, so "explain this" means something. Incident detail
-and field-writer results carry an **Ask about this** button that pre-fills the
-composer (it does not send -- you can edit first).
+Chat comes in two shapes, and which one you get depends on how you asked for it.
+
+**Full screen** is the default and what the **Ask** button in the nav opens. The
+conversation gets the whole window: a centred, readable column rather than prose
+stretched across a 27-inch monitor, a taller composer for the paragraph-long
+questions an investigation actually produces, and a **conversation rail** on the left
+that starts collapsed -- press the ☰ to pop it back out, and it stays however you
+left it. Because the header's org picker is out of view here, the chip bar above the
+transcript shows and changes the org the conversation is scoped to. **Esc** goes back
+to where you were; **Ctrl/Cmd+K** jumps into the composer from anywhere.
+
+**The side dock** is the ☰ button next to Ask, and it is what every **Ask about this**
+link opens -- from incident detail, from field-writer results. That is the point of
+it: those links come off a row in a table, and the value of asking from there is that
+the row stays on screen next to the answer, which full screen would cover up. The
+composer is pre-filled and *not* sent, so you can edit first.
+
+Either mode has an arrow in its header to switch to the other, and the switch is safe
+mid-conversation -- even mid-stream -- because the transcript is rebuilt from state
+rather than moved as DOM. Whichever you last used is what the nav's Ask button gives
+you next time.
 
 The assistant answers by calling the same MCP tools Claude Desktop uses. There is
 no second copy of the tool list: `app/chat.py` calls the FastMCP instance in
@@ -701,7 +788,7 @@ the endpoint URL, which names internal Azure infrastructure.
 
 The per-user, password-wrapped key store is intact and now serves one purpose:
 an admin who wants *their own* turns billed to *their own* provider account can
-store a personal key from the Ask dock. It applies to their sessions only;
+store a personal key from the chat panel. It applies to their sessions only;
 everyone else stays on the shared connection. Resolution order for any turn is:
 
 1. this admin's own unlocked key, if they have one;
@@ -783,7 +870,7 @@ logged.
 
 The **Usage** tab (admin only) shows totals, a per-day trend, and breakdowns by
 user, org and model, over 7/30/90/365 days, with a drilldown to one account.
-Any user can see their own figures from the Ask dock — on a shared key, "is it
+Any user can see their own figures from the Usage tab or the chat panel — on a shared key, "is it
 me?" should not require asking an admin.
 
 The ledger is **append-only** for a reason. Running totals in a JSON document
@@ -1076,7 +1163,7 @@ webapp/
     common_now.py        iso_now() helper
     main.py               FastAPI app / routes (incl. auth, admin, usage, chat endpoints)
   static/                 index.html, app.js, style.css -- the web UI (incl. login, admin, tokens)
-    chat.js               the Ask dock: transcript, tool rows, model picker, sharing
+    chat.js               chat, both modes: transcript, tool rows, model picker, sharing
     shared.html           standalone read-only page for a shared transcript (no session)
   tests/
     mock_salesforce.py    mock Tooling/REST API used to validate the whole flow without a live org
@@ -1112,7 +1199,7 @@ exception, field-signature detection); recording and retrieving a resolution; an
 the "nothing but derived JSON reaches disk" guarantee, via a grep-based check of
 everything under `data/` after a full run.
 
-For the Ask dock, validated against a mock OpenRouter server: the full streamed
+For chat, validated against a mock OpenRouter server: the full streamed
 turn (tool call streamed in fragments -> reassembled -> executed in-process ->
 result fed back -> answer streamed -> usage), transcript persistence, the
 tool-capable model filter, share redaction and revocation, and every key-lifecycle

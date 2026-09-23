@@ -85,6 +85,22 @@
   --conga-radius-pill: 999px;
   --conga-shadow-md: 0 4px 16px rgba(1, 36, 42, 0.18);
   --conga-shadow-lg: 0 12px 44px rgba(1, 36, 42, 0.28);
+
+  /* Short aliases, kept because the chat and severity rules were written
+     against them before the brand tokens landed and still reference them in
+     ~60 places. They were never defined, which is not a cosmetic detail: an
+     undefined custom property makes the whole declaration invalid, so
+     `background: var(--navy); color: white` on the chat header rendered white
+     text on a transparent strip, and every `1px solid var(--border)` in the
+     chat panel drew nothing at all. Defining them here fixes that in one
+     place rather than rewriting each rule. */
+  --navy: var(--conga-color-brand);
+  --border: var(--conga-color-border);
+  --grey: var(--conga-color-text-muted);
+  --gold: var(--conga-color-status-warning);
+  --high: var(--conga-color-status-error);
+  --medium: var(--conga-color-status-warning-contrast);
+  --low: var(--conga-color-status-neutral);
 }
 * { box-sizing: border-box; }
 body {
@@ -671,4 +687,250 @@ tr.usage-row-self td:first-child { font-weight: var(--conga-font-weight-medium);
 .usage-bar-mini {
   height: 6px; background: var(--conga-color-brand-accent);
   border-radius: var(--conga-radius-pill); min-width: 2px;
+}
+
+/* ===================================================================
+   Sign-up card
+   =================================================================== */
+.login-sub { color: var(--conga-color-text-muted); margin-bottom: var(--conga-space-5); }
+.login-switch {
+  margin-top: var(--conga-space-5); padding-top: var(--conga-space-4);
+  border-top: 1px solid var(--conga-color-border);
+  font-size: var(--conga-font-size-md); color: var(--conga-color-text-muted); text-align: center;
+}
+.login-switch a { color: var(--conga-color-action-secondary); text-decoration: underline; cursor: pointer; }
+.field-hint { font-size: var(--conga-font-size-xs); color: var(--conga-color-text-muted); margin-top: var(--conga-space-2); }
+/* The two roles are a real choice, so they are described rather than hidden
+   in a <select>: someone signing up has no idea what "reader" costs them. */
+.role-choice { display: flex; flex-direction: column; gap: var(--conga-space-2); margin-top: var(--conga-space-2); }
+.role-option {
+  display: flex; align-items: flex-start; gap: var(--conga-space-3); margin: 0;
+  padding: 9px 11px; border: 1px solid var(--conga-color-border-strong);
+  border-radius: var(--conga-radius-sm); cursor: pointer; color: inherit; font-size: var(--conga-font-size-base);
+}
+.role-option:hover { background: var(--conga-color-surface-hover); }
+.role-option input { width: auto; margin-top: 3px; flex: none; }
+.role-option span { display: flex; flex-direction: column; gap: 1px; }
+.role-option em { font-style: normal; font-size: var(--conga-font-size-xs); color: var(--conga-color-text-muted); }
+.role-option:has(input:checked) {
+  border-color: var(--conga-color-brand-accent); background: var(--conga-color-surface-brand-subtle);
+}
+
+/* ===================================================================
+   Quota meters
+   -------------------------------------------------------------------
+   Three bands, not a gradient: under 75% there is nothing to act on,
+   75-100% is when to ask for more, and over is over. A continuous colour
+   ramp would imply a precision these numbers do not have.
+   =================================================================== */
+.quota-panel { display: flex; flex-direction: column; gap: var(--conga-space-4); }
+.quota-panel.exceeded { padding: var(--conga-space-4); border-radius: var(--conga-radius-sm);
+  background: var(--conga-color-status-error-surface); border: 1px solid var(--conga-color-status-error-border); }
+.quota-row { display: flex; gap: var(--conga-space-5); align-items: flex-start; }
+.quota-label { flex: none; width: 110px; font-size: var(--conga-font-size-md); color: var(--conga-color-text-muted); padding-top: 1px; }
+.quota-meter { flex: 1; min-width: 0; }
+.quota-track {
+  height: 8px; border-radius: var(--conga-radius-pill); overflow: hidden;
+  background: var(--conga-color-surface-subtle); border: 1px solid var(--conga-color-border);
+}
+.quota-track.sm { height: 5px; width: 90px; }
+.quota-fill { height: 100%; }
+.quota-fill.ok { background: var(--conga-color-status-success-border); }
+.quota-fill.warn { background: var(--conga-color-status-warning-border); }
+.quota-fill.over { background: var(--conga-color-status-error-border); }
+.quota-figures { font-size: var(--conga-font-size-sm); margin-top: var(--conga-space-2); }
+.quota-note { margin: 0; font-size: var(--conga-font-size-sm); }
+.quota-cell { display: flex; flex-direction: column; gap: 3px; }
+.quota-cell-text { font-size: var(--conga-font-size-xs); color: var(--conga-color-text-muted); white-space: nowrap; }
+
+.tag {
+  display: inline-block; padding: 1px var(--conga-space-3); border-radius: var(--conga-radius-pill);
+  font-size: var(--conga-font-size-xs); font-weight: var(--conga-font-weight-medium); white-space: nowrap;
+}
+.tag-ok { background: var(--conga-color-status-success-surface); color: var(--conga-color-status-success); }
+.tag-warn { background: var(--conga-color-status-warning-surface); color: var(--conga-color-status-warning); }
+.tag-info { background: var(--conga-color-surface-brand-subtle); color: var(--conga-color-brand); }
+.tag-self { background: var(--conga-color-surface-subtle); color: var(--conga-color-text-muted); }
+.row-actions { white-space: nowrap; }
+.row-actions button { margin: 1px 2px 1px 0; padding: 4px 9px; font-size: var(--conga-font-size-sm); }
+.limits-table input.num-input { width: 130px; }
+.limits-table td { vertical-align: top; }
+.limits-window { display: flex; align-items: center; gap: var(--conga-space-3); margin-top: var(--conga-space-5); flex-wrap: wrap; }
+.limits-window label { margin: 0; }
+.limits-window input.num-input { width: 70px; }
+.limits-window .muted { flex: 1 1 260px; font-size: var(--conga-font-size-sm); }
+
+/* ===================================================================
+   Full-screen chat
+   -------------------------------------------------------------------
+   DESKTOP FIRST, and FULL WIDTH. This is a tool used on a workstation:
+   the conversation is the whole point of the screen, so it gets the whole
+   screen. Type steps up from the dock's sizes too -- the dock is a 400px
+   rail where 13px is right, and at desktop width the same values look
+   like a phone screenshot.
+
+   Two earlier attempts got this wrong and are worth naming, because both
+   failures looked identical (a narrow box in the middle of a wide
+   monitor) and had nothing to do with each other:
+
+     1. The transcript was capped at 820px and centred -- a deliberate
+        choice for line length that simply read as a phone layout.
+     2. More subtly, `main` stayed narrow regardless. It carries
+        `margin: 0 auto` for the app's normal 1100px column, and as a
+        flex item of a column container those auto margins suppress the
+        cross-axis stretch, so it shrink-wrapped its content. Clearing
+        `max-width` did nothing on its own. See the rule below.
+
+   Everything -- transcript, chips, quota, footer, composer -- aligns to
+   one variable, `--chat-measure`, so capping the column again is a
+   one-line change and nothing can drift out of alignment. (An earlier
+   version hard-coded `calc(50% - 410px)` in three places, which is the
+   same number written three ways and wrong the moment it changes.)
+
+   Note there is deliberately NO <meta name="viewport"> in index.html:
+   without it a phone renders at ~980px and zooms out, which is the
+   desktop-first behaviour this app wants. Adding one would opt the whole
+   app into phone-width layout.
+
+   The page itself stops scrolling while this view is up, so there is one
+   scrollbar over the conversation instead of two.
+   =================================================================== */
+body.chat-fullscreen { overflow: hidden; }
+/* The app shell becomes a column that fills the viewport, so the chat view
+   gets exactly the leftover height -- no magic number for the header and nav,
+   which would drift the moment either one gains a line. */
+body.chat-fullscreen #appRoot { display: flex; flex-direction: column; height: 100vh; }
+body.chat-fullscreen header, body.chat-fullscreen nav { flex: none; }
+/* `margin: 0` matters as much as `max-width: none`, and leaving it out is what
+   kept this view narrow through two attempts at fixing it.
+   `main` normally carries `margin: 0 auto` to centre the app's 1100px column.
+   Here `main` is a flex item of a COLUMN flex container, and auto margins on
+   the cross axis suppress the default `align-self: stretch` -- so instead of
+   filling the window, `main` shrank to wrap its own content. Clearing the cap
+   alone did nothing, because the auto margins were doing the constraining. */
+body.chat-fullscreen main {
+  padding: 0; max-width: none; margin: 0; width: 100%;
+  flex: 1; min-height: 0; align-self: stretch;
+}
+body.chat-fullscreen .view.active { height: 100%; }
+.view-chat { height: 100%; }
+.chat-full {
+  display: flex; height: 100%; min-height: 0;
+  background: var(--conga-color-surface); position: relative;
+  /* The one value the whole view aligns to. Full width: this is a desktop
+     tool and the conversation is the whole point of the screen, so it gets
+     the whole screen. Set it to a length (e.g. 1320px) to centre a capped
+     column instead -- everything below derives from it, so that is a
+     one-line change. */
+  --chat-measure: 100%;
+  --chat-gutter: var(--conga-space-7);
+  /* Side padding that centres a `--chat-measure`-wide column and never goes
+     below the gutter on a narrow window. Rows that cannot simply be
+     `margin: 0 auto` (the chips bar, the footer -- their content is set as
+     innerHTML with no wrapper to centre) use this instead, which keeps them
+     flush with the transcript above them. */
+  --chat-pad: max(var(--chat-gutter), calc((100% - var(--chat-measure)) / 2 + var(--chat-gutter)));
+}
+.chat-full-inner { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+/* The scroller spans the full width so the scrollbar sits at the window edge
+   where it is expected. The transcript inside it is centred, which is a no-op
+   while `--chat-measure` is 100% and does the right thing if it is capped. */
+.chat-full-inner .chat-scroll { flex: 1; overflow-y: auto; min-height: 0; position: relative; }
+.chat-full-inner .chat-transcript {
+  width: 100%; max-width: var(--chat-measure); margin: 0 auto;
+  padding: var(--conga-space-7) var(--chat-gutter) var(--conga-space-5);
+  overflow: visible; flex: none; gap: var(--conga-space-5);
+}
+.chat-full-inner .chat-chips,
+.chat-full-inner .chat-quota,
+.chat-full-inner .chat-footer { padding-left: var(--chat-pad); padding-right: var(--chat-pad); }
+.chat-full-inner .chat-composer { padding: var(--conga-space-5) var(--chat-gutter); }
+.chat-full-inner .chat-composer > * {
+  width: 100%; max-width: var(--chat-measure); margin-left: auto; margin-right: auto;
+}
+
+/* Type steps up from the dock's sizes. The dock is a 400px rail where 13px is
+   right; at desktop width the same values look like a phone screenshot. */
+.chat-full-inner .chat-body { font-size: 15px; line-height: 1.65; }
+.chat-full-inner .chat-bubble {
+  font-size: 14.5px; padding: 10px 14px;
+  /* The one thing NOT stretched to full width. A question is usually one
+     line, and a right-aligned bubble spanning a whole 2200px monitor reads
+     as a layout error rather than as a message. The answer below it, which
+     is the part with substance, uses the full width. */
+  max-width: min(68%, 820px);
+}
+.chat-full-inner .chat-input { font-size: 14.5px; line-height: 1.55; }
+.chat-full-inner .chat-empty { padding: var(--conga-space-8) 0; }
+.chat-full-inner .chat-empty-title { font-size: var(--conga-font-size-xl); }
+.chat-full-inner .chat-empty-sub { font-size: var(--conga-font-size-base); }
+
+.chat-dock .chat-scroll { flex: 1; overflow-y: auto; min-height: 0; display: flex; flex-direction: column; }
+.chat-dock .chat-transcript { flex: 1; }
+
+/* "Jump to latest" instead of dragging the reader back down mid-stream. */
+.chat-jump {
+  position: sticky; bottom: var(--conga-space-4); left: 50%; transform: translateX(-50%);
+  background: var(--conga-color-brand); color: var(--conga-color-text-inverse);
+  border: none; border-radius: var(--conga-radius-pill); padding: 6px 14px;
+  font-size: var(--conga-font-size-sm); cursor: pointer; box-shadow: var(--conga-shadow-md);
+  margin-top: 0;
+}
+
+.chat-quota:empty { display: none; }
+.chat-quota-bar { font-size: var(--conga-font-size-sm); padding: 7px 12px; }
+.chat-quota-bar.warn { background: var(--conga-color-status-warning-surface); color: var(--conga-color-status-warning); }
+.chat-quota-bar.over { background: var(--conga-color-status-error-surface); color: var(--conga-color-status-error); }
+
+/* The conversation rail: collapsed by default so the resting state is one
+   clean column, and it pops back out on the arrow. */
+.chat-rail {
+  flex: none; width: 260px; border-right: 1px solid var(--conga-color-border);
+  background: var(--conga-color-gray-50); display: flex; flex-direction: column; min-height: 0;
+  transition: width 140ms ease-out, opacity 120ms;
+}
+.chat-rail.collapsed { width: 0; opacity: 0; overflow: hidden; border-right: none; }
+.chat-rail-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: var(--conga-space-4) var(--conga-space-4) var(--conga-space-4) var(--conga-space-5);
+  font-size: var(--conga-font-size-sm); font-weight: var(--conga-font-weight-medium);
+  text-transform: uppercase; letter-spacing: 0.04em; color: var(--conga-color-text-muted);
+  border-bottom: 1px solid var(--conga-color-border);
+}
+.chat-rail-head .icon-btn { color: var(--conga-color-text-muted); }
+.chat-rail-head .icon-btn:hover { background: var(--conga-color-surface-subtle); color: var(--conga-color-brand); }
+.chat-rail-list { flex: 1; overflow-y: auto; padding: var(--conga-space-2); }
+.rail-row {
+  display: flex; flex-direction: column; gap: 2px; width: 100%; text-align: left;
+  background: none; border: none; border-radius: var(--conga-radius-sm);
+  padding: var(--conga-space-3) 10px; cursor: pointer; margin: 0;
+}
+.rail-row:hover { background: var(--conga-color-surface-hover); }
+.rail-row.on { background: var(--conga-color-surface-brand-subtle); }
+.rail-row-title {
+  font-size: var(--conga-font-size-md); color: var(--conga-color-gray-900);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
+}
+.rail-row-meta { font-size: var(--conga-font-size-xs); color: var(--conga-color-text-muted); }
+.rail-new {
+  width: 100%; background: none; border: 1px dashed var(--conga-color-border-strong);
+  border-radius: var(--conga-radius-sm); padding: var(--conga-space-3); margin-top: var(--conga-space-3);
+  cursor: pointer; font-size: var(--conga-font-size-sm); color: var(--conga-color-text-muted);
+}
+.chat-rail-peek {
+  position: absolute; top: var(--conga-space-4); left: var(--conga-space-3); z-index: 2;
+  background: var(--conga-color-surface); border: 1px solid var(--conga-color-border);
+  border-radius: var(--conga-radius-sm); padding: 4px 9px; cursor: pointer; margin: 0;
+  color: var(--conga-color-text-muted); font-size: var(--conga-font-size-base);
+}
+.chat-rail-peek:hover { color: var(--conga-color-brand); border-color: var(--conga-color-brand-accent); }
+
+/* On a phone the rail would leave no room for the conversation, and the dock
+   is already full-width here -- so full screen is the only sensible mode. */
+@media (max-width: 900px) {
+  .chat-rail { position: absolute; inset: 0 auto 0 0; z-index: 3; box-shadow: var(--conga-shadow-md); }
+  /* Only the gutter shrinks -- `--chat-pad` is derived from it, so the chips
+     bar and footer follow without their own override. */
+  .chat-full { --chat-gutter: var(--conga-space-4); }
+  .chat-full-inner .chat-bubble { max-width: 88%; }
 }

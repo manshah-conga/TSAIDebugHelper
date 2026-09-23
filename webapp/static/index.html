@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>TS Intelligent Debug Helper</title>
-<link rel="stylesheet" href="/static/style.css?v=11">
+<link rel="stylesheet" href="/static/style.css?v=15">
 </head>
 <body>
 
@@ -12,13 +12,52 @@
 <div id="loginOverlay" class="login-overlay">
   <div class="login-card">
     <h1>TS Intelligent Debug Helper</h1>
-    <div class="sub" style="color:var(--conga-color-text-muted); margin-bottom:16px;">Sign in to continue</div>
-    <label>Username</label>
-    <input id="loginUser" autocomplete="username" onkeydown="if(event.key==='Enter') doLogin()">
-    <label>Password</label>
-    <input id="loginPass" type="password" autocomplete="current-password" onkeydown="if(event.key==='Enter') doLogin()">
-    <button class="primary" style="width:100%;" onclick="doLogin()">Sign in</button>
-    <div id="loginStatus" class="status-line"></div>
+
+    <!-- Sign in and sign up share one card and swap in place, rather than
+         living on two screens. Someone who clicks "Create account" and then
+         realises they already have one should not have to navigate back. -->
+    <div id="signInPane">
+      <div class="sub login-sub">Sign in to continue</div>
+      <label>Username</label>
+      <input id="loginUser" autocomplete="username" onkeydown="if(event.key==='Enter') doLogin()">
+      <label>Password</label>
+      <input id="loginPass" type="password" autocomplete="current-password" onkeydown="if(event.key==='Enter') doLogin()">
+      <button class="primary" style="width:100%;" onclick="doLogin()">Sign in</button>
+      <div id="loginStatus" class="status-line"></div>
+      <div id="signupPrompt" class="login-switch" style="display:none;">
+        No account? <a href="#" onclick="showSignup(true); return false;">Create one</a>
+      </div>
+    </div>
+
+    <div id="signUpPane" style="display:none;">
+      <div class="sub login-sub">Create your account</div>
+      <label>Username</label>
+      <input id="suUser" autocomplete="username" onkeydown="if(event.key==='Enter') doSignup()">
+      <div class="field-hint" id="suUserHint"></div>
+      <label>Password</label>
+      <input id="suPass" type="password" autocomplete="new-password" onkeydown="if(event.key==='Enter') doSignup()">
+      <label>Confirm password</label>
+      <input id="suPass2" type="password" autocomplete="new-password" onkeydown="if(event.key==='Enter') doSignup()">
+      <label>Access</label>
+      <!-- Writer is preselected because it is what almost everyone needs;
+           Reader is offered for people who only ever look. Whichever is
+           chosen here, the server accepts only these two. -->
+      <div class="role-choice">
+        <label class="role-option">
+          <input type="radio" name="suRole" value="user" checked>
+          <span><strong>Writer</strong><em>Connect orgs, file incidents, normalize logs</em></span>
+        </label>
+        <label class="role-option">
+          <input type="radio" name="suRole" value="reader">
+          <span><strong>Reader</strong><em>View orgs, incidents and logs only</em></span>
+        </label>
+      </div>
+      <button class="primary" style="width:100%;" onclick="doSignup()">Create account &amp; sign in</button>
+      <div id="signupStatus" class="status-line"></div>
+      <div class="login-switch">
+        Already registered? <a href="#" onclick="showSignup(false); return false;">Sign in</a>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -40,9 +79,14 @@
   <button data-view="known">Known Issues</button>
   <button data-view="logs">Log Normalizer</button>
   <button data-view="tokens">API Tokens</button>
-  <button data-view="usage" id="navUsage" style="display:none;">Usage</button>
+  <button data-view="usage" id="navUsage">Usage</button>
   <button data-view="admin" id="navAdmin" style="display:none;">Admin</button>
-  <button onclick="toggleChatDock()" id="navChat" class="nav-chat" style="margin-left:auto;">Ask &#9662;</button>
+  <!-- Two ways in, deliberately. "Ask" from the nav opens the full-screen
+       view, which is where a real investigation happens. The dock is still
+       there for the other workflow -- asking about the row you are looking
+       at -- and every "explain this" link in the app opens that instead. -->
+  <button onclick="openChatFull()" id="navChat" class="nav-chat" style="margin-left:auto;">Ask</button>
+  <button onclick="toggleChatDock()" id="navChatDock" class="nav-chat" title="Open the side panel instead">&#9776;</button>
   <button onclick="changeOwnPassword()">Change password</button>
   <button onclick="doLogout()" style="color:var(--high);">Sign out</button>
 </nav>
@@ -56,6 +100,10 @@
         only to make the fetch and is not persisted.</p>
       <label>Org ID (short, no spaces -- used to refer to this org from now on)</label>
       <input id="newOrgId" placeholder="acme_prod">
+      <p class="muted">This is a name you choose, and it is shared across everyone using this
+        app -- if it is already taken you will be asked to pick another, even when the org
+        holding it is one you cannot see. Re-using the id of an org you already own refreshes
+        it instead of creating a second one.</p>
       <label>Org Name</label>
       <input id="newOrgName" placeholder="Acme Corp - Production">
       <label>Instance URL</label>
@@ -206,7 +254,19 @@
        from the same credential, so "who spent this" can only be answered
        here, from what the app recorded at the point of use. -->
   <section id="view-usage" class="view">
+    <!-- Every account sees its own consumption and its own quota. That was
+         already true of the API (/api/usage/me has never been admin-gated);
+         only this tab was hidden. Answering "is it me, and how much is
+         left?" without an admin in the loop removes a whole class of
+         question from their queue. -->
     <div class="card">
+      <h2>Your usage</h2>
+      <div id="myQuota"></div>
+      <div id="myUsageKpis" class="usage-kpis"></div>
+      <div id="myUsageTrend"></div>
+    </div>
+
+    <div class="card" data-admin-only>
       <h2>LLM connection</h2>
       <p class="muted">The connection every signed-in user shares. It is read from the server's
         environment, so changing it means editing the server's configuration and restarting the
@@ -215,7 +275,7 @@
       <div id="llmStatusPanel"></div>
     </div>
 
-    <div class="card">
+    <div class="card" data-admin-only>
       <h2>Usage</h2>
       <div class="usage-controls">
         <div>
@@ -239,7 +299,7 @@
       <div id="usageTrend"></div>
     </div>
 
-    <div class="card">
+    <div class="card" data-admin-only>
       <h2>By user</h2>
       <p class="muted">Every chat turn is attributed to the account that asked it, including
         turns that failed before reaching the provider.</p>
@@ -251,7 +311,7 @@
       </table>
     </div>
 
-    <div class="card">
+    <div class="card" data-admin-only>
       <h2>By org</h2>
       <p class="muted">Which customer orgs the effort is going against. Turns with no org
         selected &mdash; standalone log normalization, for instance &mdash; are grouped
@@ -263,13 +323,34 @@
       </table>
     </div>
 
-    <div class="card">
+    <div class="card" data-admin-only>
       <h2>By model</h2>
       <table>
         <thead><tr><th>Model</th><th class="num">Questions</th><th class="num">Tokens</th>
           <th class="num">Cost</th><th class="num">Avg answer</th></tr></thead>
         <tbody id="usageByModel"></tbody>
       </table>
+    </div>
+  </section>
+
+  <!-- Chat, full screen. The transcript column is capped rather than
+       full-bleed: the dock's layout was tuned for 400px, and a line of text
+       stretched across a 1900px monitor is measurably harder to read than
+       one at a comfortable measure. The conversation rail starts collapsed
+       so the default is a single clean column, and pops back out on
+       demand. -->
+  <section id="view-chat" class="view view-chat">
+    <div class="chat-full" id="chatFull">
+      <aside class="chat-rail collapsed" id="chatRail">
+        <div class="chat-rail-head">
+          <span>Conversations</span>
+          <button type="button" class="icon-btn" onclick="toggleChatRail()" title="Hide">&#10094;</button>
+        </div>
+        <div class="chat-rail-list" id="chatRailList"></div>
+      </aside>
+      <button type="button" class="chat-rail-peek" id="chatRailPeek"
+              onclick="toggleChatRail()" title="Show conversations">&#9776;</button>
+      <div class="chat-full-inner" id="chatFullInner"></div>
     </div>
   </section>
 
@@ -289,10 +370,27 @@
       <button class="primary" onclick="createUser()">Create user</button>
       <div id="admStatus" class="status-line"></div>
     </div>
+    <!-- Quota policy is configuration, not code: these numbers started as a
+         guess at what a support engineer consumes in a day, and the person
+         who should adjust them is whoever is reading the usage report -- not
+         whoever can restart the service. -->
+    <div class="card">
+      <h2>LLM quota limits</h2>
+      <p class="muted">Caps are counted in <b>tokens</b>, not currency, because Azure OpenAI does not
+        report a per-call cost &mdash; a spend limit would never trigger. Leave a field blank for
+        unlimited. Admins are never capped. A turn already running is allowed to finish, so an
+        account can end up over its cap by at most one question.</p>
+      <div id="limitsEditor"></div>
+    </div>
+
     <div class="card">
       <h2>Users</h2>
+      <p class="muted"><b>Verified</b> is a quota decision, not a permission one: verifying an
+        account moves it to the higher tier and grants it nothing else. Self-registered accounts
+        start unverified. A per-user limit overrides the tier for that account only.</p>
       <table>
-        <thead><tr><th>Username</th><th>Role</th><th>Status</th><th>Created</th><th>Actions</th></tr></thead>
+        <thead><tr><th>Username</th><th>Role</th><th>Status</th><th>Source</th><th>Verified</th>
+          <th>Quota</th><th>Created</th><th>Actions</th></tr></thead>
         <tbody id="usersTable"></tbody>
       </table>
     </div>
@@ -308,7 +406,7 @@
 </aside>
 
 </div>
-<script src="/static/app.js?v=11"></script>
-<script src="/static/chat.js?v=11"></script>
+<script src="/static/app.js?v=15"></script>
+<script src="/static/chat.js?v=15"></script>
 </body>
 </html>

@@ -322,6 +322,58 @@ check("fmtCompact tolerates no value", sandbox.fmtCompact(undefined) === "0");
 check("fmtMoney keeps sub-cent costs visible", sandbox.fmtMoney(0.0012) === "$0.0012");
 check("fmtMoney rounds real money to cents", sandbox.fmtMoney(12.345) === "$12.35");
 
+console.log("\n-- quota meter --");
+// The whole point of the meter is that a reader never has to subtract, and
+// that "cannot say" never renders as a confident number.
+const quotaOk = sandbox.renderQuotaPanel({
+  tier: "verified", source: "verified", window_days: 30, unlimited: false, exceeded: false,
+  daily: { used: 20000, limit: 200000, remaining: 180000, pct: 10, exceeded: false },
+  window: { used: 90000, limit: 2000000, remaining: 1910000, pct: 4.5, exceeded: false },
+  daily_resets_at: "2026-09-23T00:00:00Z",
+});
+check("both windows are shown", has(quotaOk, "Today") && has(quotaOk, "Last 30 days"));
+check("the remaining figure is spelled out, not left to subtraction",
+  has(quotaOk, "left"));
+check("a comfortable bar is drawn in the calm band", has(quotaOk, "quota-fill ok"));
+check("the daily reset time is stated", has(quotaOk, "2026-09-23"));
+
+const quotaWarn = sandbox.renderQuotaPanel({
+  tier: "unverified", source: "unverified", window_days: 30, unlimited: false, exceeded: false,
+  daily: { used: 160000, limit: 200000, remaining: 40000, pct: 80, exceeded: false },
+  window: { used: 10, limit: 2000000, remaining: 1999990, pct: 0, exceeded: false },
+  daily_resets_at: "2026-09-23T00:00:00Z",
+});
+check("nearing the cap moves the bar into the warn band", has(quotaWarn, "quota-fill warn"));
+check("an unverified account is told that verification is the remedy",
+  has(quotaWarn, "unverified") && has(quotaWarn, "raises the limit"));
+
+const quotaOver = sandbox.renderQuotaPanel({
+  tier: "unverified", source: "unverified", window_days: 30, unlimited: false, exceeded: true,
+  daily: { used: 250000, limit: 200000, remaining: 0, pct: 100, exceeded: true },
+  window: { used: 250000, limit: 2000000, remaining: 1750000, pct: 12.5, exceeded: false },
+  daily_resets_at: "2026-09-23T00:00:00Z",
+});
+check("being over is called out, not shown as 0 left",
+  has(quotaOver, "none left") && has(quotaOver, "quota-fill over"));
+check("the exhausted panel is visually distinct", has(quotaOver, "quota-panel exceeded"));
+
+const quotaAdmin = sandbox.renderQuotaPanel({ tier: "admin", unlimited: true });
+check("an admin is told they are uncapped, with the reason",
+  has(quotaAdmin, "No LLM limit") && has(quotaAdmin, "admins are never capped"));
+check("no quota at all renders nothing rather than an empty meter",
+  sandbox.renderQuotaPanel(null) === "");
+
+console.log("\n-- admin user rows --");
+const qcell = sandbox.quotaCell({
+  unlimited: false, window_days: 30,
+  window: { used: 1800000, limit: 2000000, pct: 90, exceeded: false },
+}, { limits: { daily_tokens: 5 } });
+check("a row shows consumption against the cap", has(qcell, "1.8M") && has(qcell, "2.0M"));
+check("a heavy account is flagged in the warn band", has(qcell, "quota-fill warn"));
+check("a per-account override is labelled as custom", has(qcell, "custom"));
+check("an uncapped account says so plainly",
+  has(sandbox.quotaCell({ unlimited: true }, {}), "unlimited"));
+
 console.log();
 if (failures.length) {
   console.log(`${failures.length} FAILURE(S):`);

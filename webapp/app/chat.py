@@ -39,7 +39,9 @@ import os
 import time
 from typing import AsyncIterator
 
+from . import auth
 from . import chat_store
+from . import limits
 from . import llm
 from . import llm_config
 from . import secrets_store
@@ -420,6 +422,21 @@ async def run_turn(ident, chat_id, user_text, org_id, org_label, model,
 
     def elapsed_ms():
         return int((time.monotonic() - started) * 1000)
+
+    # Quota first, before the credential check, because it is the more
+    # specific answer: a capped user told "no LLM key is configured" would
+    # chase the wrong problem, and an admin would too.
+    #
+    # Checked once per turn, not per tool round. The ledger read costs a
+    # handful of small file opens, and re-checking mid-turn could only ever
+    # kill a stream the user is already reading -- see app/limits.py on why
+    # overshoot by one turn is the accepted trade.
+    allowed, quota_reason, quota = limits.check_turn_allowed(username, auth.get_user(username))
+    if not allowed:
+        usage_ledger.record_turn(username, chat_id=chat_id, org_id=org_id, model=model,
+                                 duration_ms=elapsed_ms(), ok=False, error_code="quota_exceeded")
+        yield sse("error", {"code": "quota_exceeded", "message": quota_reason, "quota": quota})
+        return
 
     try:
         creds = secrets_store.require_creds(ident)

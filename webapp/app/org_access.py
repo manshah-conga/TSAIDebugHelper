@@ -21,13 +21,25 @@ Rules (agreed with the product owner):
   is allowed at the normal `user` role. That is the point of making an org
   public: colleagues can investigate against it without owning it.
 
-Backward compatibility
-----------------------
+Orgs with no visibility field
+-----------------------------
 Orgs connected before this feature existed have neither field. They are
-treated as ``owner=None, visibility="public"`` so that nothing silently
-disappears from an existing install. An ownerless org can only be managed
-by an admin, who can also claim it by setting its visibility (which stamps
-an owner). Newly connected orgs default to **private**.
+treated as ``owner=None, visibility="private"``, which -- because the owner
+comparison below requires a non-null owner -- makes them **visible to
+admins only**.
+
+That is a deliberate reversal. They used to default to *public* so that
+nothing disappeared from an existing install, which was the right call while
+every account was created by an admin. Once anyone on the VPN can register
+themselves, "public" means a self-registered stranger inherits sight of
+every org connected before ownership was tracked, and those are exactly the
+orgs nobody has reviewed. Defaulting closed puts the decision back in an
+admin's hands: they can see these orgs, and setting a visibility on one
+stamps them as its owner and makes the choice explicit.
+
+An ownerless org can only be managed by an admin, who can also claim it by
+setting its visibility (which stamps an owner). Newly connected orgs default
+to **private**.
 
 Existence hiding
 ----------------
@@ -61,10 +73,12 @@ def owner_of(entry):
 
 
 def visibility_of(entry):
-    """Legacy entries (written before this feature) have no visibility field.
-    They are public so that an existing install keeps working unchanged."""
+    """Entries written before this feature have no visibility field. They
+    read as PRIVATE, and since they also have no owner, that means
+    admin-only -- see "Orgs with no visibility field" above for why this
+    defaults closed rather than open."""
     v = (entry or {}).get("visibility")
-    return v if v in VISIBILITIES else PUBLIC
+    return v if v in VISIBILITIES else PRIVATE
 
 
 def can_view(entry, ident):
@@ -118,11 +132,12 @@ def assert_can_manage(org_id, ident, registry=None):
     entry = assert_can_view(org_id, ident, registry)
     if not can_manage(entry, ident):
         owner = owner_of(entry)
-        who = f"'{owner}'" if owner else "nobody (it predates org ownership)"
+        who = f"'{owner}'" if owner else "nobody yet (it predates org ownership)"
         raise HTTPException(
             403,
             f"Org '{org_id}' is owned by {who}. Only its owner or an admin can "
-            f"change its visibility or re-connect it.",
+            f"change its visibility or re-connect it."
+            + ("" if owner else " An admin can claim it by setting its visibility."),
         )
     return entry
 

@@ -179,9 +179,18 @@ function ageBadge(days) {
 document.querySelectorAll("nav button[data-view]").forEach(btn => {
   btn.addEventListener("click", () => showView(btn.dataset.view));
 });
+let LAST_VIEW = "connections";
+
 function showView(name) {
+  const current = (document.querySelector(".view.active") || {}).id || "";
+  // Remembered so Esc out of full-screen chat lands back where the engineer
+  // was, rather than dumping them on the default tab.
+  if (current && current !== "view-chat") LAST_VIEW = current.replace("view-", "");
   document.querySelectorAll("nav button").forEach(b => b.classList.toggle("active", b.dataset.view === name));
   document.querySelectorAll(".view").forEach(v => v.classList.toggle("active", v.id === `view-${name}`));
+  // Full-screen chat takes over the window, so the page must not also scroll
+  // behind it -- two scrollbars over one conversation is disorienting.
+  document.body.classList.toggle("chat-fullscreen", name === "chat");
   if (name === "dashboard") loadDashboard();
   if (name === "incidents") loadIncidents();
   if (name === "known") loadKnownIssues();
@@ -189,6 +198,7 @@ function showView(name) {
   if (name === "tokens") loadTokens();
   if (name === "usage") loadUsageView();
   if (name === "admin") loadUsers();
+  if (name === "chat" && typeof mountChatFull === "function") mountChatFull();
 }
 
 function renderOrgPicker() {
@@ -1219,7 +1229,66 @@ async function doLogout() {
   document.getElementById("appRoot").style.display = "none";
   const s = document.getElementById("loginStatus");
   s.textContent = "Signed out."; s.className = "status-line";
+  showSignup(false);
   document.getElementById("loginOverlay").style.display = "flex";
+}
+
+// ---------- self-registration ----------
+//
+// Open registration is safe here only because the app is reachable only over
+// the Conga VPN, so everyone who can load this form is already inside the
+// company. What keeps it safe beyond that is server-side: the role is
+// whitelisted in app/auth.py (never trusted from this form) and a new account
+// lands in the lower LLM quota tier until an admin verifies it.
+
+/** Whether the server is accepting registrations, fetched once so the link is
+ *  not offered on a server that would refuse it. */
+async function loadSignupConfig() {
+  const cfg = await apiJson("/api/auth/signup-config", {}, null);
+  if (!cfg || !cfg.enabled) return;
+  document.getElementById("signupPrompt").style.display = "";
+  document.getElementById("suUserHint").textContent = cfg.username_rule || "";
+}
+
+function showSignup(on) {
+  document.getElementById("signInPane").style.display = on ? "none" : "";
+  document.getElementById("signUpPane").style.display = on ? "" : "none";
+  const status = document.getElementById(on ? "signupStatus" : "loginStatus");
+  status.textContent = ""; status.className = "status-line";
+  const focus = document.getElementById(on ? "suUser" : "loginUser");
+  if (focus) focus.focus();
+}
+
+async function doSignup() {
+  const username = document.getElementById("suUser").value.trim().toLowerCase();
+  const password = document.getElementById("suPass").value;
+  const confirm = document.getElementById("suPass2").value;
+  const role = (document.querySelector('input[name="suRole"]:checked') || {}).value || "user";
+  const statusEl = document.getElementById("signupStatus");
+  const fail = msg => { statusEl.textContent = msg; statusEl.className = "status-line error"; };
+
+  // Checked here purely so the common mistakes get an instant answer; the
+  // server validates all of it again and is the only thing that decides.
+  if (!username || !password) return fail("Choose a username and a password.");
+  if (password !== confirm) return fail("The two passwords don't match.");
+  if (password.length < 8) return fail("Password must be at least 8 characters.");
+
+  statusEl.textContent = "Creating your account..."; statusEl.className = "status-line";
+  const res = await api("/api/auth/signup", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password, role }),
+  });
+  if (!res.ok) return fail(await errorText(res));
+  CURRENT_USER = await res.json();
+  SESSION_DEAD = false;
+  statusEl.textContent = "";
+  document.getElementById("suPass").value = "";
+  document.getElementById("suPass2").value = "";
+  enterApp();
+  // Said once, on the way in, because it explains a limit they would
+  // otherwise only discover by hitting it mid-investigation.
+  toast("Welcome. Your account starts with a smaller LLM allowance until an "
+        + "admin verifies it -- see the Usage tab.", "ok", 9000);
 }
 
 async function changeOwnPassword() {
@@ -1248,7 +1317,13 @@ function applyRole() {
   document.getElementById("userInfo").innerHTML =
     `${escapeHtml(CURRENT_USER.username)}<span class="role-tag">${escapeHtml(role)}</span>`;
   document.getElementById("navAdmin").style.display = role === "admin" ? "" : "none";
-  document.getElementById("navUsage").style.display = role === "admin" ? "" : "none";
+  // Usage is for everyone now: the tab shows your own consumption and your own
+  // quota, and only the cross-user reports inside it are admin-only. Somebody
+  // who can see how much of their allowance is left does not have to ask.
+  document.getElementById("navUsage").style.display = "";
+  document.querySelectorAll("[data-admin-only]").forEach(el => {
+    el.style.display = role === "admin" ? "" : "none";
+  });
   // Hide write-only cards for readers (the server enforces this too).
   const canWrite = role === "user" || role === "admin";
   document.querySelectorAll('[data-requires="user"]').forEach(el => {
@@ -1273,8 +1348,70 @@ function enterApp() {
 // what the SERVER spent; only this app knows which account asked.
 
 async function loadUsageView() {
+  // Everyone gets their own numbers; only an admin gets the rest, and asking
+  // for the admin endpoints as a reader would just 403 into a scary toast.
+  await renderMyUsage();
+  if (!CURRENT_USER || CURRENT_USER.role !== "admin") return;
   await Promise.all([renderLlmStatusPanel(), populateUsageUserPicker()]);
   await loadUsage();
+}
+
+/** One account's own consumption and quota. The quota meter is the point:
+ *  "how much have I used" is only ever asked in order to answer "how much is
+ *  left", and the previous screen made the reader do that subtraction. */
+async function renderMyUsage() {
+  const quotaHost = document.getElementById("myQuota");
+  const kpis = document.getElementById("myUsageKpis");
+  setBusy(quotaHost);
+  const r = await apiJson("/api/usage/me?days=30", {}, null);
+  if (!r) { quotaHost.innerHTML = `<p class="status-line error">Could not load your usage.</p>`;
+            kpis.innerHTML = ""; return; }
+  quotaHost.innerHTML = renderQuotaPanel(r.quota);
+  const t = r.totals || {};
+  kpis.innerHTML = `
+    <div class="kpi"><div class="kpi-value">${t.turns || 0}</div><div class="kpi-label">Your questions</div></div>
+    <div class="kpi"><div class="kpi-value">${fmtCompact(t.total_tokens)}</div><div class="kpi-label">Tokens, 30 days</div></div>
+    <div class="kpi"><div class="kpi-value">${t.tool_calls || 0}</div><div class="kpi-label">Tool calls</div></div>
+    <div class="kpi"><div class="kpi-value">${t.avg_seconds_per_turn || 0}s</div><div class="kpi-label">Avg answer time</div></div>`;
+  renderUsageTrend(r, "myUsageTrend");
+}
+
+/** The quota meter, shared by the Usage tab and the chat footer. */
+function renderQuotaPanel(q) {
+  if (!q) return "";
+  if (q.unlimited) {
+    return `<div class="key-status ok">No LLM limit on this account${
+      q.tier === "admin" ? " (admins are never capped)" : ""}.</div>`;
+  }
+  const tierNote = q.tier === "unverified"
+    ? `Your account is <b>unverified</b>, so it is on the lower allowance.
+       An admin verifying it raises the limit.`
+    : (q.source === "override"
+        ? `An admin has set a limit specifically for your account.`
+        : `Standard allowance for a verified account.`);
+  return `<div class="quota-panel${q.exceeded ? " exceeded" : ""}">
+      ${bar("Today", q.daily, `resets ${escapeHtml((q.daily_resets_at || "").slice(0, 10))} 00:00 UTC`)}
+      ${bar(`Last ${q.window_days} days`, q.window, "frees up as older days drop out")}
+      <p class="muted quota-note">${tierNote}</p>
+    </div>`;
+
+  function bar(label, part, note) {
+    if (!part || part.limit === null) {
+      return `<div class="quota-row"><div class="quota-label">${escapeHtml(label)}</div>
+        <div class="quota-meter"><span class="muted">unlimited</span></div></div>`;
+    }
+    // Three bands rather than a gradient: below 75% there is nothing to think
+    // about, 75-100% is the moment to ask for more, and over is over.
+    const band = part.exceeded ? "over" : (part.pct >= 75 ? "warn" : "ok");
+    return `<div class="quota-row">
+      <div class="quota-label">${escapeHtml(label)}</div>
+      <div class="quota-meter">
+        <div class="quota-track"><div class="quota-fill ${band}" style="width:${Math.min(100, part.pct)}%"></div></div>
+        <div class="quota-figures">${fmtCompact(part.used)} of ${fmtCompact(part.limit)} tokens
+          &middot; ${part.exceeded ? "<b>none left</b>" : `${fmtCompact(part.remaining)} left`}
+          <span class="muted">&middot; ${escapeHtml(note)}</span></div>
+      </div></div>`;
+  }
 }
 
 /** The shared connection, read-only. Deliberately a report and not a form:
@@ -1377,8 +1514,9 @@ async function loadUsage() {
  *  dependency for it would be the biggest thing the page downloads. Days with
  *  no activity are drawn as a hairline rather than skipped, because a trend
  *  that silently omits quiet days makes a flat week look busy. */
-function renderUsageTrend(r) {
-  const host = document.getElementById("usageTrend");
+function renderUsageTrend(r, hostId = "usageTrend") {
+  const host = document.getElementById(hostId);
+  if (!host) return;
   const days = r.by_day || [];
   if (!days.length) { host.innerHTML = ""; return; }
   const peak = Math.max(1, ...days.map(d => d.total_tokens || 0));
@@ -1534,25 +1672,189 @@ async function createUser() {
 }
 
 async function loadUsers() {
+  await Promise.all([renderUsersTable(), renderLimitsEditor()]);
+}
+
+async function renderUsersTable() {
   const tbody = document.getElementById("usersTable");
   const users = await apiJson("/api/admin/users", {}, {}) || {};
-  fillTable(tbody, Object.entries(users), 5, "No users.", ([name, u]) => {
+  fillTable(tbody, Object.entries(users), 8, "No users.", ([name, u]) => {
     const tr = document.createElement("tr");
     const isSelf = CURRENT_USER && name === CURRENT_USER.username;
+    const q = u.quota || {};
     const roleSel = `<select onchange="setUserRole('${escapeHtml(name)}', this.value)">
       ${["reader", "user", "admin"].map(r => `<option value="${r}" ${u.role === r ? "selected" : ""}>${r}</option>`).join("")}
     </select>`;
+
+    // Where the account came from. Self-registration is the one worth
+    // spotting at a glance, so it is the only value that gets a badge.
+    const source = u.created_by === "self"
+      ? `<span class="tag tag-self">self-registered</span>`
+      : (u.created_by === "bootstrap" ? `<span class="muted">bootstrap</span>`
+        : (u.created_by ? `<span class="muted">${escapeHtml(u.created_by.replace(/^admin:/, "by "))}</span>`
+          : `<span class="muted">&mdash;</span>`));
+
+    // Admins cannot be capped, so offering to verify one is a control that
+    // does nothing -- say so instead of showing a dead button.
+    const verifyCell = u.role === "admin"
+      ? `<span class="muted">n/a</span>`
+      : (u.verified
+          ? `<span class="tag tag-ok" title="${escapeHtml(
+              (u.verified_by ? "by " + u.verified_by : "") + (u.verified_at ? " " + fmtWhen(u.verified_at) : ""))}">verified</span>`
+          : `<span class="tag tag-warn">unverified</span>`);
+
     tr.innerHTML = `<td>${escapeHtml(name)}${isSelf ? ' <span class="muted">(you)</span>' : ""}</td>
       <td>${roleSel}</td>
       <td>${u.disabled ? "<span style='color:var(--conga-color-status-error)'>disabled</span>" : "active"}</td>
+      <td>${source}</td>
+      <td>${verifyCell}</td>
+      <td>${quotaCell(q, u)}</td>
       <td>${fmtWhen(u.created_at)}</td>
-      <td>
+      <td class="row-actions">
+        ${u.role === "admin" ? "" : `<button class="secondary" onclick="setVerified('${escapeHtml(name)}', ${!u.verified})">${
+          u.verified ? "Unverify" : "Verify"}</button>
+        <button class="secondary" onclick="editUserLimits('${escapeHtml(name)}')">Limit</button>`}
         <button class="secondary" onclick="resetUserPassword('${escapeHtml(name)}')">Reset password</button>
         ${isSelf ? "" : `<button class="secondary" onclick="toggleDisabled('${escapeHtml(name)}', ${!u.disabled})">${u.disabled ? "Enable" : "Disable"}</button>
         <button class="secondary" onclick="deleteUser('${escapeHtml(name)}')">Delete</button>`}
       </td>`;
     return tr;
   });
+}
+
+/** 30-day consumption against the cap, so the decision to verify or raise a
+ *  limit can be made from the same row rather than from another screen. */
+function quotaCell(q, u) {
+  if (!q || q.unlimited) return `<span class="muted">unlimited</span>`;
+  const w = q.window || {};
+  const band = w.exceeded ? "over" : (w.pct >= 75 ? "warn" : "ok");
+  const override = u.limits ? ` <span class="tag tag-info" title="per-account override">custom</span>` : "";
+  return `<div class="quota-cell">
+    <div class="quota-track sm"><div class="quota-fill ${band}" style="width:${Math.min(100, w.pct || 0)}%"></div></div>
+    <div class="quota-cell-text">${fmtCompact(w.used)} / ${fmtCompact(w.limit)}${override}</div>
+  </div>`;
+}
+
+async function setVerified(name, verified) {
+  if (!verified && !await confirmModal(`Un-verify ${name}?`,
+      "Their LLM allowance drops back to the unverified tier immediately. "
+      + "They keep their role and stay signed in.", "Un-verify")) return;
+  const res = await api(`/api/admin/users/${encodeURIComponent(name)}/verified`, {
+    method: "PATCH", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ verified }),
+  });
+  toast(res.ok ? `${name} ${verified ? "verified" : "un-verified"}.` : await errorText(res),
+        res.ok ? "ok" : "error");
+  loadUsers();
+}
+
+/** A per-account override. Blank means "follow the tier" rather than
+ *  "unlimited", because an account pinned to a number would never pick up a
+ *  later change to the tier default -- a surprise six months from now. */
+async function editUserLimits(name) {
+  const answer = await modal({
+    title: `LLM limit for ${name}`,
+    body: "Tokens. Leave both blank and submit to remove the override so this account "
+        + "follows its tier again. Enter 'unlimited' in a field for no cap on that window.",
+    fields: [
+      { name: "daily", label: "Daily token limit", type: "text" },
+      { name: "monthly", label: "30-day token limit", type: "text" },
+    ],
+    submitLabel: "Save limit",
+  });
+  if (!answer) return;
+
+  const parse = (raw) => {
+    const v = (raw || "").trim().toLowerCase();
+    if (!v) return undefined;                       // not provided
+    if (v === "unlimited" || v === "none") return null;
+    const n = parseInt(v.replace(/[,_\s]/g, ""), 10);
+    return Number.isFinite(n) ? n : NaN;
+  };
+  const daily = parse(answer.daily);
+  const monthly = parse(answer.monthly);
+  if (Number.isNaN(daily) || Number.isNaN(monthly)) {
+    toast("Enter a whole number of tokens, 'unlimited', or leave it blank.", "error"); return;
+  }
+
+  const body = daily === undefined && monthly === undefined
+    ? { clear: true }
+    : { daily_tokens: daily === undefined ? null : daily,
+        monthly_tokens: monthly === undefined ? null : monthly };
+  const res = await api(`/api/admin/users/${encodeURIComponent(name)}/limits`, {
+    method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  toast(res.ok ? (body.clear ? `${name} follows the tier default again.` : `Limit updated for ${name}.`)
+              : await errorText(res), res.ok ? "ok" : "error");
+  loadUsers();
+}
+
+/** The tier defaults, as a form. These live in data/auth/limits.json rather
+ *  than in the environment so that raising a cap is an admin action, not a
+ *  deployment. */
+async function renderLimitsEditor() {
+  const host = document.getElementById("limitsEditor");
+  setBusy(host);
+  const r = await apiJson("/api/admin/limits", {}, null);
+  if (!r) { host.innerHTML = `<p class="status-line error">Could not load the quota policy.</p>`; return; }
+  const cfg = r.config || {};
+  const rowFor = (tier, label, note) => {
+    const t = (cfg.tiers || {})[tier] || {};
+    return `<tr>
+      <td><b>${escapeHtml(label)}</b><div class="muted">${note}</div></td>
+      <td><input id="lim_${tier}_daily" class="num-input" value="${t.daily_tokens ?? ""}"
+            placeholder="unlimited"></td>
+      <td><input id="lim_${tier}_monthly" class="num-input" value="${t.monthly_tokens ?? ""}"
+            placeholder="unlimited"></td>
+    </tr>`;
+  };
+  host.innerHTML = `
+    <table class="mini-table limits-table">
+      <thead><tr><th>Tier</th><th>Daily tokens</th><th>Rolling-window tokens</th></tr></thead>
+      <tbody>
+        ${rowFor("unverified", "Unverified", "Self-registered, not yet vouched for by an admin")}
+        ${rowFor("verified", "Verified", "Created by an admin, or verified by one afterwards")}
+      </tbody>
+    </table>
+    <div class="limits-window">
+      <label for="limWindow">Rolling window</label>
+      <input id="limWindow" class="num-input" value="${cfg.window_days ?? 30}"> days
+      <span class="muted">1-90. Rolling rather than calendar-month, so an allowance does not
+        arrive in a lump and run out mid-month.</span>
+    </div>
+    <button class="primary" onclick="saveLimits()">Save limits</button>
+    <div id="limitsStatus" class="status-line">${cfg.updated_at
+      ? `Last changed ${escapeHtml(fmtWhen(cfg.updated_at))}${
+          cfg.updated_by ? ` by ${escapeHtml(cfg.updated_by)}` : ""}.`
+      : "Currently on the built-in defaults."}</div>`;
+}
+
+async function saveLimits() {
+  const statusEl = document.getElementById("limitsStatus");
+  const read = (id) => {
+    const v = (document.getElementById(id).value || "").trim().replace(/[,_\s]/g, "");
+    if (!v) return null;                             // blank = unlimited
+    const n = parseInt(v, 10);
+    return Number.isFinite(n) ? n : NaN;
+  };
+  const tiers = {};
+  for (const tier of ["unverified", "verified"]) {
+    const daily = read(`lim_${tier}_daily`);
+    const monthly = read(`lim_${tier}_monthly`);
+    if (Number.isNaN(daily) || Number.isNaN(monthly)) {
+      statusEl.textContent = "Limits must be whole numbers of tokens, or blank for unlimited.";
+      statusEl.className = "status-line error"; return;
+    }
+    tiers[tier] = { daily_tokens: daily, monthly_tokens: monthly };
+  }
+  const windowDays = parseInt((document.getElementById("limWindow").value || "30").trim(), 10);
+  const res = await api("/api/admin/limits", {
+    method: "PUT", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tiers, window_days: Number.isFinite(windowDays) ? windowDays : 30 }),
+  });
+  if (!res.ok) { statusEl.textContent = await errorText(res); statusEl.className = "status-line error"; return; }
+  toast("Quota limits saved. They apply to the next question anyone asks.", "ok");
+  loadUsers();
 }
 
 async function setUserRole(name, role) {
@@ -1602,6 +1904,9 @@ async function boot() {
     enterApp();
   } else {
     document.getElementById("loginOverlay").style.display = "flex";
+    // Only asked for when the login screen is actually shown: a signed-in
+    // user has no use for it, and it is the one unauthenticated GET here.
+    loadSignupConfig();
   }
 }
 boot();

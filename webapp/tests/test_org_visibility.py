@@ -113,13 +113,24 @@ def main():
         check("other user does NOT see it", "alice_private" not in b_list, str(list(b_list)))
         check("other user sees the public org", "alice_public" in b_list)
         check("admin sees the private org", "alice_private" in adm_list)
-        check("legacy (ownerless) org stays visible to everyone", "legacy_org" in b_list)
-        check("legacy org reports visibility=public",
-              a_list["legacy_org"]["visibility"] == "public")
+        # Reversed deliberately when self-registration arrived: an ownerless
+        # org is one nobody has reviewed, so a self-registered stranger must
+        # not inherit sight of it. See app/org_access.py.
+        check("legacy (ownerless) org is hidden from non-admins",
+              "legacy_org" not in b_list and "legacy_org" not in a_list, str(list(b_list)))
+        check("legacy (ownerless) org is visible to an admin", "legacy_org" in adm_list)
+        check("legacy org reports visibility=private",
+              adm_list["legacy_org"]["visibility"] == "private")
+        check("legacy org reads as ownerless", adm_list["legacy_org"]["owner"] is None)
+        check("reader cannot see the legacy org either",
+              "legacy_org" not in ray.get("/api/orgs").json())
+        check("non-admin reading a legacy org gets 404",
+              bob.get("/api/orgs/legacy_org/stats").status_code == 404)
+        check("admin can read a legacy org",
+              admin.get("/api/orgs/legacy_org/stats").status_code == 200)
         check("list decorates owner", a_list["alice_public"]["owner"] == "alice")
         check("owner can manage her org", a_list["alice_public"]["can_manage"] is True)
         check("non-owner cannot manage it", b_list["alice_public"]["can_manage"] is False)
-        check("non-owner cannot manage the legacy org", b_list["legacy_org"]["can_manage"] is False)
         check("admin can manage the legacy org", adm_list["legacy_org"]["can_manage"] is True)
 
         print("\n-- reading a private org --")
@@ -163,17 +174,28 @@ def main():
         admin.patch("/api/orgs/alice_public/visibility", json={"visibility": "public"})
         r = alice.patch("/api/orgs/alice_public/visibility", json={"visibility": "sideways"})
         check("bad visibility value is rejected", r.status_code == 400, r.text[:120])
-        r = admin.patch("/api/orgs/legacy_org/visibility", json={"visibility": "private"})
+        r = admin.patch("/api/orgs/legacy_org/visibility", json={"visibility": "public"})
         check("admin adopting a legacy org stamps ownership",
               r.status_code == 200 and r.json().get("owner") == "admin", r.text[:120])
-        check("legacy org now hidden from others",
+        check("an adopted legacy org can be published deliberately",
+              "legacy_org" in bob.get("/api/orgs").json())
+        admin.patch("/api/orgs/legacy_org/visibility", json={"visibility": "private"})
+        check("and taken back out of sight",
               "legacy_org" not in bob.get("/api/orgs").json())
 
         print("\n-- re-connect / refresh is owner-only --")
         body = {"org_id": "alice_public", "org_name": "x", "instance_url": "https://x.example.com",
                 "access_token": "tok"}
+        # A create is answered as a NAME COLLISION (409), not as a read. The
+        # read endpoints below still hide existence with 404 -- that part is
+        # unchanged. The difference is that someone filling in the Connect
+        # form has chosen a name, and has to be told the name is unavailable
+        # or they cannot proceed at all.
         r = bob.post("/api/orgs", json=body)
-        check("non-owner cannot re-connect a public org he can see", r.status_code == 403, r.text[:140])
+        check("re-connecting a public org he does not own is a 409 collision",
+              r.status_code == 409, r.text[:200])
+        check("...and the message names the owner and the way forward",
+              "'alice'" in r.text and "different Org ID" in r.text, r.text[:200])
         r = bob.post("/api/orgs/alice_public/refresh", json={"access_token": "tok"})
         check("non-owner cannot refresh it", r.status_code == 403, str(r.status_code))
         r = bob.post("/api/orgs/alice_private/refresh", json={"access_token": "tok"})
@@ -181,8 +203,30 @@ def main():
         r = alice.post("/api/orgs/alice_public/refresh", json={"access_token": "tok"})
         check("owner can refresh with just a token", r.status_code == 200, r.text[:140])
         r = bob.post("/api/orgs", json={**body, "org_id": "alice_private"})
-        check("non-owner re-connecting a hidden org gets 404, not 'already exists'",
-              r.status_code == 404, r.text[:140])
+        check("connecting an id held by an org he cannot see is a 409, not a baffling 404",
+              r.status_code == 409, r.text[:200])
+        # The disclosure has to stay narrow: "this name is taken" and nothing
+        # else. No owner, and not the org's display name. (The id itself is
+        # echoed, which reveals nothing -- the caller just typed it.)
+        check("...and says only that the id is taken",
+              "already in use" in r.text, r.text[:200])
+        check("...without disclosing who owns it",
+              "owned by" not in r.text, r.text[:200])
+        check("...or what the org is called",
+              "alice_private name" not in r.text, r.text[:200])
+
+        # The regression that prompted all of this: every non-admin connecting
+        # an id held by a pre-ownership org was told "No org 'X' (or you do not
+        # have access to it)" -- while creating one. It was the first thing a
+        # newly registered user could run into.
+        r = bob.post("/api/orgs", json={**body, "org_id": "legacy_org"})
+        check("connecting an id held by a legacy org explains itself",
+              r.status_code == 409 and "already in use" in r.text, r.text[:200])
+        check("...and does not claim the org does not exist",
+              "No org" not in r.text, r.text[:200])
+        r = bob.post("/api/orgs", json={**body, "org_id": "bob_fresh_id"})
+        check("a genuinely new id is still accepted from a plain writer",
+              r.status_code == 200, r.text[:200])
 
         print("\n-- defaults --")
         reg = storage.load_registry()

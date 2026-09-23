@@ -553,7 +553,13 @@ function renderTranscript() {
   // Keep the scroll pinned to the bottom only if the reader was already there.
   // Yanking them back down mid-turn while they are reading a tool result is
   // maddening, and this re-renders on every streamed token.
-  const nearBottom = host.scrollHeight - host.scrollTop - host.clientHeight < 80;
+  //
+  // The element that scrolls is the wrapper, not the transcript itself: in
+  // full screen the transcript is a centred column inside a full-width
+  // scroller, and measuring the inner one would report a page that never
+  // scrolls and so always "near bottom".
+  const scroller = CHAT.el.scroll || host;
+  const nearBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 80;
   const openRows = new Set(
     [...host.querySelectorAll(".tool-row[open]")].map(r => r.dataset.callId));
 
@@ -580,7 +586,8 @@ function renderTranscript() {
     const row = host.querySelector(`.tool-row[data-call-id="${CSS.escape(id)}"]`);
     if (row) row.open = true;
   });
-  if (nearBottom) host.scrollTop = host.scrollHeight;
+  if (nearBottom) scroller.scrollTop = scroller.scrollHeight;
+  if (typeof updateJumpButton === "function") updateJumpButton();
 }
 
 function renderEmptyState() {
@@ -877,6 +884,10 @@ function handleFrame(frame, assistant) {
       if (payload.code === "key_locked" || payload.code === "key_missing") {
         loadKeyState().then(renderDock);
       }
+      // A refused turn is exactly the moment to show the meter, and the
+      // server already sent the figures with the refusal -- so no second
+      // request to find out what it just told us.
+      if (payload.code === "quota_exceeded") renderChatQuota(payload.quota);
       break;
     case "done":
       if (CHAT.meta) { CHAT.meta.title = payload.title; CHAT.meta.total_cost = payload.total_cost; }
@@ -896,6 +907,10 @@ function finishStream(assistant, errorMessage) {
   }
   renderTranscript();
   renderComposer();
+  // The turn that just ran is what moved the needle, so re-read it now rather
+  // than leaving a stale figure over the composer.
+  renderChatQuota();
+  if (CHAT.mode === "full") renderChatRail();     // the title may have changed
 }
 
 function stopStream() {
@@ -1029,6 +1044,7 @@ function newChat() {
   CHAT.pendingConfirm = null;
   renderDock();
   renderTranscript();
+  if (CHAT.mode === "full" && typeof renderChatRail === "function") renderChatRail();
   if (CHAT.el.input) CHAT.el.input.focus();
 }
 
@@ -1100,34 +1116,53 @@ function renderDock() {
   }
 }
 
-/** The one entry point. `container` is any element; the dock passes a narrow
- *  aside, and a future full-page view can pass a wide one with no other
- *  change to this file. */
-function mountChat(container) {
+/** The one entry point. `container` is any element and `mode` is "dock" or
+ *  "full"; everything above this line is written against CHAT.el and neither
+ *  knows nor cares which one it is rendering into.
+ *
+ *  Because the transcript re-renders from CHAT.messages rather than from the
+ *  DOM, re-mounting into the other container mid-conversation -- even
+ *  mid-stream -- loses nothing. That is what makes the expand/collapse
+ *  button safe to press at any moment.
+ */
+function mountChat(container, mode = "dock") {
+  const full = mode === "full";
+  CHAT.mode = mode;
   container.innerHTML = `
     <div class="chat-head">
-      <span class="chat-title">Ask</span>
+      <span class="chat-title">${full ? "Ask" : "Ask"}</span>
       <div class="chat-head-actions">
+        ${full
+          ? `<button type="button" class="icon-btn" data-act="collapse" title="Open in the side panel instead">&#8600;</button>`
+          : `<button type="button" class="icon-btn" data-act="expand" title="Expand to full screen">&#8599;</button>`}
         <button type="button" class="icon-btn" data-act="history" title="Conversations">&#9776;</button>
-        <button type="button" class="icon-btn" data-act="share" title="Share transcript">&#8599;</button>
+        <button type="button" class="icon-btn" data-act="share" title="Share transcript">&#128279;</button>
         <button type="button" class="icon-btn" data-act="new" title="New conversation">+</button>
-        <button type="button" class="icon-btn" data-act="close" title="Close">&times;</button>
+        <button type="button" class="icon-btn" data-act="close" title="${full ? "Back to the app" : "Close"}">&times;</button>
       </div>
     </div>
     <div class="chat-chips"></div>
-    <div class="chat-transcript"></div>
+    <div class="chat-scroll">
+      <div class="chat-transcript"></div>
+      <button type="button" class="chat-jump" style="display:none;">Jump to latest &#8595;</button>
+    </div>
+    <div class="chat-quota"></div>
     <div class="chat-footer"></div>
     <div class="chat-composer">
-      <textarea class="chat-input" rows="2" placeholder="Ask about this org..."></textarea>
+      <textarea class="chat-input" rows="${full ? 3 : 2}" placeholder="Ask about this org..."></textarea>
       <div class="chat-composer-actions">
-        <span class="chat-hint">Enter to send &middot; Shift+Enter for a new line</span>
+        <span class="chat-hint">Enter to send &middot; Shift+Enter for a new line${
+          full ? " &middot; Esc to go back" : ""}</span>
         <button type="button" class="primary chat-send">Send</button>
       </div>
     </div>`;
 
   CHAT.el = {
     chips: container.querySelector(".chat-chips"),
+    scroll: container.querySelector(".chat-scroll"),
     transcript: container.querySelector(".chat-transcript"),
+    jump: container.querySelector(".chat-jump"),
+    quota: container.querySelector(".chat-quota"),
     footer: container.querySelector(".chat-footer"),
     input: container.querySelector(".chat-input"),
     send: container.querySelector(".chat-send"),
@@ -1139,32 +1174,222 @@ function mountChat(container) {
       if (act === "history") openChatList();
       if (act === "share") (CHAT.meta && CHAT.meta.share_token) ? unshareChat() : shareChat();
       if (act === "new") newChat();
-      if (act === "close") toggleChatDock(false);
+      // enterChatFull, NOT openChatFull. openChatFull is the nav button's
+      // entry point and honours the remembered preference -- and opening the
+      // dock sets that preference to "dock", so routing this button through
+      // it made expand re-open the dock and do nothing at all. A button that
+      // says "expand" is an explicit instruction, not a preference to consult.
+      if (act === "expand") enterChatFull();
+      if (act === "collapse") collapseChatToDock();
+      if (act === "close") full ? leaveChatFull() : toggleChatDock(false);
     };
   });
 
+  // The composer grows further in full screen: three lines is cramped for the
+  // paragraph-long questions this view invites, and the dock's 160px ceiling
+  // was sized for a 400px rail.
+  const maxH = full ? Math.round(window.innerHeight * 0.35) : 160;
   CHAT.el.input.addEventListener("keydown", e => {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+    // Ctrl/Cmd+Enter sends too. Muscle memory from every other chat box, and
+    // it is the one that still works when Enter has been used for newlines.
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); sendMessage(); }
   });
   CHAT.el.input.addEventListener("input", e => {
     e.target.style.height = "auto";
-    e.target.style.height = Math.min(e.target.scrollHeight, 160) + "px";
+    e.target.style.height = Math.min(e.target.scrollHeight, maxH) + "px";
   });
 
+  // "Jump to latest" rather than dragging the reader back down. renderTranscript
+  // already refuses to auto-scroll someone who has scrolled up; this is what
+  // tells them there is more below, which matters far more on a tall screen
+  // than in the dock.
+  if (CHAT.el.scroll) {
+    CHAT.el.scroll.addEventListener("scroll", updateJumpButton);
+    CHAT.el.jump.onclick = () => {
+      CHAT.el.scroll.scrollTop = CHAT.el.scroll.scrollHeight;
+      updateJumpButton();
+    };
+  }
+
   renderComposer();
+  renderChatQuota();
+  // Paint from the state already in hand FIRST, then again once the key state
+  // arrives. Both of these used to happen only inside the `.then`, which meant
+  // the chips bar and the transcript stayed empty until a request came back:
+  // re-mounting (switching between full screen and the dock, even mid-stream)
+  // showed a blank conversation for a moment, and if the key-state request
+  // failed they never rendered at all -- leaving the full-screen view with no
+  // org indicator anywhere on screen, since the header's picker is not
+  // visible in that mode.
+  renderDock();
+  renderTranscript();
   loadKeyState().then(() => { renderDock(); renderTranscript(); });
 }
 
-/** Deep link from anywhere in the app: opens the dock with a question
- *  pre-filled but NOT sent, so the engineer can edit it first. */
-function askAbout(question) {
-  toggleChatDock(true);
-  if (CHAT.el.input) {
-    CHAT.el.input.value = question;
-    CHAT.el.input.focus();
-    CHAT.el.input.dispatchEvent(new Event("input"));
-  }
+function updateJumpButton() {
+  const s = CHAT.el.scroll, j = CHAT.el.jump;
+  if (!s || !j) return;
+  const away = s.scrollHeight - s.scrollTop - s.clientHeight > 120;
+  j.style.display = away ? "" : "none";
 }
+
+/** The quota notice, shown only when it is about to matter.
+ *
+ *  Placed in the chat surface on purpose: this is where the limit gets hit,
+ *  and a warning on a tab nobody has open is not a warning. Below 75% it says
+ *  nothing at all -- a permanent meter over the composer would be noise for
+ *  the ninety-odd percent of turns that are nowhere near a cap. */
+async function renderChatQuota(known) {
+  const host = CHAT.el.quota;
+  if (!host) return;
+  let q = known;
+  if (!q) {
+    const r = await apiJson("/api/usage/me?days=1", {}, null);
+    q = r && r.quota;
+  }
+  if (!q || q.unlimited) { host.innerHTML = ""; return; }
+  const worst = [q.daily, q.window]
+    .filter(p => p && p.limit !== null)
+    .sort((a, b) => (b.pct || 0) - (a.pct || 0))[0];
+  if (!worst || (worst.pct || 0) < 75) { host.innerHTML = ""; return; }
+  const which = worst === q.daily ? "today" : `the last ${q.window_days} days`;
+  host.innerHTML = worst.exceeded
+    ? `<div class="chat-quota-bar over">You have used your whole LLM allowance for ${which}.
+         ${q.tier === "unverified" ? "An admin verifying your account raises it."
+                                   : "An admin can raise it."}</div>`
+    : `<div class="chat-quota-bar warn">${fmtTokens(worst.remaining)} tokens left of your
+         allowance for ${which}.</div>`;
+}
+
+/** Deep link from anywhere in the app: opens the DOCK with a question
+ *  pre-filled but NOT sent, so the engineer can edit it first.
+ *
+ *  Deliberately the dock and not full screen. These links come off a row in a
+ *  table -- an incident, a field writer, a flow -- and the value of asking
+ *  from there is that the thing being asked about stays on screen next to the
+ *  answer. Full screen would cover it up. */
+function askAbout(question) {
+  if (CHAT.mode === "full") {
+    // ...unless they are already in full screen, in which case yanking them
+    // out of it would be the more surprising move.
+    prefillChat(question);
+    return;
+  }
+  toggleChatDock(true);
+  prefillChat(question);
+}
+
+function prefillChat(question) {
+  if (!CHAT.el.input) return;
+  CHAT.el.input.value = question;
+  CHAT.el.input.focus();
+  CHAT.el.input.dispatchEvent(new Event("input"));
+}
+
+// ---------- the two modes ----------
+//
+// Chat is a view AND a dock, and which one you get depends on how you asked.
+// "Ask" in the nav means "I am going to work in here for a while" and opens
+// full screen; "explain this" next to a record means "tell me about that" and
+// opens the dock beside it. The preference is remembered per browser, so
+// whichever one someone settles into is what the nav button gives them next
+// time.
+
+const CHAT_MODE_KEY = "ts_chat_mode";
+
+function preferredChatMode() {
+  try { return localStorage.getItem(CHAT_MODE_KEY) || "full"; } catch (e) { return "full"; }
+}
+
+function rememberChatMode(mode) {
+  try { localStorage.setItem(CHAT_MODE_KEY, mode); } catch (e) { /* private mode */ }
+}
+
+/** The nav's "Ask" button. Honours the remembered preference, so someone who
+ *  prefers the dock is not thrown into full screen every time. */
+function openChatFull() {
+  if (preferredChatMode() === "dock") { toggleChatDock(true); return; }
+  enterChatFull();
+}
+
+function enterChatFull() {
+  rememberChatMode("full");
+  if (CHAT.open) toggleChatDock(false);
+  showView("chat");
+}
+
+/** Called by showView, so the mount happens whether chat was reached from the
+ *  nav button or by any other route into the view. */
+function mountChatFull() {
+  const host = document.getElementById("chatFullInner");
+  if (!host) return;
+  if (CHAT.mode !== "full" || !host.querySelector(".chat-input")) {
+    mountChat(host, "full");
+  }
+  renderChatRail();
+  if (CHAT.el.input) CHAT.el.input.focus();
+}
+
+function collapseChatToDock() {
+  rememberChatMode("dock");
+  showView(LAST_VIEW || "connections");
+  CHAT.mode = null;                 // force a re-mount into the dock
+  CHAT.el = {};
+  toggleChatDock(true);
+}
+
+/** Leave full screen without changing the preference -- this is "I'm done",
+ *  not "I prefer the other one". */
+function leaveChatFull() {
+  showView(LAST_VIEW || "connections");
+}
+
+// ---------- the conversation rail ----------
+//
+// Collapsed by default, because the default should be one clean column of
+// conversation. It pops back out on the arrow, and that choice is remembered.
+
+const CHAT_RAIL_KEY = "ts_chat_rail";
+
+function toggleChatRail(open) {
+  const rail = document.getElementById("chatRail");
+  const peek = document.getElementById("chatRailPeek");
+  if (!rail) return;
+  const collapsed = open === undefined ? !rail.classList.contains("collapsed") : !open;
+  rail.classList.toggle("collapsed", collapsed);
+  if (peek) peek.style.display = collapsed ? "" : "none";
+  try { localStorage.setItem(CHAT_RAIL_KEY, collapsed ? "0" : "1"); } catch (e) { /* ignore */ }
+  if (!collapsed) renderChatRail();
+}
+
+async function renderChatRail() {
+  const list = document.getElementById("chatRailList");
+  const rail = document.getElementById("chatRail");
+  if (!list || !rail) return;
+  const peek = document.getElementById("chatRailPeek");
+  let wantOpen = false;
+  try { wantOpen = localStorage.getItem(CHAT_RAIL_KEY) === "1"; } catch (e) { /* ignore */ }
+  rail.classList.toggle("collapsed", !wantOpen);
+  if (peek) peek.style.display = wantOpen ? "none" : "";
+  if (!wantOpen) return;                        // nothing to fetch while hidden
+
+  const chats = await apiJson("/api/chats", {}, []) || [];
+  if (!chats.length) { list.innerHTML = `<p class="muted" style="padding:10px;">No conversations yet.</p>`; return; }
+  list.innerHTML = chats.map(c => `
+    <button type="button" class="rail-row ${c.chat_id === CHAT.chatId ? "on" : ""}"
+            data-id="${escapeHtml(c.chat_id)}">
+      <span class="rail-row-title">${escapeHtml(c.title || "Untitled")}</span>
+      <span class="rail-row-meta">${c.org_id ? `<span class="pill">${escapeHtml(c.org_id)}</span>` : ""}
+        ${escapeHtml(fmtWhen(c.updated_at))}</span>
+    </button>`).join("")
+    + `<button type="button" class="rail-new" onclick="newChat()">+ New conversation</button>`;
+  list.querySelectorAll(".rail-row").forEach(r => {
+    r.onclick = async () => { await loadChat(r.dataset.id); renderChatRail(); };
+  });
+}
+
+// ---------- the dock ----------
 
 function toggleChatDock(open) {
   const dock = document.getElementById("chatDock");
@@ -1173,8 +1398,16 @@ function toggleChatDock(open) {
   dock.classList.toggle("open", CHAT.open);
   root.classList.toggle("dock-open", CHAT.open);
   try { localStorage.setItem("ts_chat_dock", CHAT.open ? "1" : "0"); } catch (e) { /* private mode */ }
-  if (CHAT.open && !CHAT.el.input) mountChat(dock.querySelector(".chat-dock-inner"));
-  if (CHAT.open && CHAT.el.input) CHAT.el.input.focus();
+  if (CHAT.open) {
+    rememberChatMode("dock");
+    // Re-mount if the last mount was the full-screen one: CHAT.el would still
+    // point at nodes inside a hidden view, so the composer would take text
+    // nobody could see.
+    if (CHAT.mode !== "dock" || !CHAT.el.input) {
+      mountChat(dock.querySelector(".chat-dock-inner"), "dock");
+    }
+    if (CHAT.el.input) CHAT.el.input.focus();
+  }
 }
 
 function initChatDock() {
@@ -1182,3 +1415,23 @@ function initChatDock() {
   try { wasOpen = localStorage.getItem("ts_chat_dock") === "1"; } catch (e) { /* ignore */ }
   if (wasOpen) toggleChatDock(true);
 }
+
+// Esc leaves full-screen chat; Cmd/Ctrl+K jumps into the composer from
+// anywhere. Both are skipped while a modal is open or while the caret is in
+// some other field, so neither steals a keystroke meant for something else.
+document.addEventListener("keydown", e => {
+  const inModal = !!document.querySelector(".modal-backdrop");
+  if (e.key === "Escape" && !inModal && CHAT.mode === "full"
+      && document.body.classList.contains("chat-fullscreen")) {
+    leaveChatFull();
+    return;
+  }
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k" && !inModal) {
+    e.preventDefault();
+    if (CHAT.mode === "full" && document.body.classList.contains("chat-fullscreen")) {
+      CHAT.el.input && CHAT.el.input.focus();
+    } else {
+      openChatFull();
+    }
+  }
+});

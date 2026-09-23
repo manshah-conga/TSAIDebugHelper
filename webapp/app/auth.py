@@ -4,6 +4,19 @@ long-lived API tokens for the MCP server.
 
 Design notes
 ------------
+- Accounts arrive two ways: an admin creates one, or a visitor signs
+  themselves up. Both land in the same store; `created_by` records which,
+  and `verified` records whether an admin has since vouched for a
+  self-signup. Neither field affects what the account may *do* -- the role
+  decides that -- but together they decide its LLM quota tier, which is why
+  self-signup can be open without handing a stranger the whole token
+  budget. See app/limits.py.
+- Self-signup is only safe because the app is reachable only over the Conga
+  VPN, so "anyone who can reach the form" is already "anyone inside the
+  company". Two things still have to hold here: the role a signup may
+  request is whitelisted server-side (a posted role is an attacker's field,
+  not the user's), and the endpoint is rate limited (it is the one
+  unauthenticated write in the app).
 - Roles are ordered: reader < user < admin. A route asking for `user`
   accepts `user` and `admin`; a route asking for `reader` accepts anyone
   authenticated.
@@ -25,6 +38,7 @@ Everything here reads/writes through storage.py so all disk I/O stays in
 one auditable place.
 """
 import os
+import re
 import hashlib
 import hmac
 import secrets
@@ -33,9 +47,33 @@ import datetime
 from fastapi import Request, HTTPException, Depends
 
 from . import storage
+from . import limits
 
 ROLES = ["reader", "user", "admin"]
 ROLE_RANK = {r: i for i, r in enumerate(ROLES)}
+
+# What a visitor may ask to be. `admin` is absent on purpose and the check is
+# server-side: the role arrives in the request body, so trusting it would make
+# the signup form a public admin-promotion endpoint.
+SIGNUP_ROLES = ["user", "reader"]
+SIGNUP_DEFAULT_ROLE = "user"
+
+# Usernames appear in file paths (data/chats/<username>/...), in the org
+# ownership field, and in the usage ledger. Restricting the charset keeps all
+# three unambiguous and keeps path traversal out of the picture entirely.
+USERNAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{2,31}$")
+USERNAME_RULE = ("3-32 characters, lowercase letters, digits, dot, underscore "
+                 "or hyphen, starting with a letter or digit")
+# Names that would either collide with a real account or read as one in the
+# UI. `admin` is here because the bootstrap account owns it; the rest are
+# reserved so nobody signs up as something that looks like the system talking.
+RESERVED_USERNAMES = {
+    "admin", "administrator", "root", "system", "superuser", "su",
+    "api", "mcp", "me", "self", "anonymous", "null", "none", "support",
+    "ts-debug-helper", "conga",
+}
+
+MIN_PASSWORD_LENGTH = 8
 
 SESSION_COOKIE = "ts_session"
 SESSION_TTL_DAYS = 14
@@ -68,7 +106,18 @@ def list_users():
     users = storage.load_users()
     # never leak password material
     return {
-        u: {"role": d["role"], "disabled": d.get("disabled", False), "created_at": d.get("created_at")}
+        u: {"role": d["role"], "disabled": d.get("disabled", False),
+            "created_at": d.get("created_at"),
+            # Provenance and vouching. Both are shown in the admin table
+            # because together they are what an admin needs in order to
+            # decide whether to verify an account, and they are the only
+            # visible difference between a colleague who signed up and an
+            # account somebody was given.
+            "created_by": d.get("created_by"),
+            "verified": bool(d.get("verified")),
+            "verified_by": d.get("verified_by"),
+            "verified_at": d.get("verified_at"),
+            "limits": d.get("limits") or None}
         for u, d in users.items()
     }
 
@@ -77,14 +126,46 @@ def get_user(username):
     return storage.load_users().get(username)
 
 
-def create_user(username, password, role):
-    username = (username or "").strip()
+def normalize_username(username):
+    """Lowercase, trimmed, and validated against the charset.
+
+    Lowercasing at the door rather than comparing case-insensitively later
+    is what stops `Dana` and `dana` becoming two accounts that look like one
+    in every list -- and, because the username is also a directory name
+    under data/chats, two accounts that collide on a case-insensitive
+    filesystem but not on a case-sensitive one.
+    """
+    username = (username or "").strip().lower()
     if not username:
         raise ValueError("username is required")
+    if not USERNAME_RE.match(username):
+        raise ValueError(f"username must be {USERNAME_RULE}")
+    if username in RESERVED_USERNAMES:
+        raise ValueError(f"'{username}' is a reserved username; please choose another")
+    return username
+
+
+def validate_password(password):
+    if not password or len(password) < MIN_PASSWORD_LENGTH:
+        raise ValueError(f"password must be at least {MIN_PASSWORD_LENGTH} characters")
+    return password
+
+
+def create_user(username, password, role, created_by=None, verified=None):
+    """Create one account.
+
+    `created_by` is `"self"` for a signup, `"admin:<who>"` for an account an
+    admin made, and absent only on accounts that predate the field.
+    `verified` defaults to True for anything an admin created, because the
+    admin creating it is the vouching step -- making them then verify their
+    own new account is a click that teaches people to click past it.
+    """
+    username = normalize_username(username)
     if role not in ROLES:
         raise ValueError(f"role must be one of {ROLES}")
-    if not password or len(password) < 8:
-        raise ValueError("password must be at least 8 characters")
+    validate_password(password)
+    if verified is None:
+        verified = created_by != "self"
     # The existence check and the insert have to happen under one lock, or
     # two admins creating the same username at the same moment both pass the
     # check and the second silently overwrites the first one's password.
@@ -95,12 +176,40 @@ def create_user(username, password, role):
             clash[0] = True
             return
         users[username] = {"password": hash_password(password), "role": role,
-                           "disabled": False, "created_at": _now()}
+                           "disabled": False, "created_at": _now(),
+                           "created_by": created_by, "verified": bool(verified)}
 
     storage.mutate_users(_insert)
     if clash[0]:
         raise ValueError(f"user '{username}' already exists")
-    return {"username": username, "role": role}
+    return {"username": username, "role": role, "verified": bool(verified)}
+
+
+def signup_user(username, password, role=None):
+    """Self-service registration.
+
+    The whole security value of this function is the role whitelist, and it
+    is here rather than in the route so that no future caller can bypass it
+    by reaching for `create_user` directly. An unrecognised role is rejected
+    outright rather than quietly downgraded to the default: silently
+    granting something other than what was asked for hides a UI bug from
+    whoever has to debug it.
+    """
+    if not signup_enabled():
+        raise PermissionError("Self-registration is disabled on this server.")
+    role = (role or SIGNUP_DEFAULT_ROLE).strip().lower()
+    if role not in SIGNUP_ROLES:
+        raise ValueError(f"role must be one of {SIGNUP_ROLES}")
+    return create_user(username, password, role, created_by="self", verified=False)
+
+
+def signup_enabled():
+    """Off by setting TS_SIGNUP_ENABLED to 0/false/no. Default on, since the
+    app is VPN-only and open registration is the point of this feature -- but
+    an operator needs a way to close it without a code change if it is ever
+    abused."""
+    raw = (os.environ.get("TS_SIGNUP_ENABLED") or "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
 
 
 def _update_user(username, change):
@@ -135,9 +244,52 @@ def set_disabled(username, disabled):
     _update_user(username, lambda u: u.update({"disabled": bool(disabled)}))
 
 
+def set_verified(username, verified, by=None):
+    """Vouch for (or un-vouch) an account.
+
+    Verification is deliberately not a role change and grants no new
+    permission: it moves the account from the unverified quota tier to the
+    verified one and nothing else. Keeping the two concepts apart means an
+    admin can raise somebody's token budget without also widening what they
+    can reach, which is the common case.
+
+    Un-verifying is allowed, and is the lever to pull when an account is
+    burning budget: it lowers the tier immediately without disabling the
+    person mid-investigation.
+    """
+    verified = bool(verified)
+    stamp = _now() if verified else None
+    _update_user(username, lambda u: u.update({
+        "verified": verified,
+        "verified_by": by if verified else None,
+        "verified_at": stamp,
+    }))
+    return {"username": username, "verified": verified}
+
+
+def set_user_limits(username, override):
+    """Set or clear one account's quota override.
+
+    `None` clears it, which is not the same as setting both fields to
+    unlimited: cleared means the account follows its tier, so a later change
+    to the tier default reaches it. A stored override would shield it from
+    that forever, which is a surprise an admin does not need six months
+    later.
+    """
+    cleaned = limits.clean_override(override)
+
+    def _apply(u):
+        if cleaned is None:
+            u.pop("limits", None)
+        else:
+            u["limits"] = cleaned
+
+    _update_user(username, _apply)
+    return {"username": username, "limits": cleaned}
+
+
 def reset_password(username, new_password):
-    if not new_password or len(new_password) < 8:
-        raise ValueError("password must be at least 8 characters")
+    validate_password(new_password)
     hashed = hash_password(new_password)
     _update_user(username, lambda u: u.update({"password": hashed}))
 
@@ -305,7 +457,8 @@ def bootstrap_admin():
         if "admin" in users:
             return
         users["admin"] = {"password": hash_password(password), "role": "admin",
-                          "disabled": False, "created_at": _now()}
+                          "disabled": False, "created_at": _now(),
+                          "created_by": "bootstrap", "verified": True}
         created[0] = True
 
     storage.mutate_users(_apply)
