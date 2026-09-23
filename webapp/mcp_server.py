@@ -78,7 +78,59 @@ CURRENT_TOKEN: ContextVar[str] = ContextVar("ts_api_token", default="")
 # server-side session holding an identity between calls. It also keeps the
 # endpoint working behind load balancers and reverse proxies that do not
 # pin a client to one worker.
-mcp = FastMCP("ts-debug-helper", stateless_http=True)
+#
+# instructions: sent to every MCP client in the initialize handshake. Most
+# desktop clients (Claude Desktop, Cowork, Copilot Studio) fold these into
+# the model's context, so this is where cross-tool investigation rules live.
+# NOTE the in-app chat (app/chat.py) does NOT read these -- it builds its own
+# system prompt and only shares the tool docstrings. The same protocol text is
+# also exposed as an MCP prompt below, and can be pasted as a chat's first
+# message to test it in the web app without touching the system prompt.
+_PROMPTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "prompts")
+
+
+def _load_prompt(name: str) -> str:
+    try:
+        with open(os.path.join(_PROMPTS_DIR, name), encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:                    # never block the server on a missing file
+        return ""
+
+
+FIELD_VALUE_PROTOCOL = _load_prompt("field_value_protocol.md")
+
+SERVER_INSTRUCTIONS = (
+    "TS Intelligent Debug Helper: static knowledgebase of a Salesforce org's "
+    "customization (Apex, triggers, Flows, Process Builder, Workflow field "
+    "updates, LWC) plus normalized debug logs. Ground every conclusion in a "
+    "tool result.\n\n"
+    "General rules of evidence:\n"
+    "- A tool's `example`/sample fields are samples, not enumerations. Absence "
+    "from a sample is not absence from the org.\n"
+    "- A negative result only means something if the tool covers what you "
+    "searched for -- check the tool description's coverage notes first.\n"
+    "- When a result points at a component (a variable reference, a callee, "
+    "a subflow), open it with get_component before concluding.\n"
+    "- Exhaust the static tools before asking the user for a debug log.\n\n"
+    + FIELD_VALUE_PROTOCOL
+)
+
+mcp = FastMCP("ts-debug-helper", instructions=SERVER_INSTRUCTIONS, stateless_http=True)
+
+
+@mcp.prompt(
+    name="field_value_investigation",
+    description="Investigation protocol for 'which automation sets field X to "
+                "value Y?' questions. Insert at the start of a conversation.",
+)
+def field_value_investigation(field_api_name: str = "", value: str = "") -> str:
+    """User-invokable prompt (shows up as a slash command / prompt picker in
+    MCP clients that support prompts). Optional args pre-fill the question."""
+    text = FIELD_VALUE_PROTOCOL
+    if field_api_name and value:
+        text += (f"\n\nQuestion: which automation sets {field_api_name} to "
+                 f"'{value}'? Follow the protocol above.")
+    return text
 
 
 def _token() -> str:
@@ -243,7 +295,12 @@ async def get_component(org_id: str, component_id: str) -> dict:
     class/trigger, a flow, or an LWC bundle) -- its structure, objects/
     fields touched, calls made, and (for Apex) any detected static mutable
     state or risky field writes. Use search_knowledgebase or
-    find_field_writers first if you don't already know the exact id."""
+    find_field_writers first if you don't already know the exact id.
+
+    For a flow, the card's `elements` include each assignment element's
+    items (`to` / `from`) with their literal values -- this is how you resolve a
+    find_field_writers `example` that is a variable reference (e.g.
+    `recordToUpdate.Status__c`) to the actual value(s) the flow writes."""
     return await _get(f"/api/orgs/{org_id}/components/{component_id}")
 
 
@@ -276,7 +333,24 @@ async def find_field_writers(org_id: str, field_api_name: str) -> dict:
     a formula or roll-up summary it is not 'written' by anything -- its value
     derives from other data. When reporting, group writers by mechanism and
     note that active-vs-inactive state of a flow/rule is not captured here, so
-    confirm the writer is active before concluding it caused a given change."""
+    confirm the writer is active before concluding it caused a given change.
+
+    THIS TOOL ENUMERATES WRITERS, NOT VALUES. Each writer's `example` is ONE
+    sampled right-hand side; a flow that writes the field on several paths
+    shows only one of them. So:
+    - A value missing from every `example` does NOT mean the org never sets
+      it. Never conclude absence from this tool alone.
+    - A value that merely contains the one you want (e.g. 'Internal Review
+      Complete' vs 'Internal Review') is not a match. Never conclude presence
+      from a near-miss either.
+    - An `example` that is a reference rather than a literal -- a record
+      path like `recordToUpdate.Status__c` or `$Record.Other__c`, a bare
+      variable name like `Cancel_Status`, or null -- means the literal is
+      assigned UPSTREAM inside that component. Open each such writer with
+      get_component and read its assignment elements before saying
+      what values it writes.
+    For 'which automation sets field X to value Y' questions, finish that
+    step for every reference-valued writer before asking for a debug log."""
     return await _get(f"/api/orgs/{org_id}/field-writers/{field_api_name}")
 
 
@@ -308,7 +382,15 @@ async def search_knowledgebase(org_id: str, query: str, customer_authored_only: 
     field names. Use this when you have a vague description instead of an
     exact identifier -- e.g. searching 'pricing' or 'adjustment'. Defaults to
     customer-authored components only (managed-package internals are usually
-    noise); pass customer_authored_only=false to include managed results."""
+    noise); pass customer_authored_only=false to include managed results.
+
+    COVERAGE -- read before trusting an empty result: this matches ONLY
+    component ids, object names, and field names. It does NOT search labels,
+    descriptions, literal values assigned inside flows (e.g. a picklist value
+    like 'Internal Review'), string literals in Apex, or formulas. An empty
+    result for a value string says nothing about whether the org sets that
+    value -- use find_field_writers on the field, then get_component on its
+    writers, instead."""
     return await _get(f"/api/orgs/{org_id}/search",
                       params={"q": query, "customer_authored_only": str(customer_authored_only).lower()})
 

@@ -1,0 +1,63 @@
+{
+  "_about": "Regression cases for 'which automation sets field X to value Y' questions. Grounded in org 00DWI000006DDmu (WorkdayWDUAT) as extracted 2026-09-23. Re-verify expectations after a refresh of that org. Grading is substring-based and case-insensitive; see run_evals.py.",
+  "cases": [
+    {
+      "id": "status_internal_review_via_variable",
+      "why": "The value only appears in an upstream assignment element; find_field_writers shows 'recordToUpdate.Apttus__Status__c'. Decoy 'Internal Review Complete' exists in another flow. This is the case GPT-4o failed on 2026-09-23.",
+      "org_id": "00DWI000006DDmu",
+      "question": "Which automation sets Apttus__Status__c to 'Internal Review' on the Agreement?",
+      "expect": {
+        "must_mention_all": ["CLM_Document_Version_Detail_AS_AgreementStageAutomation"],
+        "should_mention": ["Assign_Stage_Status_Default"],
+        "must_call": [
+          {"name": "find_field_writers"},
+          {"name": "get_component", "args_contains": "CLM_Document_Version_Detail_AS_AgreementStageAutomation"}
+        ],
+        "decoys": ["CLM_Agreement_SCR_SelfServicePathUpdateAgreementStageStatus"],
+        "forbid_log_request_without_answer": true
+      }
+    },
+    {
+      "id": "status_external_signatures_other_branch",
+      "why": "Same flow, other branch (Assign_Stage_Status_Self_Service). Also invisible in find_field_writers examples.",
+      "org_id": "00DWI000006DDmu",
+      "question": "What sets the Agreement status (Apttus__Status__c) to 'External Signatures'?",
+      "expect": {
+        "must_mention_all": ["CLM_Document_Version_Detail_AS_AgreementStageAutomation"],
+        "should_mention": ["Assign_Stage_Status_Self_Service"],
+        "must_call": [
+          {"name": "find_field_writers"},
+          {"name": "get_component", "args_contains": "CLM_Document_Version_Detail_AS_AgreementStageAutomation"}
+        ],
+        "decoys": [],
+        "forbid_log_request_without_answer": true
+      }
+    },
+    {
+      "id": "status_internal_review_complete_direct_literal",
+      "why": "Inverse of case 1: the near-miss string IS the target here, and it is a direct literal in the writers list. Must not be confused with the 'Internal Review' flow.",
+      "org_id": "00DWI000006DDmu",
+      "question": "Which flow sets Apttus__Status__c to 'Internal Review Complete'?",
+      "expect": {
+        "must_mention_all": ["CLM_Agreement_SCR_SelfServicePathUpdateAgreementStageStatus"],
+        "should_mention": [],
+        "must_call": [{"name": "find_field_writers"}],
+        "decoys": ["CLM_Document_Version_Detail_AS_AgreementStageAutomation"],
+        "forbid_log_request_without_answer": true
+      }
+    },
+    {
+      "id": "status_lost_opportunity_control",
+      "why": "Control case: direct literal in the writers list. Should pass even without any prompt changes; if it fails, the problem is not the reasoning gap.",
+      "org_id": "00DWI000006DDmu",
+      "question": "What changes an Agreement's Apttus__Status__c to 'Lost Opportunity'?",
+      "expect": {
+        "must_mention_all": ["CLM_Opportunity_AL_UpdateRelatedAgreementsOnClosedLost"],
+        "should_mention": [],
+        "must_call": [{"name": "find_field_writers"}],
+        "decoys": [],
+        "forbid_log_request_without_answer": true
+      }
+    }
+  ]
+}
