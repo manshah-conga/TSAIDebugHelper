@@ -81,6 +81,14 @@ Then open `http://127.0.0.1:8000` in a browser. That's the whole app -- one proc
 one port, no database to stand up. Data is written under `webapp/data/` as flat JSON
 files (created automatically on first use).
 
+**After updating the code, restart the server.** The page's HTML/JS/CSS are read
+fresh from disk, but the Python side only loads at start-up -- a new page talking to
+an old server silently loses new fields (log tags and owners were dropped exactly this
+way). The page compares its build number with the server's (`GET /api/build`) and shows
+a yellow "restart the server" banner under the tabs when they differ. When changing
+the code, bump `APP_BUILD` in `app/main.py`, `CLIENT_BUILD` in `static/app.js` and the
+`?v=` on `static/index.html`'s asset links together (`tests/test_log_library.py` checks).
+
 ## 1a. Signing in, roles, and users
 
 The app now requires a login. On first startup with no accounts, an initial **admin**
@@ -766,10 +774,45 @@ even for an org this app has never connected to. Use it to:
 
 - **Download** the normalized JSON (via the button after normalizing, or from any
   stored log's detail view).
-- **Store** it in the normalized-log library (tick the checkbox before normalizing)
-  so it's kept for future reference and can be pulled up again later. As everywhere
-  else, only the derived JSON is stored -- the raw log is used in memory and
-  discarded.
+- **Store** it in the normalized-log library (tick the checkbox before normalizing,
+  or press **Save to library** afterwards) so it's kept for future reference and can
+  be pulled up again later. As everywhere else, only the derived JSON is stored --
+  the raw log is used in memory and discarded.
+
+### The log library: tags, owners, search, archive
+
+Every stored log records its **owner** (the account that stored it) and can carry two
+optional tags, chosen on upload or edited later:
+
+- **Org** -- any connected org you can see. The org's account comes along
+  automatically and *follows the org*: move the org to another account (or rename the
+  account) and its logs move too.
+- **Customer account** -- for a customer whose org isn't connected, or to tag
+  without picking a specific org. Names snap to the spelling already in use, same as
+  org accounts ("acme corp" joins "Acme Corp").
+
+Choosing a tag ticks **Store** for you (tags only mean something on a stored log).
+Logs kept from Home's "What's broken?" bar are tagged with the org you're working in.
+
+**Who sees what.** An untagged or account-only log is visible to everyone signed in,
+as before. A log tagged to an org inherits that org's visibility: you see it if you
+can see the org, if you stored it, or if you're an admin. A log tagged to a private
+org you can't see is left out of the list, search, facets and MCP, and opens as 404.
+
+**Finding logs.** The library searches label, id, source file, org, account, owner,
+top exception and component names (every word must match). Account chips, an org
+picker, **Everyone / Mine** and **Active / Archived / All** narrow it further. Click an
+account or org in a row to filter by it.
+
+**Archive and delete** are for the log's owner and admins (logs stored before owners
+were tracked show owner "--" and are admin-only). Archive hides a log from the default
+view but keeps it -- restore it any time. Delete permanently removes its normalized
+JSON and metadata. Both, plus retagging, work on one log or a selection.
+
+API: `GET /api/logs?q=&account=&org_id=&owner=me&status=active|archived|all`,
+`GET /api/logs/facets`, `PATCH /api/logs/{id}` (`label`, `org_id`, `account`,
+`archived`; `null` clears a tag), `DELETE /api/logs/{id}`, and `org_id` / `account`
+form fields on `POST /api/logs/normalize`. Logic lives in `app/log_library.py`.
 
 The normalized form keeps the RCA-relevant signal and drops the noise: execution
 units (with nesting depth and which one threw), deduplicated exceptions with
@@ -1291,9 +1334,12 @@ own, so it inherits the same storage guarantee. It exposes: `create_org_connecti
 `get_component`,
 `get_object_touch`, `find_field_writers`, `search_knowledgebase`, `file_incident`,
 `list_incidents`, `get_incident`, `record_resolution`, `list_known_issues`, and --
-for the org-independent log path -- `normalize_log`, `list_normalized_logs`,
-`get_normalized_log`. The three log tools let Claude normalize a raw log, keep it,
-and pull it back up, then reason about RCA and resolution from the normalized log
+for the org-independent log path -- `normalize_log` (with optional `org_id` /
+`account` tags), `list_normalized_logs` (search + account/org/owner/status filters),
+`get_normalized_log`, and `update_normalized_log` (archive/restore, retag, relabel;
+owner or admin -- deleting is left to the web app on purpose). The log tools let
+Claude normalize a raw log, keep it, find earlier logs for the same customer,
+and pull them back up, then reason about RCA and resolution from the normalized log
 alone (no org code or metadata) -- their tool descriptions tell Claude exactly what
 log evidence to base the RCA on and how to caveat it.
 
@@ -1351,6 +1397,7 @@ webapp/
     onboarding.py        orchestrates fetch -> extract -> index -> save, tracks job status
     index_builder.py     builds org_index / object_touch_map / call_graph / field_touch_map / org_stats
     log_normalizer.py     condenses a raw debug log into normalized JSON
+    log_library.py        stored-log owner, org/account tags, visibility, search, archive/delete
     rca.py                assembles an RCA context pack; finds field writers
     incidents.py         exception/field signature matching for recurrence detection
     guide.py              per-user onboarding state, home summary, free-text known-issue matching

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>TS Intelligent Debug Helper</title>
-<link rel="stylesheet" href="/static/style.css?v=24">
+<link rel="stylesheet" href="/static/style.css?v=26">
 </head>
 <body>
 
@@ -106,6 +106,7 @@
   <button onclick="changeOwnPassword()">Change password</button>
   <button onclick="doLogout()" style="color:var(--high);">Sign out</button>
 </nav>
+<div id="buildBanner" class="build-banner" role="alert" style="display:none;"></div>
 <main>
 
   <section id="view-connections" class="view active">
@@ -286,34 +287,96 @@
   <section id="view-logs" class="view">
     <div class="card" data-requires="user" data-tour="logs">
       <h2>Normalize a debug log</h2>
-      <p class="muted">Upload a raw Salesforce debug log to get a compact, normalized JSON version -- no org
-        connection, no Apex/Flow source, no metadata needed. The raw log is used only in memory and never stored;
-        only the normalized JSON can be kept. Once normalized, you can download it, keep it in the library below,
-        or hand it to Claude via the MCP server to get an RCA and suggested resolution from the log alone.</p>
-      <label>Debug log file</label>
-      <input id="logFile" type="file">
-      <label>Label (optional)</label>
-      <input id="logLabel" placeholder="e.g. batch_failure_2026_07_30">
-      <label><input type="checkbox" id="logStore" style="width:auto; margin-right:6px;">Store in the library for future reference</label>
-      <button class="primary" onclick="normalizeLog()">Normalize</button>
-      <div id="logStatus" class="status-line"></div>
-      <div id="logResultActions" style="display:none; margin-top:12px;">
-        <button class="secondary" onclick="downloadCurrentNormalized()">Download normalized JSON</button>
+      <p class="muted">Get a compact, normalized JSON version of a raw Salesforce debug log &mdash; no org
+        connection, code or metadata needed. The raw log is used only in memory and never stored. Tag it with the
+        customer org or account it came from and keep it in the library, so you and the assistant can find it again.</p>
+
+      <div id="logDrop" class="log-drop" tabindex="0" role="button" aria-label="Choose or drop a debug log file">
+        <input id="logFile" type="file" accept=".log,.txt,text/plain" hidden>
+        <div id="logDropEmpty" class="log-drop-empty">
+          <div class="log-drop-icon" aria-hidden="true">&#8682;</div>
+          <div><b>Drop a debug log here</b> or <span class="link-btn inline">choose a file</span></div>
+          <div class="muted">.log or .txt &middot; parsed in memory, never stored raw</div>
+        </div>
+        <div id="logDropFile" class="log-drop-file" style="display:none;">
+          <span class="log-file-icon" aria-hidden="true">&#128196;</span>
+          <span class="log-file-name" id="logFileName"></span>
+          <span class="muted" id="logFileSize"></span>
+          <button type="button" class="link-btn" onclick="event.stopPropagation(); clearLogFile()">Remove</button>
+        </div>
       </div>
+
+      <div class="log-form-grid">
+        <div>
+          <label for="logLabel">Label <span class="optional">optional</span></label>
+          <input id="logLabel" placeholder="e.g. Quote sync NPE after upgrade">
+        </div>
+        <div>
+          <label for="logOrg">Org <span class="optional">optional</span></label>
+          <select id="logOrg" onchange="logOrgChanged()"></select>
+        </div>
+        <div>
+          <label for="logAccount">Customer account <span class="optional">optional</span></label>
+          <input id="logAccount" list="logAccountList" autocomplete="off" placeholder="e.g. Acme Corp" oninput="logTagEdited()">
+          <datalist id="logAccountList"></datalist>
+        </div>
+      </div>
+      <div id="logTagHint" class="field-hint"></div>
+
+      <div class="log-submit-row">
+        <label class="inline-check"><input type="checkbox" id="logStore">Store in the library</label>
+        <button class="primary" id="logNormalizeBtn" onclick="normalizeLog()" disabled>Normalize</button>
+      </div>
+      <div id="logStatus" class="status-line"></div>
+      <div id="logResultActions" class="log-result-actions" style="display:none;"></div>
       <div id="logResult"></div>
     </div>
 
-    <div class="card">
-      <h2>Stored normalized logs</h2>
-      <table>
-        <thead><tr><th>When</th><th>Log ID</th><th>Top exception</th><th>Exceptions</th><th></th></tr></thead>
+    <div class="card" id="logLibraryCard">
+      <div class="card-head">
+        <h2>Log library <span id="logCount" class="count-chip"></span></h2>
+        <div class="card-head-tools">
+          <div class="seg" role="group" aria-label="Owner">
+            <button type="button" id="logOwnerAll" onclick="setLogFilter('owner', '')">Everyone</button>
+            <button type="button" id="logOwnerMe" onclick="setLogFilter('owner', 'me')">Mine</button>
+          </div>
+          <div class="seg" role="group" aria-label="Status">
+            <button type="button" id="logStatusActive" onclick="setLogFilter('status', 'active')">Active</button>
+            <button type="button" id="logStatusArchived" onclick="setLogFilter('status', 'archived')">Archived</button>
+            <button type="button" id="logStatusAll" onclick="setLogFilter('status', 'all')">All</button>
+          </div>
+        </div>
+      </div>
+      <div class="log-toolbar">
+        <div class="log-search-wrap">
+          <span class="log-search-icon" aria-hidden="true">&#9906;</span>
+          <input id="logSearch" type="search" placeholder="Search by account, org, label, owner, exception or component"
+                 oninput="scheduleLogFilter()" aria-label="Search logs">
+        </div>
+        <select id="logFilterOrg" onchange="setLogFilter('org_id', this.value)" aria-label="Filter by org"></select>
+      </div>
+      <div id="logAccountChips" class="log-chips" aria-label="Filter by account"></div>
+      <div id="logBulkBar" class="log-bulk" style="display:none;"></div>
+      <table class="logs-table">
+        <thead><tr>
+          <th class="sel-col"><input type="checkbox" id="logSelectAll" aria-label="Select all" onclick="toggleAllLogs(this.checked)"></th>
+          <th>When</th><th>Log</th><th>Account &middot; Org</th><th>Owner</th><th>Top exception</th><th class="num">Exc.</th><th></th>
+        </tr></thead>
         <tbody id="logsTable"></tbody>
       </table>
     </div>
 
     <div class="card" id="logDetailCard" style="display:none;">
-      <h2>Normalized log detail</h2>
-      <div id="logDetailActions" style="margin-bottom:10px;"></div>
+      <div class="card-head">
+        <div>
+          <h2 id="logDetailTitle">Normalized log</h2>
+          <div id="logDetailMeta" class="log-detail-meta"></div>
+        </div>
+        <div class="card-head-tools">
+          <button type="button" class="link-btn" onclick="closeLogDetail()">Close</button>
+        </div>
+      </div>
+      <div id="logDetailActions" class="log-result-actions"></div>
       <div id="logDetail"></div>
     </div>
   </section>
@@ -497,12 +560,12 @@
 </aside>
 
 </div>
-<script src="/static/app.js?v=24"></script>
-<script src="/static/chat.js?v=24"></script>
+<script src="/static/app.js?v=26"></script>
+<script src="/static/chat.js?v=26"></script>
 <!-- Home page + command palette, then onboarding/help. Both are optional
      layers over app.js: every call into them from app.js is guarded, so a
      cached page that loads without them still works. -->
-<script src="/static/home.js?v=24"></script>
-<script src="/static/guide.js?v=24"></script>
+<script src="/static/home.js?v=26"></script>
+<script src="/static/guide.js?v=26"></script>
 </body>
 </html>

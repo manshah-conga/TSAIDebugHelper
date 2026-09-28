@@ -1471,52 +1471,257 @@ async function editKnownResolution(signature) {
   loadKnownIssues();
 }
 
-// ---------- log normalizer (org-independent) ----------
+// ---------- log normalizer + log library ----------
+//
+// Upload side: one file (dropped or chosen), an optional label, and optional
+// org / account tags that are saved with the log when it is stored. The file
+// is kept in the browser after a normalize-only run so "Save to library"
+// can store it afterwards without choosing it again -- the server still
+// never sees anything but a fresh upload it normalizes and discards.
+//
+// Library side: every log the caller can see is fetched once (status=all)
+// and filtered here, so search and the account/org/owner/status filters are
+// instant. The server applies the same visibility rules as the org list
+// (app/log_library.py): a log tagged to a private org you cannot see never
+// reaches this page at all.
 
 let CURRENT_NORMALIZED = null;
 let CURRENT_NORMALIZED_NAME = "normalized_log";
 
-async function normalizeLog() {
+const LOGLIB = {
+  logs: [],
+  filter: { q: "", org_id: "", account: null, owner: "", status: "active" },
+  selected: new Set(),
+  openId: null,
+  file: null,
+  storeTouched: false,
+  autoAccount: null,     // account value the org picker filled in, so it can be taken back out
+  formReady: false,
+  timer: null,
+};
+
+function fmtBytes(n) {
+  if (n >= 1048576) return `${(n / 1048576).toFixed(1)} MB`;
+  if (n >= 1024) return `${Math.round(n / 1024)} KB`;
+  return `${n} B`;
+}
+
+/** A string as a JS literal that is safe inside a double-quoted HTML attribute. */
+function jsStr(s) { return escapeHtml(JSON.stringify(String(s ?? ""))); }
+
+// ---- upload form ----
+
+function wireLogDrop() {
+  const zone = document.getElementById("logDrop");
+  const input = document.getElementById("logFile");
+  if (!zone || !input || zone.dataset.wired) return;
+  zone.dataset.wired = "1";
+  zone.addEventListener("click", () => input.click());
+  zone.addEventListener("keydown", e => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); input.click(); }
+  });
+  zone.addEventListener("dragover", e => { e.preventDefault(); zone.classList.add("drag"); });
+  zone.addEventListener("dragleave", e => { if (!zone.contains(e.relatedTarget)) zone.classList.remove("drag"); });
+  zone.addEventListener("drop", e => {
+    e.preventDefault(); zone.classList.remove("drag");
+    const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    if (f) setLogFile(f);
+  });
+  input.addEventListener("change", () => { if (input.files.length) setLogFile(input.files[0]); });
+  const store = document.getElementById("logStore");
+  if (store) store.addEventListener("change", () => { LOGLIB.storeTouched = true; renderLogTagHint(); });
+}
+
+function setLogFile(file) {
+  LOGLIB.file = file;
+  document.getElementById("logDropEmpty").style.display = file ? "none" : "";
+  document.getElementById("logDropFile").style.display = file ? "" : "none";
+  document.getElementById("logDrop").classList.toggle("has-file", !!file);
+  if (file) {
+    document.getElementById("logFileName").textContent = file.name;
+    document.getElementById("logFileSize").textContent = fmtBytes(file.size);
+    document.getElementById("logLabel").placeholder = file.name.replace(/\.[^.]+$/, "") || "e.g. Quote sync NPE";
+  } else {
+    document.getElementById("logFile").value = "";
+    document.getElementById("logLabel").placeholder = "e.g. Quote sync NPE after upgrade";
+  }
+  document.getElementById("logNormalizeBtn").disabled = !file;
+}
+
+function clearLogFile() { setLogFile(null); }
+
+/** Account names from orgs AND from logs already in the library. */
+function logAccountNames() {
+  const out = new Map();
+  accountNames().forEach(n => out.set(accountKey(n), n));
+  LOGLIB.logs.forEach(m => { if (m.account && !out.has(accountKey(m.account))) out.set(accountKey(m.account), m.account); });
+  return [...out.values()].sort((a, b) => a.localeCompare(b));
+}
+
+/** Visible orgs as <option>s, grouped under their account. */
+function orgOptionsHtml(selected, { blank = "No org" } = {}) {
+  const groups = new Map();
+  Object.entries(ORGS).forEach(([id, o]) => {
+    const key = accountKey(o.account);
+    if (!groups.has(key)) groups.set(key, { name: accountDisplayName(o.account), ids: [] });
+    groups.get(key).ids.push(id);
+  });
+  const sorted = [...groups.values()].sort((a, b) =>
+    (a.name === null) - (b.name === null) || String(a.name).localeCompare(String(b.name)));
+  const opt = id => {
+    const o = ORGS[id] || {};
+    const env = ENV_META[orgEnv(o)];
+    const suffix = env && env.short ? ` · ${env.label.replace(" org", "")}` : "";
+    return `<option value="${escapeHtml(id)}" ${id === selected ? "selected" : ""}>${escapeHtml(id)}${
+      o.name && o.name !== id ? ` — ${escapeHtml(o.name)}` : ""}${escapeHtml(suffix)}</option>`;
+  };
+  return `<option value="">${escapeHtml(blank)}</option>` + sorted.map(g =>
+    `<optgroup label="${escapeHtml(g.name || "Unassigned")}">${g.ids.sort().map(opt).join("")}</optgroup>`).join("");
+}
+
+function initLogForm() {
+  const sel = document.getElementById("logOrg");
+  if (!sel) return;
+  // First visit defaults the org to the one being worked on; after that the
+  // person's own choice sticks across tab switches.
+  const current = LOGLIB.formReady ? sel.value : (CURRENT_ORG && ORGS[CURRENT_ORG] ? CURRENT_ORG : "");
+  sel.innerHTML = orgOptionsHtml(ORGS[current] ? current : "");
+  document.getElementById("logAccountList").innerHTML =
+    logAccountNames().map(n => `<option value="${escapeHtml(n)}"></option>`).join("");
+  LOGLIB.formReady = true;
+  logOrgChanged({ quiet: true });
+}
+
+function logOrgChanged({ quiet = false } = {}) {
+  const orgId = document.getElementById("logOrg").value;
+  const acctEl = document.getElementById("logAccount");
+  const orgAccount = orgId && ORGS[orgId] ? accountDisplayName(ORGS[orgId].account) : null;
+  if (orgAccount) {
+    acctEl.value = orgAccount;
+    acctEl.disabled = true;
+    LOGLIB.autoAccount = orgAccount;
+  } else {
+    if (LOGLIB.autoAccount !== null && acctEl.value === LOGLIB.autoAccount) acctEl.value = "";
+    acctEl.disabled = false;
+    LOGLIB.autoAccount = null;
+  }
+  if (!quiet) logTagEdited();
+  renderLogTagHint();
+}
+
+function logTagEdited() {
+  // Tagging a log only means something if it is kept, so choosing a tag
+  // ticks "Store" -- unless the person has already made that choice.
+  const tagged = document.getElementById("logOrg").value || document.getElementById("logAccount").value.trim();
+  const store = document.getElementById("logStore");
+  if (!LOGLIB.storeTouched && tagged) store.checked = true;
+  renderLogTagHint();
+}
+
+function renderLogTagHint() {
+  const hint = document.getElementById("logTagHint");
+  if (!hint) return;
+  const orgId = document.getElementById("logOrg").value;
+  const acct = document.getElementById("logAccount").value.trim();
+  const store = document.getElementById("logStore").checked;
+  const o = ORGS[orgId];
+  const bits = [];
+  if (o && o.account) bits.push(`The account comes from the org &mdash; <b>${escapeHtml(orgId)}</b> is under <b>${escapeHtml(accountDisplayName(o.account))}</b>.`);
+  else if (o && acct) bits.push(`<b>${escapeHtml(orgId)}</b> has no account yet; the log will be tagged <b>${escapeHtml(acct)}</b>.`);
+  if (o && o.visibility === "private") bits.push("The org is private, so this log will be visible only to people who can see the org.");
+  if ((orgId || acct) && !store) bits.push("Tags are saved only when the log is stored.");
+  hint.innerHTML = bits.join(" ");
+}
+
+function logTagFormData(form) {
+  const orgId = document.getElementById("logOrg").value;
+  const acct = document.getElementById("logAccount").value.trim();
+  if (orgId) form.append("org_id", orgId);
+  if (acct) form.append("account", acct);
+}
+
+async function normalizeLog({ forceStore = false } = {}) {
   const fileInput = document.getElementById("logFile");
   const statusEl = document.getElementById("logStatus");
-  if (!fileInput.files.length) {
+  const file = LOGLIB.file || (fileInput.files && fileInput.files[0]);
+  if (!file) {
     statusEl.textContent = "Choose a debug log file first."; statusEl.className = "status-line error"; return;
   }
   const label = document.getElementById("logLabel").value.trim();
-  const store = document.getElementById("logStore").checked;
+  const store = forceStore || document.getElementById("logStore").checked;
   const form = new FormData();
-  form.append("log_file", fileInput.files[0]);
+  form.append("log_file", file);
   if (label) form.append("label", label);
   form.append("store", store ? "true" : "false");
+  if (store) logTagFormData(form);
 
-  const sizeMb = (fileInput.files[0].size / 1048576).toFixed(1);
-  statusEl.textContent = `Normalizing ${sizeMb} MB...`; statusEl.className = "status-line";
-  setBusy("logResult", "Parsing the log...");
-  const res = await api("/api/logs/normalize", { method: "POST", body: form });
+  const btn = document.getElementById("logNormalizeBtn");
+  btn.disabled = true;
+  statusEl.textContent = `${store ? "Normalizing and storing" : "Normalizing"} ${fmtBytes(file.size)}...`;
+  statusEl.className = "status-line";
+  if (!forceStore) setBusy("logResult", "Parsing the log...");
+  let res;
+  try {
+    res = await api("/api/logs/normalize", { method: "POST", body: form });
+  } finally {
+    btn.disabled = !LOGLIB.file;
+  }
   if (!res.ok) {
     statusEl.textContent = "Failed: " + await errorText(res);
     statusEl.className = "status-line error";
-    document.getElementById("logResult").innerHTML = "";
+    if (!forceStore) document.getElementById("logResult").innerHTML = "";
     return;
   }
   const data = await res.json();
 
   CURRENT_NORMALIZED = data.normalized_log;
   track("normalize");
-  CURRENT_NORMALIZED_NAME = data.log_id || label || (fileInput.files[0].name.replace(/\.[^.]+$/, "")) || "normalized_log";
-  document.getElementById("logResultActions").style.display = "block";
+  CURRENT_NORMALIZED_NAME = data.log_id || label || (file.name.replace(/\.[^.]+$/, "")) || "normalized_log";
   const n = data.normalized_log;
   const excCount = (n.exceptions || []).length;
-  statusEl.textContent = "Normalized." + (data.stored ? ` Stored as ${data.log_id}.` : "")
-    + ` ${excCount} exception(s), ${(n.execution_units || []).length} execution unit(s).`;
+  const m = data.meta || {};
+  const whereText = [m.account, m.org_id].filter(Boolean).join(" · ");
+  statusEl.innerHTML = (data.stored
+      ? `Stored as <span class="mono">${escapeHtml(data.log_id)}</span>${whereText ? ` under ${escapeHtml(whereText)}` : ""}. `
+      : "Normalized. ")
+    + `${excCount} exception(s), ${(n.execution_units || []).length} execution unit(s).`
+    + (data.stored ? "" : " Nothing was stored.");
   statusEl.className = "status-line ok";
+  const wantedTags = store && (document.getElementById("logOrg").value || document.getElementById("logAccount").value.trim());
+  if (data.stored && (!("owner" in m) || (wantedTags && !m.org_id && !m.account))) {
+    // An older server stores the log but drops owner/org/account without an error.
+    statusEl.innerHTML += ` <span class="warn-text">The server ignored the owner and tags because it is running
+      older code &mdash; restart the server, then use <b>Edit</b> on this log to tag it.</span>`;
+    statusEl.className = "status-line";
+  }
   // Only one rendering of a log on this page at a time -- a stale detail card
   // left open below made the page look like it had two of every section.
-  const detailCard = document.getElementById("logDetailCard");
-  if (detailCard) detailCard.style.display = "none";
-  document.getElementById("logResult").innerHTML =
-    renderNormalizedLog(n) + collapsibleJson("Normalized JSON", n);
-  if (data.stored) loadLogs();
+  if (!forceStore) {
+    closeLogDetail();
+    document.getElementById("logResult").innerHTML =
+      renderNormalizedLog(n) + collapsibleJson("Normalized JSON", n);
+  }
+  renderUploadActions(data);
+  if (data.stored) {
+    toast(`Stored in the library${whereText ? " under " + whereText : ""}.`, "ok");
+    await loadLogs({ highlight: data.log_id });
+  }
+}
+
+function renderUploadActions(data) {
+  const host = document.getElementById("logResultActions");
+  host.style.display = "flex";
+  const n = data.normalized_log || {};
+  const exc = (n.exceptions || [])[0];
+  const q = data.stored
+    ? `Analyze stored normalized log ${data.log_id} (use get_normalized_log) and give me the most likely root cause and a suggested fix.`
+    : exc ? `A debug log fails with ${exc.type}: ${exc.message}. What is the most likely root cause?` : "";
+  host.innerHTML = `
+    <button type="button" class="secondary" onclick="downloadCurrentNormalized()">Download normalized JSON</button>
+    ${data.stored
+      ? `<button type="button" class="secondary" onclick="showLogDetail(${jsStr(data.log_id)})">Open in library</button>`
+      : `<button type="button" class="secondary" onclick="normalizeLog({ forceStore: true })" title="Stores it with the label and tags above">Save to library</button>`}
+    ${q && typeof askAbout === "function" ? `<button type="button" class="secondary" onclick="askAbout(${jsStr(q)})">Ask the assistant</button>` : ""}`;
 }
 
 function downloadBlob(obj, filename) {
@@ -1531,27 +1736,332 @@ function downloadCurrentNormalized() {
   if (CURRENT_NORMALIZED) downloadBlob(CURRENT_NORMALIZED, `${CURRENT_NORMALIZED_NAME}.normalized.json`);
 }
 
-async function loadLogs() {
+// ---- library ----
+
+async function loadLogs({ highlight = null } = {}) {
+  wireLogDrop();
   const tbody = document.getElementById("logsTable");
-  const logs = await apiJson("/api/logs", {}, []) || [];
-  fillTable(tbody, logs, 5, {
-    title: "No stored logs yet",
-    body: "Normalizing works without keeping anything. Tick <b>Store in the library</b> above when a log is "
-        + "worth coming back to -- only the normalized JSON is kept, never the raw log.",
-    actions: [{ label: "Normalize a log", onclick: "document.getElementById('logFile').click()", primary: true, role: "user" }],
-  }, m => {
-    const tr = document.createElement("tr");
-    tr.onclick = () => showLogDetail(m.log_id);
-    tr.innerHTML = `<td>${fmtWhen(m.timestamp)}</td><td>${escapeHtml(m.log_id)}</td>
-      <td>${escapeHtml(m.top_exception || "-")}</td><td>${m.exception_count}</td>
-      <td><button class="secondary" onclick="event.stopPropagation(); showLogDetail('${escapeHtml(m.log_id)}')">View</button></td>`;
-    return tr;
-  });
+  if (!LOGLIB.logs.length) tbody.innerHTML = `<tr class="empty-row"><td colspan="8"><p class="muted loading">Loading the library...</p></td></tr>`;
+  const logs = await apiJson("/api/logs?status=all", {}, null);
+  LOGLIB.logs = Array.isArray(logs) ? logs : [];
+  const ids = new Set(LOGLIB.logs.map(m => m.log_id));
+  [...LOGLIB.selected].forEach(id => { if (!ids.has(id)) LOGLIB.selected.delete(id); });
+  initLogForm();
+  renderLogLibrary();
+  if (highlight) flashLogRow(highlight);
 }
 
-async function showLogDetail(logId) {
+function scheduleLogFilter() {
+  clearTimeout(LOGLIB.timer);
+  LOGLIB.timer = setTimeout(() => {
+    LOGLIB.filter.q = document.getElementById("logSearch").value;
+    renderLogLibrary();
+  }, 120);
+}
+
+function setLogFilter(key, value) {
+  LOGLIB.filter[key] = value;
+  renderLogLibrary();
+}
+
+function clearLogFilters() {
+  LOGLIB.filter = { q: "", org_id: "", account: null, owner: "", status: "active" };
+  document.getElementById("logSearch").value = "";
+  renderLogLibrary();
+}
+
+function logHaystack(m) {
+  return [m.label, m.log_id, m.source_log, m.org_id, m.org_name, m.account, m.owner, m.top_exception,
+          ...(m.involved_components || [])].filter(Boolean).join(" ").toLowerCase();
+}
+
+function logPassesBase(m) {
+  const f = LOGLIB.filter;
+  if (f.status === "active" && m.archived) return false;
+  if (f.status === "archived" && !m.archived) return false;
+  if (f.owner === "me" && m.owner !== currentUsername()) return false;
+  const terms = f.q.toLowerCase().split(/\s+/).filter(Boolean);
+  if (terms.length) { const h = logHaystack(m); if (!terms.every(t => h.includes(t))) return false; }
+  return true;
+}
+
+function filteredLogs() {
+  const f = LOGLIB.filter;
+  return LOGLIB.logs.filter(m => logPassesBase(m)
+    && (f.account === null || accountKey(m.account) === f.account)
+    && (!f.org_id || m.org_id === f.org_id));
+}
+
+function renderLogLibrary() {
+  const f = LOGLIB.filter;
+  const on = (id, cond) => { const el = document.getElementById(id); if (el) el.classList.toggle("on", cond); };
+  on("logOwnerAll", f.owner !== "me"); on("logOwnerMe", f.owner === "me");
+  on("logStatusActive", f.status === "active"); on("logStatusArchived", f.status === "archived"); on("logStatusAll", f.status === "all");
+
+  // Account chips: counted over everything the other filters let through,
+  // so each number answers "how many would I see if I clicked this".
+  const base = LOGLIB.logs.filter(m => logPassesBase(m) && (!f.org_id || m.org_id === f.org_id));
+  const counts = new Map();
+  base.forEach(m => {
+    const k = accountKey(m.account);
+    if (!counts.has(k)) counts.set(k, { name: m.account || null, n: 0 });
+    counts.get(k).n += 1;
+  });
+  const chips = [...counts.entries()].sort(([ka, a], [kb, b]) =>
+    (ka === UNASSIGNED_KEY) - (kb === UNASSIGNED_KEY) || String(a.name).localeCompare(String(b.name)));
+  if (f.account !== null && !counts.has(f.account)) {
+    const prior = LOGLIB.logs.find(m => accountKey(m.account) === f.account);
+    chips.push([f.account, { name: f.account === UNASSIGNED_KEY ? null : (prior && prior.account) || f.account, n: 0 }]);
+  }
+  const chipHost = document.getElementById("logAccountChips");
+  chipHost.innerHTML = LOGLIB.logs.length ? `<span class="log-chips-label">Account</span>`
+    + `<button type="button" class="chip ${f.account === null ? "acc" : ""}" onclick="setLogFilter('account', null)">All <span class="chip-n">${base.length}</span></button>`
+    + chips.map(([k, g]) => `<button type="button" class="chip ${f.account === k ? "acc" : ""} ${k === UNASSIGNED_KEY ? "unassigned" : ""}"
+        onclick="setLogFilter('account', ${jsStr(k)})">${escapeHtml(g.name || "Unassigned")} <span class="chip-n">${g.n}</span></button>`).join("")
+    : "";
+
+  // Org filter: orgs that appear on a visible log, within the chosen account.
+  const orgSel = document.getElementById("logFilterOrg");
+  const orgCounts = new Map();
+  LOGLIB.logs.filter(m => logPassesBase(m) && (f.account === null || accountKey(m.account) === f.account))
+    .forEach(m => { if (m.org_id) orgCounts.set(m.org_id, (orgCounts.get(m.org_id) || 0) + 1); });
+  if (f.org_id && !orgCounts.has(f.org_id)) orgCounts.set(f.org_id, 0);
+  orgSel.innerHTML = `<option value="">All orgs</option>` + [...orgCounts.entries()].sort(([a], [b]) => a.localeCompare(b))
+    .map(([id, n]) => `<option value="${escapeHtml(id)}" ${id === f.org_id ? "selected" : ""}>${escapeHtml(id)} (${n})</option>`).join("");
+  orgSel.style.display = orgCounts.size ? "" : "none";
+
+  const rows = filteredLogs();
+  // A selection only covers what is on screen: archiving "3 selected" must
+  // never touch a log the current filter is hiding.
+  const onScreen = new Set(rows.map(m => m.log_id));
+  [...LOGLIB.selected].forEach(id => { if (!onScreen.has(id)) LOGLIB.selected.delete(id); });
+  const total = LOGLIB.logs.filter(m => f.status === "all" || (f.status === "archived") === !!m.archived).length;
+  document.getElementById("logCount").textContent = LOGLIB.logs.length
+    ? (rows.length === total ? `${total}` : `${rows.length} of ${total}`) : "";
+
+  const anyManage = LOGLIB.logs.some(m => m.can_manage);
+  document.getElementById("logLibraryCard").classList.toggle("no-select", !anyManage);
+
+  const tbody = document.getElementById("logsTable");
+  const filtered = f.q || f.account !== null || f.org_id || f.owner || f.status !== "active";
+  const archivedHit = f.status === "active" && LOGLIB.logs.some(m => m.archived && logHaystack(m).includes(f.q.toLowerCase()));
+  const empty = !LOGLIB.logs.length ? {
+    title: "No stored logs yet",
+    body: "Normalizing works without keeping anything. Tick <b>Store in the library</b> when a log is worth coming "
+        + "back to, and tag it with the org or account it came from &mdash; only the normalized JSON is kept, never the raw log.",
+    actions: [{ label: "Normalize a log", onclick: "document.getElementById('logFile').click()", primary: true, role: "user" }],
+  } : {
+    title: f.q ? `No logs match “${f.q}”` : "No logs match these filters",
+    body: archivedHit ? "Some archived logs match &mdash; switch to <b>Archived</b> or <b>All</b> to see them."
+                      : "Try another account, org or search term.",
+    actions: filtered ? [{ label: "Clear filters", onclick: "clearLogFilters()", primary: true }] : [],
+  };
+  fillTable(tbody, rows, 8, empty, logRow);
+  renderLogBulkBar(rows);
+}
+
+function ownerHtml(m) {
+  if (!m.owner) return `<span class="muted" title="Stored before owners were tracked -- only an admin can change it">&mdash;</span>`;
+  const me = m.owner === currentUsername();
+  return `<span class="owner-tag ${me ? "me" : ""}" title="Stored by ${escapeHtml(m.owner)}">${me ? "You" : escapeHtml(m.owner)}</span>`;
+}
+
+function logWhereHtml(m) {
+  const acct = m.account
+    ? `<button type="button" class="link-btn plain" onclick="event.stopPropagation(); setLogFilter('account', ${jsStr(accountKey(m.account))})" title="Show only ${escapeHtml(m.account)}">${escapeHtml(m.account)}</button>`
+    : `<span class="muted">Unassigned</span>`;
+  const org = m.org_id
+    ? `<div class="log-org">${envBadge(ORGS[m.org_id] || { environment: m.org_environment })}<button type="button" class="link-btn plain mono"
+         onclick="event.stopPropagation(); setLogFilter('org_id', ${jsStr(m.org_id)})" title="Show only ${escapeHtml(m.org_id)}">${escapeHtml(m.org_id)}</button></div>`
+    : "";
+  return acct + org;
+}
+
+function logRow(m) {
+  const tr = document.createElement("tr");
+  tr.dataset.logId = m.log_id;
+  tr.className = [m.archived ? "archived" : "", LOGLIB.openId === m.log_id ? "open" : ""].join(" ").trim();
+  tr.onclick = () => showLogDetail(m.log_id);
+  const title = m.label || m.source_log || m.log_id;
+  const idArg = jsStr(m.log_id);
+  tr.innerHTML = `
+    <td class="sel-col" onclick="event.stopPropagation()">
+      <input type="checkbox" aria-label="Select ${escapeHtml(title)}" ${LOGLIB.selected.has(m.log_id) ? "checked" : ""}
+        ${m.can_manage ? "" : `disabled title="Only the owner or an admin can change this log"`}
+        onchange="toggleLogSelected(${idArg}, this.checked)"></td>
+    <td class="nowrap">${fmtWhen(m.timestamp)}</td>
+    <td class="log-title-cell" title="${escapeHtml(m.log_id)}"><div class="log-title">${escapeHtml(title)}${m.archived ? ` <span class="badge archived">Archived</span>` : ""}</div>
+      ${m.source_log && m.source_log !== title ? `<div class="log-sub">${escapeHtml(m.source_log)}</div>`
+        : title !== m.log_id ? `<div class="log-sub mono">${escapeHtml(m.log_id)}</div>` : ""}</td>
+    <td>${logWhereHtml(m)}</td>
+    <td>${ownerHtml(m)}</td>
+    <td>${m.top_exception ? `<span class="exc-name">${escapeHtml(m.top_exception)}</span>` : `<span class="muted">none</span>`}</td>
+    <td class="num">${m.exception_count ? `<span class="badge high">${m.exception_count}</span>` : `<span class="muted">0</span>`}</td>
+    <td class="row-actions" onclick="event.stopPropagation()">
+      <button type="button" class="link-btn" onclick="downloadStoredLog(${idArg})">Download</button>
+      ${m.can_manage ? `
+        <button type="button" class="link-btn" onclick="editLogTags(${idArg})">Edit</button>
+        <button type="button" class="link-btn" onclick="setLogArchived(${idArg}, ${!m.archived})">${m.archived ? "Restore" : "Archive"}</button>
+        <button type="button" class="link-btn danger" onclick="deleteLogs([${idArg}])">Delete</button>` : ""}
+    </td>`;
+  return tr;
+}
+
+function flashLogRow(id) {
+  const tr = [...document.querySelectorAll("#logsTable tr")].find(r => r.dataset.logId === id);
+  if (!tr) return;
+  tr.classList.add("flash");
+  tr.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  setTimeout(() => tr.classList.remove("flash"), 2200);
+}
+
+function toggleLogSelected(id, on) {
+  if (on) LOGLIB.selected.add(id); else LOGLIB.selected.delete(id);
+  renderLogBulkBar(filteredLogs());
+}
+
+function toggleAllLogs(on) {
+  filteredLogs().filter(m => m.can_manage).forEach(m => { if (on) LOGLIB.selected.add(m.log_id); else LOGLIB.selected.delete(m.log_id); });
+  renderLogLibrary();
+}
+
+function renderLogBulkBar(rows) {
+  const bar = document.getElementById("logBulkBar");
+  const manageable = rows.filter(m => m.can_manage);
+  const all = document.getElementById("logSelectAll");
+  const selectedHere = manageable.filter(m => LOGLIB.selected.has(m.log_id));
+  if (all) {
+    all.disabled = !manageable.length;
+    all.checked = !!manageable.length && selectedHere.length === manageable.length;
+    all.indeterminate = selectedHere.length > 0 && selectedHere.length < manageable.length;
+  }
+  const sel = LOGLIB.logs.filter(m => LOGLIB.selected.has(m.log_id));
+  if (!sel.length) { bar.style.display = "none"; bar.innerHTML = ""; return; }
+  const anyActive = sel.some(m => !m.archived), anyArchived = sel.some(m => m.archived);
+  bar.style.display = "flex";
+  bar.innerHTML = `<b>${sel.length} selected</b>
+    ${anyActive ? `<button type="button" class="secondary" onclick="bulkArchive(true)">Archive</button>` : ""}
+    ${anyArchived ? `<button type="button" class="secondary" onclick="bulkArchive(false)">Restore</button>` : ""}
+    <button type="button" class="secondary" onclick="bulkRetag()">Tag&hellip;</button>
+    <button type="button" class="secondary danger-outline" onclick="deleteLogs([...LOGLIB.selected])">Delete</button>
+    <button type="button" class="link-btn" onclick="LOGLIB.selected.clear(); renderLogLibrary()">Clear selection</button>`;
+}
+
+async function patchLog(id, body) {
+  const res = await api(`/api/logs/${encodeURIComponent(id)}`, {
+    method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  if (!res.ok) return { ok: false, error: await errorText(res) };
+  return { ok: true, meta: await res.json() };
+}
+
+async function setLogArchived(id, archived) {
+  const r = await patchLog(id, { archived });
+  if (!r.ok) { toast(`Could not ${archived ? "archive" : "restore"} it: ${r.error}`, "error"); return; }
+  toast(archived ? "Archived -- find it under Archived." : "Restored to the active library.", "ok");
+  await loadLogs();
+  if (LOGLIB.openId === id) showLogDetail(id, { scroll: false });
+}
+
+async function bulkArchive(archived) {
+  const ids = LOGLIB.logs.filter(m => LOGLIB.selected.has(m.log_id) && !!m.archived !== archived).map(m => m.log_id);
+  let ok = 0; const errs = [];
+  for (const id of ids) { const r = await patchLog(id, { archived }); if (r.ok) ok++; else errs.push(r.error); }
+  toast(`${archived ? "Archived" : "Restored"} ${ok} log(s).` + (errs.length ? ` ${errs.length} failed: ${errs[0]}` : ""), errs.length ? "error" : "ok");
+  LOGLIB.selected.clear();
+  await loadLogs();
+}
+
+async function deleteLogs(ids) {
+  ids = ids.filter(Boolean);
+  if (!ids.length) return;
+  const one = ids.length === 1 ? LOGLIB.logs.find(m => m.log_id === ids[0]) : null;
+  const name = one ? (one.label || one.log_id) : `${ids.length} logs`;
+  if (!await confirmModal(`Delete ${name}?`,
+      `Permanently removes the normalized JSON and its tags from the library. This can't be undone &mdash;
+       <b>archive</b> instead if it might be needed again.`, "Delete")) return;
+  let ok = 0; const errs = [];
+  for (const id of ids) {
+    const res = await api(`/api/logs/${encodeURIComponent(id)}`, { method: "DELETE" });
+    if (res.ok) { ok++; LOGLIB.selected.delete(id); if (LOGLIB.openId === id) closeLogDetail(); }
+    else errs.push(await errorText(res));
+  }
+  toast(`Deleted ${ok} log(s).` + (errs.length ? ` ${errs.length} failed: ${errs[0]}` : ""), errs.length ? "error" : "ok");
+  await loadLogs();
+}
+
+function tagFields(m = {}) {
+  return [
+    { name: "org_id", label: "Org", value: m.org_id || "", placeholder: "Org ID (leave blank for none)",
+      options: Object.keys(ORGS).sort(), hint: "An org's own account is used when it has one." },
+    { name: "account", label: "Customer account", value: m.account || "", placeholder: "e.g. Acme Corp",
+      options: logAccountNames(), hint: "Clear a box to remove that tag." },
+  ];
+}
+
+function cleanTag(s) { return String(s || "").replace(/\s+/g, " ").trim(); }
+
+async function editLogTags(id) {
+  const m = LOGLIB.logs.find(x => x.log_id === id);
+  if (!m) return;
+  const answer = await modal({
+    title: "Edit log",
+    body: `<span class="mono">${escapeHtml(id)}</span>`,
+    fields: [{ name: "label", label: "Label", value: m.label || "", placeholder: m.source_log || "" }, ...tagFields(m)],
+    submitLabel: "Save",
+  });
+  if (!answer) return;
+  const body = {};
+  const label = cleanTag(answer.label), org = cleanTag(answer.org_id), acct = cleanTag(answer.account);
+  if (label !== (m.label || "")) body.label = label || null;
+  if (org !== (m.org_id || "")) body.org_id = org || null;
+  if (acct !== (m.account || "") || "org_id" in body) body.account = acct || null;
+  if (!Object.keys(body).length) return;
+  if (org && !ORGS[org]) { toast(`No org '${org}' that you can see.`, "error"); return; }
+  const r = await patchLog(id, body);
+  if (!r.ok) { toast("Could not save: " + r.error, "error"); return; }
+  toast("Saved.", "ok");
+  await loadLogs({ highlight: id });
+  if (LOGLIB.openId === id) showLogDetail(id, { scroll: false });
+}
+
+async function bulkRetag() {
+  const ids = [...LOGLIB.selected];
+  if (!ids.length) return;
+  const answer = await modal({
+    title: `Tag ${ids.length} log(s)`,
+    body: "Sets the same org and account on every selected log. Leave the org blank to tag an account only.",
+    fields: tagFields(),
+    submitLabel: "Apply",
+  });
+  if (!answer) return;
+  const org = cleanTag(answer.org_id), acct = cleanTag(answer.account);
+  if (org && !ORGS[org]) { toast(`No org '${org}' that you can see.`, "error"); return; }
+  let ok = 0; const errs = [];
+  for (const id of ids) { const r = await patchLog(id, { org_id: org || null, account: acct || null }); if (r.ok) ok++; else errs.push(r.error); }
+  toast(`Tagged ${ok} log(s).` + (errs.length ? ` ${errs.length} failed: ${errs[0]}` : ""), errs.length ? "error" : "ok");
+  LOGLIB.selected.clear();
+  await loadLogs();
+}
+
+async function downloadStoredLog(id) {
+  const data = await apiJson(`/api/logs/${encodeURIComponent(id)}`, {}, null);
+  if (!data) { toast("Could not load that log.", "error"); return; }
+  downloadBlob(data.normalized_log, `${id}.normalized.json`);
+}
+
+function closeLogDetail() {
+  const card = document.getElementById("logDetailCard");
+  if (card) card.style.display = "none";
+  LOGLIB.openId = null;
+  document.querySelectorAll("#logsTable tr.open").forEach(tr => tr.classList.remove("open"));
+}
+
+async function showLogDetail(logId, { scroll = true } = {}) {
   const card = document.getElementById("logDetailCard");
   card.style.display = "block";
+  LOGLIB.openId = logId;
+  document.querySelectorAll("#logsTable tr").forEach(tr => tr.classList.toggle("open", tr.dataset.logId === logId));
   // Opening a stored log replaces the upload result above rather than
   // stacking a second full copy of the same sections under it.
   const uploadResult = document.getElementById("logResult");
@@ -1559,16 +2069,45 @@ async function showLogDetail(logId) {
   const uploadActions = document.getElementById("logResultActions");
   if (uploadActions) uploadActions.style.display = "none";
   setBusy("logDetail");
-  card.scrollIntoView({ behavior: "smooth" });
+  if (scroll) card.scrollIntoView({ behavior: "smooth" });
   const data = await apiJson(`/api/logs/${encodeURIComponent(logId)}`, {}, null);
-  if (!data) { document.getElementById("logDetail").innerHTML = `<p class="muted">Could not load that log.</p>`; return; }
+  if (!data) {
+    document.getElementById("logDetail").innerHTML = `<p class="muted">Could not load that log &mdash; it may have been deleted.</p>`;
+    document.getElementById("logDetailActions").innerHTML = "";
+    return;
+  }
+  const m = data.meta || {};
   window._logDetail = data.normalized_log;
-  document.getElementById("logDetailActions").innerHTML =
-    `<button class="secondary" onclick="downloadBlob(window._logDetail, '${escapeHtml(logId)}.normalized.json')">Download normalized JSON</button>`;
+  document.getElementById("logDetailTitle").textContent = m.label || m.source_log || logId;
+  const facts = [
+    ["Account", m.account ? escapeHtml(m.account) : `<span class="muted">Unassigned</span>`],
+    ["Org", m.org_id ? `${envBadge(ORGS[m.org_id] || { environment: m.org_environment })}${ORGS[m.org_id]
+        ? `<button type="button" class="link-btn plain mono" onclick="setActiveOrg(${jsStr(m.org_id)}); showView('dashboard')" title="Open this org's dashboard">${escapeHtml(m.org_id)}</button>`
+        : `<span class="mono">${escapeHtml(m.org_id)}</span>`}` : `<span class="muted">None</span>`],
+    ["Owner", ownerHtml(m)],
+    ["Stored", escapeHtml(fmtWhen(m.timestamp))],
+    ["Source file", m.source_log ? `<span class="mono">${escapeHtml(m.source_log)}</span>` : `<span class="muted">-</span>`],
+  ];
+  if (m.archived) facts.push(["Archived", `${escapeHtml(fmtWhen(m.archived_at))}${m.archived_by ? ` by ${escapeHtml(m.archived_by)}` : ""}`]);
+  document.getElementById("logDetailMeta").innerHTML = `<span class="mono muted">${escapeHtml(logId)}</span>`
+    + `<dl class="log-facts">${facts.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join("")}</dl>`;
+  const idArg = jsStr(logId);
+  const q = `Analyze stored normalized log ${logId} (use get_normalized_log) and give me the most likely root cause and a suggested fix.`;
+  document.getElementById("logDetailActions").innerHTML = `
+    <button type="button" class="secondary" onclick="downloadBlob(window._logDetail, ${jsStr(logId + ".normalized.json")})">Download normalized JSON</button>
+    ${typeof askAbout === "function" ? `<button type="button" class="secondary" onclick="askAbout(${jsStr(q)})">Ask the assistant</button>` : ""}
+    ${m.can_manage ? `
+      <button type="button" class="secondary" onclick="editLogTags(${idArg})">Edit label &amp; tags</button>
+      <button type="button" class="secondary" onclick="setLogArchived(${idArg}, ${!m.archived})">${m.archived ? "Restore" : "Archive"}</button>
+      <button type="button" class="secondary danger-outline" onclick="deleteLogs([${idArg}])">Delete</button>`
+      : m.can_manage === undefined || serverIsStale()
+        ? `<span class="warn-text small">The server is running older code, so archive, delete and tags are unavailable &mdash; restart the server.</span>`
+        : `<span class="muted small">Only ${m.owner ? `${escapeHtml(m.owner)} or an admin` : "an admin"} can archive or delete this log.</span>`}`;
   document.getElementById("logDetail").innerHTML =
-    `<p class="muted mono">${escapeHtml(logId)}</p>` + renderNormalizedLog(data.normalized_log)
-    + collapsibleJson("Normalized JSON", data.normalized_log);
+    renderNormalizedLog(data.normalized_log) + collapsibleJson("Normalized JSON", data.normalized_log);
 }
+
+if (typeof document !== "undefined" && document.getElementById("logDrop")) wireLogDrop();
 
 // =====================================================================
 // 4. auth + boot
@@ -1705,9 +2244,42 @@ function applyRole() {
   });
 }
 
+// Must match APP_BUILD in app/main.py and the ?v= on index.html's assets.
+const CLIENT_BUILD = 26;
+let SERVER_BUILD = null;   // null = not checked yet, 0 = a server too old to report one
+
+/** Static files are served fresh, but the server's Python is only loaded at
+ *  start-up -- so an update can leave new UI talking to an old server that
+ *  quietly ignores new fields. Say so, loudly, instead of letting features
+ *  look broken. */
+async function checkServerBuild() {
+  try {
+    const res = await fetch("/api/build");
+    SERVER_BUILD = res.ok ? ((await res.json()).build || 0) : 0;
+  } catch (e) {
+    return;
+  }
+  const host = document.getElementById("buildBanner");
+  if (!host) return;
+  if (SERVER_BUILD < CLIENT_BUILD) {
+    host.innerHTML = `<b>The server is running older code than this page</b> (server build ${SERVER_BUILD || "unknown"},
+      page build ${CLIENT_BUILD}). Restart it (stop it, then run <span class="mono">start_server.ps1</span> again) &mdash;
+      until then newer features such as log tags, owners, archive and delete will not work.`;
+    host.style.display = "";
+  } else if (SERVER_BUILD > CLIENT_BUILD) {
+    host.innerHTML = `<b>This page is out of date.</b> The server was updated &mdash; press <b>Ctrl+F5</b> to reload.`;
+    host.style.display = "";
+  } else {
+    host.style.display = "none";
+  }
+}
+
+function serverIsStale() { return SERVER_BUILD !== null && SERVER_BUILD < CLIENT_BUILD; }
+
 function enterApp() {
   document.getElementById("loginOverlay").style.display = "none";
   document.getElementById("appRoot").style.display = "";
+  checkServerBuild();
   applyRole();
   loadOrgs();
   if (typeof initHome === "function") initHome();

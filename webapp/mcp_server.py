@@ -508,7 +508,8 @@ async def list_known_issues(org_id: str) -> dict:
 # ---------- standalone log normalization + log-only RCA ----------
 
 @mcp.tool()
-async def normalize_log(log_text: str, label: Optional[str] = None, store: bool = False) -> dict:
+async def normalize_log(log_text: str, label: Optional[str] = None, store: bool = False,
+                        org_id: Optional[str] = None, account: Optional[str] = None) -> dict:
     """Normalize a raw Salesforce debug log with NO org, code, or metadata
     required. Pass the raw log contents as `log_text`; get back the compact
     normalized JSON -- execution units (with nesting depth and which threw),
@@ -516,8 +517,10 @@ async def normalize_log(log_text: str, label: Optional[str] = None, store: bool 
     summaries, callouts, flow events, validation failures, final governor
     limits, and any component names the log itself mentions. The raw log is
     processed in memory and never stored; if `store` is true the derived
-    JSON (never the raw log) is kept in the library and a `log_id` is
-    returned.
+    JSON (never the raw log) is kept in the library, owned by you, and a
+    `log_id` is returned. When storing, tag it with the customer it came from:
+    `org_id` (a connected org you can see -- its account comes along) and/or
+    `account` (a customer account name, for an org that is not connected).
 
     After calling this, analyze the returned normalized log to produce an RCA
     and a suggested resolution FROM THE LOG ALONE -- you do not have (and do
@@ -534,16 +537,64 @@ async def normalize_log(log_text: str, label: Optional[str] = None, store: bool 
     data = {"store": "true" if store else "false"}
     if label:
         data["label"] = label
+    if org_id:
+        data["org_id"] = org_id
+    if account:
+        data["account"] = account
     return await _post_form("/api/logs/normalize", data, files)
 
 
 @mcp.tool()
-async def list_normalized_logs() -> dict:
-    """List every standalone normalized log kept in the library (org-
-    independent), newest first, with each log's id, label, top exception
-    type, exception count, and the component names it mentions. Use
-    get_normalized_log(log_id) to pull the full normalized JSON for one."""
-    return await _get("/api/logs")
+async def list_normalized_logs(q: Optional[str] = None, account: Optional[str] = None,
+                               org_id: Optional[str] = None, owner: Optional[str] = None,
+                               status: str = "active") -> dict:
+    """List the normalized logs kept in the library that you can see, newest
+    first: id, label, owner, org_id, account, archived flag, top exception
+    type, exception count, and the component names each mentions.
+
+    Filters (all optional): `q` free text over label, id, source file, org,
+    account, owner, exception and components (every word must match);
+    `account` a customer account name ("__unassigned__" for untagged logs);
+    `org_id`; `owner` a username or "me"; `status` "active" (default),
+    "archived" or "all". Use this to find earlier logs for the same customer
+    before an RCA. Logs tagged to a private org you cannot see are never
+    listed. Use get_normalized_log(log_id) to pull the full JSON for one."""
+    params = {"status": status}
+    for k, v in (("q", q), ("account", account), ("org_id", org_id), ("owner", owner)):
+        if v:
+            params[k] = v
+    return await _get("/api/logs", params=params)
+
+
+@mcp.tool()
+async def update_normalized_log(log_id: str, archived: Optional[bool] = None,
+                                org_id: Optional[str] = None, account: Optional[str] = None,
+                                label: Optional[str] = None, clear_org: bool = False,
+                                clear_account: bool = False) -> dict:
+    """Archive/restore, retag or relabel one stored log. Only its owner or an
+    admin may. Pass only what should change: `archived` true/false; `org_id`
+    / `account` to retag (an org's own account wins); `clear_org` /
+    `clear_account` to remove a tag; `label` to rename. Deleting a log is
+    deliberately not offered here -- do that in the web app."""
+    body = {}
+    if archived is not None:
+        body["archived"] = archived
+    if label is not None:
+        body["label"] = label
+    if org_id or clear_org:
+        body["org_id"] = None if clear_org else org_id
+    if account or clear_account:
+        body["account"] = None if clear_account else account
+    if not body:
+        return {"error": "Nothing to change -- pass archived, org_id, account, label or a clear_* flag."}
+    async with _client() as c:
+        try:
+            r = await c.patch(f"/api/logs/{log_id}", json=body)
+        except httpx.ConnectError:
+            return _conn_error()
+        if r.status_code >= 400:
+            return _auth_error(r.status_code) or {"error": f"{r.status_code}: {r.text}"}
+        return r.json()
 
 
 @mcp.tool()

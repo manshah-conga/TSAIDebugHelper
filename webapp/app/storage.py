@@ -591,3 +591,39 @@ def load_normalized_log(log_id):
         "meta": read_json(os.path.join(d, "meta.json")),
         "normalized_log": read_json(os.path.join(d, "normalized_log.json")),
     }
+
+
+def read_log_meta(log_id):
+    d = _log_dir(log_id)
+    if not os.path.isdir(d):
+        return None
+    return read_json(os.path.join(d, "meta.json"))
+
+
+def mutate_log_meta(log_id, mutator):
+    """Archive / retag / relabel one stored log's meta.json under its lock,
+    so an archive and a retag landing together both survive."""
+    return mutate_json(os.path.join(_log_dir(log_id), "meta.json"), mutator, {})
+
+
+def delete_normalized_log(log_id):
+    """Remove one stored log (its normalized JSON + meta). Retries briefly
+    because Windows can hold a transient lock on a file the indexer or an
+    antivirus scanner is reading at that moment."""
+    import shutil
+    d = _log_dir(log_id)
+    if not os.path.isdir(d):
+        return False
+    meta_path = os.path.join(d, "meta.json")
+    with locked(meta_path):
+        last_err = None
+        for attempt in range(10):
+            try:
+                shutil.rmtree(d)
+                return True
+            except FileNotFoundError:
+                return True
+            except PermissionError as e:
+                last_err = e
+                time.sleep(0.05 * (attempt + 1))
+        raise last_err

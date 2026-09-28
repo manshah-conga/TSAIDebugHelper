@@ -26,6 +26,7 @@ from . import limits as limits_policy
 from . import rate_limit
 from . import org_access
 from . import accounts as accounts_mod
+from . import log_library
 from . import secrets_store
 from . import chat_store
 from . import chat as chat_agent
@@ -227,6 +228,22 @@ def change_own_password(req: ChangePasswordRequest, ident=Depends(auth.require_r
     except Exception:
         rewrapped = False
     return {"ok": True, "llm_key_rewrapped": rewrapped}
+
+
+# Build handshake. Bump together with CLIENT_BUILD in static/app.js and the
+# ?v= on the asset links in static/index.html. Static files are read fresh
+# from disk on every request but Python code is only loaded at start-up, so
+# after an update a browser can be running new UI against an old server that
+# silently ignores the new fields (log tags were dropped exactly this way).
+# The page compares the two and tells the person to restart the server.
+APP_BUILD = 26
+
+
+@app.get("/api/build")
+def build_info():
+    """Unauthenticated on purpose: it reveals nothing but a number, and the
+    page needs it before deciding what to warn about."""
+    return {"build": APP_BUILD}
 
 
 @app.get("/api/auth/me")
@@ -893,19 +910,45 @@ def _slugify(text, fallback="log"):
     return keep or fallback
 
 
+def _unique_log_id(base_id):
+    """Two uploads with the same label in the same second used to mint the
+    same id, and the second silently overwrote the first."""
+    log_id, n = base_id, 2
+    while storage.read_log_meta(log_id) is not None:
+        log_id = f"{base_id}_{n}"
+        n += 1
+    return log_id
+
+
 @app.post("/api/logs/normalize", dependencies=Dep_user)
 async def normalize_log(
     log_file: UploadFile = File(...),
     label: Optional[str] = Form(None),
     store: bool = Form(False),
+    org_id: Optional[str] = Form(None),
+    account: Optional[str] = Form(None),
+    ident=Depends(auth.require_user),
 ):
     """Upload a raw Salesforce debug log and get back its normalized JSON.
-    This path is completely org-independent: no org connection, no Apex/Flow
+    Normalizing is completely org-independent: no org connection, no Apex/Flow
     source, no metadata is required or used -- it is pure log condensation, so
     it works even for an org this app has never connected to. The raw log is
     read into memory, normalized, and discarded before the response returns;
     if `store` is true the derived JSON (never the raw log) is kept in the
-    normalized-log library for future reference."""
+    normalized-log library, owned by the caller.
+
+    `org_id` / `account` optionally tag the stored log with the customer org
+    and/or account it came from (app/log_library.py). The org must be one you
+    can see; its account, if it has one, is used in place of `account`. Tags
+    are validated before the log is parsed, so a bad tag fails fast."""
+    tag_org, tag_account = (None, None)
+    if store:
+        tag_org, tag_account = log_library.resolve_tags(org_id, account, ident)
+        try:
+            label = log_library.normalize_label(label)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
     raw_bytes = await log_file.read()  # in memory only
     raw_text = raw_bytes.decode("utf-8", errors="replace")
     normalized = parse_log_text(raw_text)  # no index_ids -> no org needed
@@ -917,42 +960,85 @@ async def normalize_log(
     if store:
         timestamp_slug = now.replace(":", "").replace("-", "")
         base = label or (os.path.splitext(log_file.filename)[0] if log_file.filename else "log")
-        log_id = f"{timestamp_slug}_{_slugify(base)}"
+        log_id = _unique_log_id(f"{timestamp_slug}_{_slugify(base)[:80]}")
         n_exc = len(normalized.get("exceptions", []))
         meta = {
             "log_id": log_id,
             "label": label,
             "source_log": log_file.filename,
             "timestamp": now,
+            "owner": ident["username"],
             "exception_count": n_exc,
             "top_exception": (normalized["exceptions"][0]["type"] if n_exc else None),
             "execution_unit_count": len(normalized.get("execution_units", [])),
             "involved_components": normalized.get("involved_components", []),
         }
+        if tag_org:
+            meta["org_id"] = tag_org
+        if tag_account:
+            meta["account"] = tag_account
         storage.save_normalized_log(log_id, normalized, meta)
-        result.update({"stored": True, "log_id": log_id, "meta": meta})
+        result.update({"stored": True, "log_id": log_id,
+                       "meta": log_library.decorate(meta, ident, storage.load_registry())})
 
     return result
 
 
 @app.get("/api/logs", dependencies=Dep_reader)
-def list_logs():
-    return storage.list_normalized_logs()
+def list_logs(q: Optional[str] = None, org_id: Optional[str] = None, account: Optional[str] = None,
+              owner: Optional[str] = None, status: str = "active",
+              ident=Depends(auth.require_reader)):
+    """Stored logs you can see, newest first. Filters: `q` (free text over
+    label, id, source file, org, account, owner, top exception, components --
+    every term must match), `org_id`, `account` (`__unassigned__` for
+    untagged), `owner` (`me` for yourself), `status` active|archived|all.
+    Logs tagged to a private org you cannot see are left out."""
+    return log_library.list_logs(ident, q=q, org_id=org_id, account=account, owner=owner, status=status)
+
+
+@app.get("/api/logs/facets", dependencies=Dep_reader)
+def log_facets(ident=Depends(auth.require_reader)):
+    """Accounts, orgs and owners across the logs you can see, with counts --
+    the options for the library's filters."""
+    return log_library.facets(ident)
+
+
+class LogUpdateRequest(BaseModel):
+    label: Optional[str] = None
+    org_id: Optional[str] = None
+    account: Optional[str] = None
+    archived: Optional[bool] = None
+
+
+@app.patch("/api/logs/{log_id}", dependencies=Dep_user)
+def update_log(log_id: str, req: LogUpdateRequest, ident=Depends(auth.require_user)):
+    """Archive/unarchive, relabel or retag a stored log. Owner or admin only.
+    Only the fields present in the body change; send `org_id: null` or
+    `account: null` to clear a tag."""
+    sent = req.model_fields_set
+    kwargs = {k: getattr(req, k) for k in ("label", "org_id", "account", "archived") if k in sent}
+    if "archived" in kwargs and kwargs["archived"] is None:
+        raise HTTPException(400, "archived must be true or false")
+    if not kwargs:
+        raise HTTPException(400, "Nothing to change -- send label, org_id, account and/or archived.")
+    return log_library.update_log(log_id, ident, **kwargs)
+
+
+@app.delete("/api/logs/{log_id}", dependencies=Dep_user)
+def delete_log(log_id: str, ident=Depends(auth.require_user)):
+    """Permanently delete a stored log (its normalized JSON and metadata).
+    Owner or admin only. Archive instead if it might be needed again."""
+    return log_library.delete_log(log_id, ident)
 
 
 @app.get("/api/logs/{log_id}", dependencies=Dep_reader)
-def get_log(log_id: str):
-    result = storage.load_normalized_log(log_id)
-    if not result:
-        raise HTTPException(404, f"No stored normalized log '{log_id}'.")
-    return result
+def get_log(log_id: str, ident=Depends(auth.require_reader)):
+    return log_library.get_log(log_id, ident)
 
 
 @app.get("/api/logs/{log_id}/download", dependencies=Dep_reader)
-def download_log(log_id: str):
-    result = storage.load_normalized_log(log_id)
-    if not result:
-        raise HTTPException(404, f"No stored normalized log '{log_id}'.")
+def download_log(log_id: str, ident=Depends(auth.require_reader)):
+    result = log_library.get_log(log_id, ident)
     return JSONResponse(
         content=result["normalized_log"],
         headers={"Content-Disposition": f'attachment; filename="{log_id}.normalized.json"'},

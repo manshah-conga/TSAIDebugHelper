@@ -429,10 +429,14 @@ const TOURS = {
       body: "Tick this to see only issues with no fix recorded -- the ones that will cost someone time again." },
   ] },
   logs: { title: "Log Normalizer", steps: [
-    { el: "#logFile", view: "logs", title: "No org needed",
-      body: "Condenses a raw debug log into exceptions, execution units, database activity and limits. The raw log never touches disk." },
+    { el: "#logDrop", view: "logs", title: "No org needed",
+      body: "Drop a raw debug log here. It is condensed into exceptions, execution units, database activity and limits. The raw log never touches disk." },
+    { el: "#logOrg", view: "logs", title: "Tag where it came from",
+      body: "Pick the org (its account comes along) or just type the customer account. A log tagged to a private org is only visible to people who can see that org." },
     { el: "#logStore", view: "logs", title: "Keep it if it's worth keeping",
-      body: "Only the normalized JSON is stored, and the assistant (or Claude over MCP) can pull it back up later." },
+      body: "Only the normalized JSON is stored, owned by you. The assistant (or Claude over MCP) can pull it back up later." },
+    { el: "#logSearch", view: "logs", title: "Find it again",
+      body: "Search by account, org, label, owner or exception, or click an account chip. You (or an admin) can archive or delete the logs you stored." },
   ] },
   tokens: { title: "API tokens", steps: [
     { el: "#tokenLabel", view: "tokens", title: "A token per client",

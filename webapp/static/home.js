@@ -1131,10 +1131,15 @@ async function triageStoreLog() {
   const form = new FormData();
   form.append("log_file", HOME.file);
   form.append("store", "true");
+  // Kept from Home while working an org: tag it with that org (and so its
+  // account) so it can be found by customer in the library later.
+  if (CURRENT_ORG && ORGS[CURRENT_ORG]) form.append("org_id", CURRENT_ORG);
   const res = await api("/api/logs/normalize", { method: "POST", body: form });
   if (!res.ok) { toast("Could not store it: " + await errorText(res), "error"); return; }
   const d = await res.json();
-  toast(`Stored as ${d.log_id} -- only the normalized JSON is kept.`, "ok");
+  const m = d.meta || {};
+  const where = [m.account, m.org_id].filter(Boolean).join(" · ");
+  toast(`Stored as ${d.log_id}${where ? ` under ${where}` : ""} -- only the normalized JSON is kept. Retag it in the Log Normalizer.`, "ok");
 }
 
 async function openComponent(id) {
