@@ -19,7 +19,9 @@ CLASS_DECL_RE = re.compile(
     r"\b(public|private|global)?\s*(virtual|abstract)?\s*(with sharing|without sharing|inherited sharing)?\s*"
     r"(class|interface|enum)\s+(\w+)", re.IGNORECASE)
 EXTENDS_RE = re.compile(r"\bextends\s+([\w\.]+)", re.IGNORECASE)
-IMPLEMENTS_RE = re.compile(r"\bimplements\s+([\w\.,\s]+?)\s*\{", re.IGNORECASE)
+# `<>` is allowed so generic interfaces parse: `implements Database.Batchable<Id>,
+# Database.Stateful {` used to fail this match outright and leave implements = [].
+IMPLEMENTS_RE = re.compile(r"\bimplements\s+([\w\.,\s<>]+?)\s*\{", re.IGNORECASE)
 SOQL_RE = re.compile(r"\[\s*SELECT\b.*?\]", re.IGNORECASE | re.DOTALL)
 SOQL_FROM_RE = re.compile(r"\bFROM\s+([A-Za-z0-9_]+)", re.IGNORECASE)
 DYNAMIC_SOQL_RE = re.compile(r"Database\.(query|queryWithBinds|getQueryLocator|countQuery)\s*\(", re.IGNORECASE)
@@ -36,6 +38,34 @@ TRIGGER_DECL_RE = re.compile(r"trigger\s+(\w+)\s+on\s+([\w.]+)\s*\(([^)]*)\)", r
 CALL_RE = re.compile(r"\b([A-Za-z][A-Za-z0-9_]*)\.\w+\s*\(")
 METHOD_CALL_RE = re.compile(r"\b([A-Za-z][A-Za-z0-9_]*)\.(\w+)\s*\(")
 BATCHABLE_RE = re.compile(r"implements[^\{]*Database\.Batchable", re.IGNORECASE)
+# Queueable / Schedulable may appear anywhere in the implements list
+# (`implements Database.AllowsCallouts, Queueable`), not only first.
+QUEUEABLE_RE = re.compile(r"implements[^\{]*\bQueueable\b", re.IGNORECASE)
+SCHEDULABLE_RE = re.compile(r"implements[^\{]*\bSchedulable\b", re.IGNORECASE)
+
+# Instantiation edges. `new X(` of a class in this org is a real dependency
+# even when no `X.method(` call follows -- the common case being a job handed
+# straight to System.enqueueJob / Database.executeBatch.
+NEW_INSTANCE_RE = re.compile(r"\bnew\s+([A-Za-z_]\w*)(?:\s*\.\s*([A-Za-z_]\w*))?\s*\(")
+TYPE_FORNAME_RE = re.compile(
+    r"\bType\s*\.\s*forName\s*\(\s*(?:'([\w]*)'\s*,\s*)?'([\w.]+)'\s*\)", re.IGNORECASE)
+
+# Async dispatch: which argument (0-based) is the job instance, and which
+# optional argument carries a delay / scope size worth surfacing.
+ASYNC_DISPATCH = [
+    ("System.enqueueJob",    re.compile(r"\bSystem\s*\.\s*enqueueJob\s*\(", re.IGNORECASE),
+     0, {"delay_minutes": 1}),
+    ("Database.executeBatch", re.compile(r"\bDatabase\s*\.\s*executeBatch\s*\(", re.IGNORECASE),
+     0, {"scope_size": 1}),
+    ("System.scheduleBatch", re.compile(r"\bSystem\s*\.\s*scheduleBatch\s*\(", re.IGNORECASE),
+     0, {"job_name": 1, "delay_minutes": 2, "scope_size": 3}),
+    ("System.schedule",      re.compile(r"\bSystem\s*\.\s*schedule\s*\(", re.IGNORECASE),
+     2, {"job_name": 0, "cron": 1}),
+]
+# Types that say "some job" without saying which -- a variable declared as
+# one of these cannot be resolved to a class from its declaration alone.
+_ASYNC_INTERFACE_TYPES = {"queueable", "schedulable", "database.batchable", "object",
+                          "system.queueable", "system.schedulable"}
 
 STATIC_COLLECTION_RE = re.compile(
     r"\b(?:public|private|global|protected)?\s*static\s+(final\s+)?(Map|List|Set)\s*<.*?>\s*(\w+)\s*=",
@@ -127,11 +157,18 @@ def find_methods(code, class_name):
         # @Annotation prefix), so read them from the signature span itself.
         annotations = sorted(set(re.findall(r"@(\w+)", code[m.start():open_brace])))
         is_ctor = (name == class_name)
+        # The lazy return-type group can start on the whitespace BEFORE the
+        # modifiers and swallow them ("\n public static void"), leaving
+        # group(1)/(2) empty. Recover the modifiers from that text.
+        ret_words = [w.lower() for w in (m.group(3) or "").split()]
+        visibility = (m.group(1) or "").lower() or next(
+            (w for w in ret_words if w in ("public", "private", "protected", "global")), None)
+        is_static = bool(m.group(2)) or "static" in ret_words
         methods.append({
             "name": name,
             "signature": f"{name}({m.group(5).strip()})",
-            "visibility": (m.group(1) or "").lower() or None,
-            "is_static": bool(m.group(2)),
+            "visibility": visibility,
+            "is_static": is_static,
             "returns": None if is_ctor else ret,
             "annotations": annotations,
             "loc": body.count("\n"),
@@ -369,10 +406,153 @@ def _looks_bulk(target):
     return target.strip().endswith("]") or target.strip().lower().endswith("list") or "list" in target.lower()
 
 
+# ---------- async dispatch (enqueueJob / executeBatch / schedule) ----------
+
+def _call_args(code, open_paren):
+    """Top-level, comma-separated argument texts of the call whose '(' is at
+    `open_paren`. String-literal aware, so a ',' or ')' inside '...' does not
+    split or close the call. Returns (args, index_past_close)."""
+    depth, i, n = 0, open_paren, len(code)
+    start, args, in_str = open_paren + 1, [], False
+    while i < n:
+        c = code[i]
+        if in_str:
+            if c == "\\":
+                i += 2
+                continue
+            if c == "'":
+                in_str = False
+        elif c == "'":
+            in_str = True
+        elif c in "([{":
+            depth += 1
+        elif c in ")]}":
+            depth -= 1
+            if depth == 0:
+                tail = code[start:i].strip()
+                if tail or args:
+                    args.append(tail)
+                return args, i + 1
+        elif c == "," and depth == 1:
+            args.append(code[start:i].strip())
+            start = i + 1
+        i += 1
+    return args, n
+
+
+def _method_body(pos, methods, code):
+    for m in methods:
+        a, b = m["_span"]
+        if a <= pos < b:
+            return code[a:b]
+    return code
+
+
+def _resolve_identifier_type(var, scope, code):
+    """What class does variable `var` hold? Looks for `var = new X(` first
+    (the concrete class, even when the declared type is an interface), then a
+    declaration `X var` whose type is not a generic job interface. Searches
+    the enclosing method, then the whole class (member fields)."""
+    for text in (scope, code):
+        m = re.search(r"\b" + re.escape(var) + r"\s*=\s*new\s+([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?)\s*\(", text)
+        if m:
+            return m.group(1), "variable_assignment"
+    for text in (scope, code):
+        for m in re.finditer(r"\b([A-Za-z_][\w.]*)\s+" + re.escape(var) + r"\s*[=;,)]", text):
+            t = m.group(1)
+            if t.lower() in _ASYNC_INTERFACE_TYPES or t.lower() in CONTROL_KEYWORDS:
+                continue
+            if t.lower() in ("final", "static", "public", "private", "protected", "global", "transient"):
+                continue
+            return t, "declared_type"
+    return None, "unresolved"
+
+
+def _resolve_job_expr(expr, scope, code, class_name):
+    e = (expr or "").strip()
+    # strip a cast: (Queueable) new X()
+    e = re.sub(r"^\(\s*[\w.<>]+\s*\)\s*", "", e)
+    m = NEW_INSTANCE_RE.match(e)
+    if m:
+        return (f"{m.group(1)}.{m.group(2)}" if m.group(2) else m.group(1)), "constructor"
+    if e == "this":
+        return class_name, "this"
+    ident = re.fullmatch(r"(?:this\s*\.\s*)?([A-Za-z_]\w*)", e)
+    if ident:
+        return _resolve_identifier_type(ident.group(1), scope, code)
+    m = NEW_INSTANCE_RE.search(e)   # ternary / wrapped expression
+    if m:
+        return (f"{m.group(1)}.{m.group(2)}" if m.group(2) else m.group(1)), "constructor_in_expression"
+    return None, "unresolved"
+
+
+def _resolve_literal(arg, scope, code):
+    """An int literal, or an identifier assigned an int literal in scope
+    (`Integer delayInMinutes = 2;`). Anything else is returned as text."""
+    a = (arg or "").strip()
+    if re.fullmatch(r"\d+", a):
+        return int(a)
+    if re.fullmatch(r"'[^']*'", a):
+        return a[1:-1]
+    if re.fullmatch(r"[A-Za-z_]\w*", a):
+        for text in (scope, code):
+            m = re.search(r"\b" + re.escape(a) + r"\s*=\s*(\d+)\s*;", text)
+            if m:
+                return int(m.group(1))
+    return truncate(a, 80) if a else None
+
+
+def find_async_dispatches(code, class_name, methods, loop_spans, all_class_names):
+    """Every place this component starts asynchronous Apex:
+    System.enqueueJob / Database.executeBatch / System.scheduleBatch /
+    System.schedule, with the job class resolved where the source allows.
+
+    Without this, the only edge to a Queueable was a `X.method(` call, which
+    enqueue code never makes -- `System.enqueueJob(new X(ids), 2)` produced no
+    edge at all, and 'who enqueues X?' came back empty."""
+    out = []
+    for mechanism, rx, job_idx, extras in ASYNC_DISPATCH:
+        for m in rx.finditer(code):
+            args, _end = _call_args(code, m.end() - 1)
+            scope = _method_body(m.start(), methods, code)
+            job_expr = args[job_idx] if len(args) > job_idx else None
+            target, how = _resolve_job_expr(job_expr, scope, code, class_name)
+            inner = None
+            if target and "." in target:
+                outer, inner = target.split(".", 1)
+                target = outer if outer in all_class_names else target
+            elif target and target not in all_class_names and target != class_name and \
+                    re.search(r"\bclass\s+" + re.escape(target) + r"\b", code):
+                # an inner class of this same file
+                inner, target = target, class_name
+            entry = {
+                "mechanism": mechanism,
+                "target": target,
+                "inner_class": inner,
+                "target_in_kb": bool(target) and (target in all_class_names or target == class_name),
+                "resolution": how,
+                "job_expression": truncate(job_expr, 120) if job_expr else None,
+                "method": _method_at(m.start(), methods),
+                "line": _line_of(code, m.start()),
+                "in_loop": _in_any_span(m.start(), loop_spans),
+            }
+            for key, idx in extras.items():
+                if len(args) > idx:
+                    entry[key] = _resolve_literal(args[idx], scope, code)
+            out.append(entry)
+    return out
+
+
 # ---------- calls_to classification (§6.5) ----------
 
-def classify_calls(code, name, all_class_names):
+def classify_calls(code, name, all_class_names, async_dispatches=None):
     calls = {}
+
+    def _edge(target, via):
+        e = calls.setdefault(target, {"target": target, "kind": None, "methods_called": set(), "via": set()})
+        e["via"].add(via)
+        return e
+
     for m in METHOD_CALL_RE.finditer(code):
         target, method = m.group(1), m.group(2)
         if target == name:
@@ -382,8 +562,27 @@ def classify_calls(code, name, all_class_names):
         # not a call edge -- skip it to keep the call graph clean.
         if not (target[:1].isupper() or target in all_class_names):
             continue
-        entry = calls.setdefault(target, {"target": target, "kind": None, "methods_called": set()})
-        entry["methods_called"].add(method)
+        _edge(target, "method_call")["methods_called"].add(method)
+
+    # Instantiation of an org class: `new X(...)` / `new Outer.Inner(...)`.
+    # Restricted to classes known to be in the org so `new Map<..>(` and
+    # `new Account(` never become edges.
+    for m in NEW_INSTANCE_RE.finditer(code):
+        target = m.group(1)
+        if target != name and target in all_class_names:
+            _edge(target, "constructor")
+
+    # Reflection with a literal class name.
+    for m in TYPE_FORNAME_RE.finditer(code):
+        parts = [m.group(2)] if m.group(1) else m.group(2).split(".")
+        target = next((p for p in parts if p in all_class_names), None)
+        if target and target != name:
+            _edge(target, "Type.forName")
+
+    for d in async_dispatches or []:
+        if d.get("target") and d["target"] != name and d["target"] in all_class_names:
+            _edge(d["target"], d["mechanism"])
+
     out = []
     for target, e in calls.items():
         methods = e["methods_called"]
@@ -400,7 +599,8 @@ def classify_calls(code, name, all_class_names):
             # variable we couldn't resolve to a type. Kept, but marked so a
             # genuine missing-class case is distinct from a resolved local one.
             kind = "unresolved_receiver"
-        out.append({"target": target, "kind": kind, "methods_called": sorted(methods)})
+        out.append({"target": target, "kind": kind, "methods_called": sorted(methods),
+                    "via": sorted(e["via"])})
     return out
 
 
@@ -437,12 +637,24 @@ def parse_class(name, raw_code, known_objects, all_class_names, namespace_prefix
     if impl:
         card["implements"] = [i.strip() for i in impl.group(1).split(",") if i.strip()]
 
-    if BATCHABLE_RE.search(code):
-        card["entry_points"].append({"kind": "Batchable", "detail": "Database.Batchable"})
-    if re.search(r"implements\s+Queueable", code, re.IGNORECASE):
-        card["entry_points"].append({"kind": "Queueable", "detail": "Queueable"})
-    if re.search(r"implements\s+Schedulable", code, re.IGNORECASE):
-        card["entry_points"].append({"kind": "Schedulable", "detail": "Schedulable"})
+    # Job interfaces: judged on each class HEADER (`class X ... {`), so an inner
+    # class implementing Queueable is reported as that inner class rather than
+    # making the outer class look like a Queueable itself.
+    for hm in re.finditer(r"\bclass\s+(\w+)([^{;]*)\{", code):
+        cls = hm.group(1)
+        im = re.search(r"\bimplements\b", hm.group(2), re.IGNORECASE)
+        if not im:
+            continue
+        header = hm.group(2)[im.start():]
+        suffix = "" if cls == name else f" (inner class {cls})"
+        for kind, rx, detail in (("Batchable", BATCHABLE_RE, "Database.Batchable"),
+                                 ("Queueable", QUEUEABLE_RE, "Queueable"),
+                                 ("Schedulable", SCHEDULABLE_RE, "Schedulable")):
+            if rx.search(header + "{"):
+                entry = {"kind": kind, "detail": detail + suffix}
+                if cls != name:
+                    entry["inner_class"] = cls
+                card["entry_points"].append(entry)
     for m in re.finditer(r"@RestResource\s*\(urlMapping\s*=\s*'([^']*)'", code, re.IGNORECASE):
         card["entry_points"].append({"kind": "RestResource", "detail": m.group(1)})
     for kind, pattern in [
@@ -480,7 +692,8 @@ def parse_class(name, raw_code, known_objects, all_class_names, namespace_prefix
     card["exceptions_caught"] = characterise_catches(code, methods)
     card["custom_exceptions_defined"] = sorted(set(CUSTOM_EXC_RE.findall(code)))
 
-    card["calls_to"] = classify_calls(code, name, all_class_names)
+    card["async_dispatches"] = find_async_dispatches(code, name, methods, loop_spans, all_class_names)
+    card["calls_to"] = classify_calls(code, name, all_class_names, card["async_dispatches"])
     card["objects_referenced"] = find_objects_referenced(code, known_objects)
 
     static_state = find_static_mutable_state(code)
@@ -488,7 +701,7 @@ def parse_class(name, raw_code, known_objects, all_class_names, namespace_prefix
     static_names = {s["name"]: s["cleared_or_reassigned_elsewhere"] for s in static_state}
     card["field_writes"] = find_field_writes(code, static_names, methods, card["dml"])
 
-    card["methods"] = [{k: v for k, v in m.items() if k != "_span"} for m in methods]
+    card["methods"] =[{k: v for k, v in m.items() if k != "_span"} for m in methods]
     return card
 
 
@@ -523,7 +736,8 @@ def parse_trigger(name, raw_code, known_objects, all_class_names, namespace_pref
 
     card["exceptions_thrown"] = sorted(set(THROW_RE.findall(code)))
     card["exceptions_caught"] = characterise_catches(code, methods)
-    card["calls_to"] = classify_calls(code, name, all_class_names)
+    card["async_dispatches"] = find_async_dispatches(code, name, methods, loop_spans, all_class_names)
+    card["calls_to"] = classify_calls(code, name, all_class_names, card["async_dispatches"])
     card["objects_referenced"] = find_objects_referenced(code, known_objects)
 
     static_state = find_static_mutable_state(code)

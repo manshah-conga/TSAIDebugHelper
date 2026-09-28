@@ -122,6 +122,32 @@ def usage_root():
     return os.path.join(DATA_ROOT, "usage")
 
 
+def guide_path(username):
+    """Per-user onboarding state and UI preferences (see app/guide.py).
+
+    One small document per account rather than a field on users.json: it is
+    written on ordinary clicks -- a tab visited, an org pinned -- and
+    users.json holds the password hashes, which should be rewritten as rarely
+    as possible. Late-bound for the same reason as `usage_root`. Usernames are
+    already restricted to a path-safe charset by auth.USERNAME_RE."""
+    return os.path.join(DATA_ROOT, "guide", f"{username}.json")
+
+
+def load_guide(username):
+    return read_json(guide_path(username), {})
+
+
+def mutate_guide(username, mutator):
+    return mutate_json(guide_path(username), mutator, {})
+
+
+def forget_guide(username):
+    try:
+        os.remove(guide_path(username))
+    except FileNotFoundError:
+        pass
+
+
 def locks_root():
     """Locks live in one subdirectory of the data root, so they never show up
     in a glob over orgs/ or chats/. Same late-binding reason as

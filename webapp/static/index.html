@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>TS Intelligent Debug Helper</title>
-<link rel="stylesheet" href="/static/style.css?v=15">
+<link rel="stylesheet" href="/static/style.css?v=22">
 </head>
 <body>
 
@@ -63,17 +63,33 @@
 
 <div id="appRoot" style="display:none;">
 <header>
-  <div>
+  <div class="brand">
     <h1>TS Intelligent Debug Helper</h1>
     <div class="sub">Org customization knowledgebase &amp; incident RCA</div>
   </div>
-  <div style="text-align:right;">
-    <div class="sub" id="userInfo"></div>
-    <div class="sub" id="orgPicker"></div>
+  <!-- Command palette trigger. Ctrl/Cmd+K opens the same thing; the button
+       exists so the shortcut is discoverable without reading the help. -->
+  <button type="button" class="palette-trigger" id="paletteTrigger" data-tour-anchor="palette"
+          onclick="openPalette()" title="Search or jump anywhere (Ctrl+K)">
+    <span class="palette-trigger-icon" aria-hidden="true">&#8981;</span>
+    <span class="palette-trigger-text">Search or jump to&hellip;</span>
+    <kbd id="paletteKbd">Ctrl K</kbd>
+  </button>
+  <div class="header-right">
+    <div class="header-meta">
+      <div class="sub" id="userInfo"></div>
+      <div class="sub" id="orgPicker"></div>
+    </div>
+    <button type="button" id="quotaChip" class="quota-chip" data-tour-anchor="quota" style="display:none;"
+            onclick="showView('usage')" title="Your LLM allowance -- click for details"></button>
+    <button type="button" id="helpBtn" class="help-btn" data-tour-anchor="help" onclick="openHelp()"
+            aria-label="Help, tours and what's new" title="Help, tours and what's new">
+      <span aria-hidden="true">?</span><span class="help-dot" id="helpDot" style="display:none;"></span>
+    </button>
   </div>
 </header>
 <nav>
-  <button data-view="connections" class="active">Connections</button>
+  <button data-view="connections" class="active">Home</button>
   <button data-view="dashboard">Org Dashboard</button>
   <button data-view="incidents">Incidents</button>
   <button data-view="known">Known Issues</button>
@@ -93,41 +109,100 @@
 <main>
 
   <section id="view-connections" class="view active">
-    <div class="card" data-requires="user">
-      <h2>Connect a new org</h2>
-      <p class="muted">Paste the org's Instance URL and an Access Token (from Workbench, a Connected App, or an
-        existing authenticated session). Nothing but the derived knowledgebase is ever stored -- the token is used
-        only to make the fetch and is not persisted.</p>
-      <label>Org ID (short, no spaces -- used to refer to this org from now on)</label>
-      <input id="newOrgId" placeholder="acme_prod">
-      <p class="muted">This is a name you choose, and it is shared across everyone using this
-        app -- if it is already taken you will be asked to pick another, even when the org
-        holding it is one you cannot see. Re-using the id of an org you already own refreshes
-        it instead of creating a second one.</p>
-      <label>Org Name</label>
-      <input id="newOrgName" placeholder="Acme Corp - Production">
-      <label>Instance URL</label>
-      <input id="newInstanceUrl" placeholder="https://acme.my.salesforce.com">
-      <label>Access Token</label>
-      <input id="newAccessToken" type="password" placeholder="00D...">
-      <label>Who can see this org?</label>
-      <select id="newVisibility">
-        <option value="private" selected>Private -- only me (and admins)</option>
-        <option value="public">Public -- everyone signed in to this app</option>
-      </select>
-      <p class="muted" id="visibilityHint">Private is the default. You can change this at any time from the
-        Connected orgs table below. Either way, only you or an admin can re-connect or refresh this org.</p>
-      <button class="primary" onclick="createOrg()">Connect &amp; Fetch</button>
+    <!-- Home. Top to bottom it follows the role: an admin's health strip,
+         the getting-started checklist while the person is still learning,
+         then the one input that starts from whatever they have in hand, then
+         their orgs. The Connect form is kept but folded away once someone
+         can see at least one org -- it is a once-a-month action, not the
+         thing a returning engineer came here to do. -->
+    <div id="adminStrip" class="admin-strip" data-admin-only data-tour-anchor="admin-strip" style="display:none;"></div>
+
+    <div id="guideNudge"></div>
+    <div id="guideChecklistHost"></div>
+
+    <div class="card triage-card" id="triageCard" data-tour="triage">
+      <h2><span id="triageTitle">What's broken?</span></h2>
+      <p class="muted" id="triageSub">Paste an exception message, a field API name or a component name
+        &mdash; or drop a debug log. It goes to the right tool and checks Known Issues in every org you can see.</p>
+      <div class="triage-bar" id="triageDrop">
+        <textarea id="triageInput" rows="1" spellcheck="false"
+          placeholder="e.g. System.NullPointerException: Attempt to de-reference a null object"></textarea>
+        <button class="primary" id="triageGo" onclick="runTriage()">Diagnose</button>
+      </div>
+      <div class="triage-meta">
+        <span id="triageKind" class="triage-kind"></span>
+        <span class="triage-file" data-requires="user">
+          <label class="triage-file-label" for="triageFile">or choose a .log file</label>
+          <input id="triageFile" type="file" accept=".log,.txt" style="display:none;">
+        </span>
+        <span class="muted triage-org" id="triageOrg"></span>
+      </div>
+      <div id="triageResult"></div>
+    </div>
+
+    <div id="readerFixes"></div>
+    <div id="mcpCardHost"></div>
+
+    <div class="card collapsible" id="connectCard" data-requires="user" data-tour="connect">
+      <button type="button" class="collapsible-head" id="connectToggle" onclick="toggleConnect()"
+              aria-expanded="false" aria-controls="connectBody">
+        <span class="collapsible-chevron" aria-hidden="true">&#9656;</span>
+        <h2>Connect a new org</h2>
+        <span class="muted collapsible-hint" id="connectHint">Instance URL + access token. Only the derived knowledgebase is stored.</span>
+      </button>
+      <div class="collapsible-body" id="connectBody">
+        <p class="muted">Paste the org's Instance URL and an Access Token (from Workbench, a Connected App, or an
+          existing authenticated session). Nothing but the derived knowledgebase is ever stored -- the token is used
+          only to make the fetch and is not persisted.</p>
+        <label>Org ID (short, no spaces -- used to refer to this org from now on)</label>
+        <input id="newOrgId" placeholder="acme_prod">
+        <p class="muted">This is a name you choose, and it is shared across everyone using this
+          app -- if it is already taken you will be asked to pick another, even when the org
+          holding it is one you cannot see. Re-using the id of an org you already own refreshes
+          it instead of creating a second one.</p>
+        <label>Org Name</label>
+        <input id="newOrgName" placeholder="Acme Corp - Production">
+        <label>Instance URL</label>
+        <input id="newInstanceUrl" placeholder="https://acme.my.salesforce.com">
+        <label>Access Token</label>
+        <input id="newAccessToken" type="password" placeholder="00D...">
+        <label for="newVisToggle">Who can see this org?</label>
+        <input type="hidden" id="newVisibility" value="private">
+        <div class="vis-field">
+          <button type="button" role="switch" class="vis-toggle vis-toggle-lg" id="newVisToggle" aria-checked="false"
+                  aria-describedby="newVisDesc" onclick="toggleNewOrgVisibility(this)">
+            <span class="vis-track" aria-hidden="true"><span class="vis-knob"><svg viewBox="0 0 16 16" width="10" height="10" aria-hidden="true"><rect x="3" y="7" width="10" height="7" rx="1.5" fill="currentColor"/><path d="M5 7V5a3 3 0 0 1 6 0v2" fill="none" stroke="currentColor" stroke-width="1.8"/></svg></span></span>
+            <span class="vis-label">Private</span>
+          </button>
+          <span class="muted" id="newVisDesc">Only you and admins can see it.</span>
+        </div>
+        <p class="muted" id="visibilityHint">Private is the default. You can change this at any time from the
+          org card or table below. Either way, only you or an admin can re-connect or refresh this org.</p>
+        <button class="primary" onclick="createOrg()">Connect &amp; Fetch</button>
+      </div>
       <div id="createStatus" class="status-line"></div>
     </div>
 
-    <div class="card">
-      <h2>Connected orgs</h2>
-      <p class="muted">You see every public org, plus your own private ones. Admins see all orgs.</p>
-      <table>
-        <thead><tr><th>Org ID</th><th>Name</th><th>Visibility</th><th>Owner</th><th>Classes</th><th>Triggers</th><th>Flows</th><th>LWC</th><th>Last refreshed</th><th></th></tr></thead>
-        <tbody id="orgsTable"></tbody>
-      </table>
+    <div class="card" id="orgsCard" data-tour="orgs">
+      <div class="card-head">
+        <h2>Connected orgs</h2>
+        <div class="card-head-tools">
+          <input id="orgFilter" class="org-filter" placeholder="Filter orgs" oninput="renderHomeOrgs()">
+          <div class="seg" role="group" aria-label="Org layout">
+            <button type="button" id="orgViewCards" onclick="setOrgView('cards')">Cards</button>
+            <button type="button" id="orgViewTable" onclick="setOrgView('table')">Table</button>
+          </div>
+        </div>
+      </div>
+      <p class="muted">You see every public org, plus your own private ones. Admins see all orgs.
+        Star an org to keep it at the top.</p>
+      <div id="orgCards" class="org-cards"></div>
+      <div id="orgTableWrap" style="display:none;">
+        <table>
+          <thead><tr><th></th><th>Org ID</th><th>Name</th><th>Visibility</th><th>Owner</th><th>Classes</th><th>Triggers</th><th>Flows</th><th>LWC</th><th>Last refreshed</th><th></th></tr></thead>
+          <tbody id="orgsTable"></tbody>
+        </table>
+      </div>
     </div>
   </section>
 
@@ -136,14 +211,14 @@
       <h2 id="dashOrgTitle">Org stats</h2>
       <div id="dashStats" class="grid2"></div>
     </div>
-    <div class="card">
+    <div class="card" data-tour="dashboard-search">
       <h2>Search the knowledgebase</h2>
       <label>Component, object, or field name (partial match)</label>
       <input id="searchBox" placeholder="e.g. Increment_Adjustment__c" onkeydown="if(event.key==='Enter') runSearch()">
       <button class="secondary" onclick="runSearch()">Search</button>
       <div id="searchResults"></div>
     </div>
-    <div class="card">
+    <div class="card" data-tour="dashboard-writers">
       <h2>Find who writes a field (no exception needed)</h2>
       <label>Field API Name</label>
       <input id="fieldWriterBox" placeholder="Increment_Adjustment__c" onkeydown="if(event.key==='Enter') findFieldWriters()">
@@ -153,7 +228,7 @@
   </section>
 
   <section id="view-incidents" class="view">
-    <div class="card" data-requires="user">
+    <div class="card" data-requires="user" data-tour="incidents">
       <h2>File a new incident</h2>
       <label>Label (optional, no spaces)</label>
       <input id="incLabel" placeholder="pcbtest1_wrong_value">
@@ -178,8 +253,8 @@
   </section>
 
   <section id="view-known" class="view">
-    <div class="card">
-      <h2 id="knownOrgTitle">Known issues</h2>
+    <div class="card" data-tour="known">
+      <h2><span id="knownOrgTitle">Known issues</span></h2>
       <p class="muted">Every distinct failure signature filed against this org, with the fix if someone
         recorded one. This is the payoff of filing incidents: the second time an issue appears, the
         answer is already here.</p>
@@ -193,7 +268,7 @@
   </section>
 
   <section id="view-logs" class="view">
-    <div class="card" data-requires="user">
+    <div class="card" data-requires="user" data-tour="logs">
       <h2>Normalize a debug log</h2>
       <p class="muted">Upload a raw Salesforce debug log to get a compact, normalized JSON version -- no org
         connection, no Apex/Flow source, no metadata needed. The raw log is used only in memory and never stored;
@@ -228,7 +303,7 @@
   </section>
 
   <section id="view-tokens" class="view">
-    <div class="card">
+    <div class="card" data-tour="tokens">
       <h2>Create an API token for the MCP server</h2>
       <p class="muted">The MCP server authenticates to this app with an API token. A token inherits <b>your</b>
         role, so a reader token can only read, a user token can also connect orgs and file incidents. The token is
@@ -259,7 +334,7 @@
          only this tab was hidden. Answering "is it me, and how much is
          left?" without an admin in the loop removes a whole class of
          question from their queue. -->
-    <div class="card">
+    <div class="card" data-tour="usage">
       <h2>Your usage</h2>
       <div id="myQuota"></div>
       <div id="myUsageKpis" class="usage-kpis"></div>
@@ -355,7 +430,7 @@
   </section>
 
   <section id="view-admin" class="view">
-    <div class="card">
+    <div class="card" data-tour="admin">
       <h2>Create a user</h2>
       <label>Username</label>
       <input id="admUser" placeholder="jdoe">
@@ -406,7 +481,12 @@
 </aside>
 
 </div>
-<script src="/static/app.js?v=15"></script>
-<script src="/static/chat.js?v=15"></script>
+<script src="/static/app.js?v=22"></script>
+<script src="/static/chat.js?v=22"></script>
+<!-- Home page + command palette, then onboarding/help. Both are optional
+     layers over app.js: every call into them from app.js is guarded, so a
+     cached page that loads without them still works. -->
+<script src="/static/home.js?v=22"></script>
+<script src="/static/guide.js?v=22"></script>
 </body>
 </html>

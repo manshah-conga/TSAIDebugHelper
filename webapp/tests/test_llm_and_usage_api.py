@@ -225,16 +225,32 @@ def main():
         print("\norg fetch: the status route reports real progress")
         onboarding.JOBS["probe_org"] = {"status": "queued", "detail": "", "warnings": [],
                                         "owner": "dana"}
-        onboarding._job("probe_org", "fetching_classes", counts={"objects": 12})
+        onboarding._job("probe_org", "fetching", counts={"objects": 12})
+        onboarding._track("probe_org", "classes", total=400, done=200)
+        onboarding._track("probe_org", "flows", total=10)
         s = dana.get("/api/orgs/probe_org/status").json()
         check("a percentage is reported", isinstance(s["percent"], int) and 0 < s["percent"] < 100,
               str(s.get("percent")))
-        check("the phase has a human label", s["step_label"] == "Fetching Apex classes",
+        check("the phase has a human label",
+              s["step_label"] == "Fetching and analysing components (in parallel)",
               str(s.get("step_label")))
         check("the phase's position in the sequence is given",
-              s["step_index"] == 3 and s["step_count"] == 10, f"{s.get('step_index')}/{s.get('step_count')}")
+              s["step_index"] == 3 and s["step_count"] == 5, f"{s.get('step_index')}/{s.get('step_count')}")
         check("the full phase list rides along so the UI can tick them off",
-              len(s["steps"]) == 10 and s["steps"][0]["label"] == "Verifying the connection")
+              len(s["steps"]) == 5 and s["steps"][0]["label"] == "Verifying the connection")
+        check("each step says its own state",
+              [st["state"] for st in s["steps"]] == ["done", "done", "active", "pending", "pending"],
+              str([st.get("state") for st in s["steps"]]))
+        tracks = {t["name"]: t for t in s.get("tracks", [])}
+        check("per-stream progress is exposed for the parallel phase",
+              tracks.get("classes", {}).get("done") == 200 and tracks["classes"]["total"] == 400,
+              str(s.get("tracks")))
+        before = s["percent"]
+        onboarding._track("probe_org", "classes", add=200)
+        after = onboarding.JOBS["probe_org"]["percent"]
+        check("the bar moves as a stream completes", after > before, f"{before} -> {after}")
+        check("and stays inside the fetch phase until indexing starts",
+              after < onboarding._STEP_START["indexing"], str(after))
         check("live counts are exposed", s["counts"]["objects"] == 12)
         check("elapsed time is reported", s["elapsed_seconds"] is not None)
         check("the internal owner field is never leaked", "owner" not in s)
@@ -253,7 +269,7 @@ def main():
                                          "access_token": "t"})
         check("connecting it again is rejected with 409", r.status_code == 409, r.text[:200])
         check("and the refusal names the phase it is on",
-              "Fetching Apex classes" in r.text, r.text[:200])
+              "Fetching and analysing components" in r.text, r.text[:200])
 
         # A refresh of the same org is the more likely collision -- two people
         # both reaching for Refresh when an org looks stale.

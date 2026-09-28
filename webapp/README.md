@@ -205,7 +205,7 @@ restricted to its **owner or an admin**, even when it is public. Public means
 resolution against an org you can see is allowed at the normal `user` role: that is
 the point of making an org public, so colleagues can investigate against it.
 
-Pick the visibility on the Connections tab when you connect the org, and change it
+Pick the visibility on the Home tab when you connect the org, and change it
 later from the **Visibility** column of the Connected orgs table (a dropdown, shown
 only if you may manage that org). Over the API/MCP it is the `visibility` field on
 `POST /api/orgs` and `PATCH /api/orgs/{org_id}/visibility` (MCP tool
@@ -441,9 +441,68 @@ transport encryption for free, which the app itself does not have. If it eventua
 needs to serve a team, the right shape is an internal ALB or reverse proxy
 terminating TLS with a dedicated Security Group, not a rule on the shared one.
 
+## 1d. The Home page, onboarding and help
+
+The first tab is **Home** (it used to be *Connections*). Top to bottom:
+
+- **System health** (admins only): LLM connection state, self-signups waiting for
+  verification, the heaviest users this week, and how many orgs are stale.
+- **Getting started** checklist, while the account is still new (see below).
+- **What's broken?** One input for whatever the engineer has from the case. It reads
+  the text and routes it: an exception message is matched against Known Issues in
+  *every* org the caller can see (`GET /api/triage/known`) and the classes in its stack
+  are linked; a field API name shows its writers; a component name searches the active
+  org; a sentence goes to the assistant. Writers can drop or pick a `.log` file: it is
+  normalized in memory (nothing stored), matched, and can then be filed as an incident
+  or kept in the log library with one click. Readers get the same bar as a lookup.
+- **Latest fixes on file** (readers only): the newest recorded resolutions.
+- **Use these tools from Claude Desktop**: shown until the account has an API token,
+  with this server's `/mcp` URL filled in. Dismissible; also in Help.
+- **Connect a new org**: collapsible. Open by default only when the account can see
+  no orgs; after that it stays how the person last left it.
+- **Connected orgs** as cards (or the old table, via the Cards/Table toggle): counts,
+  freshness (stale after 30 days), incidents and how many lack a fix, and quick actions.
+  Star an org to pin it to the top.
+
+The header has a **command palette** (Ctrl+K / Cmd+K: tabs, actions, orgs, components,
+fields, or "ask the assistant"), the account's **LLM allowance** chip, and the **Help**
+button.
+
+### Onboarding
+
+State is per account, server-side, in `data/guide/<username>.json` (`app/guide.py`,
+`GET/POST /api/me/guide`), so it follows the person across browsers. It holds what
+was done and seen, plus a few preferences (pinned orgs, cards vs table, the Connect
+card's state). Nothing sensitive.
+
+- **Welcome** on first sign-in: the loop the app is built around, and three choices --
+  the demo case, a quick tour of the screen, or explore alone.
+- **Demo case**: a 10-step, ~90-second walkthrough of one investigation on made-up data
+  (a NullPointerException traced to a Flow that lost its default outcome). It uses the
+  app's real renderers, so what it teaches is what a real incident report looks like.
+- **Getting-started checklist**, role-specific, that **ticks itself** when the person
+  actually does each thing. "Connected an org" and "created an API token" are derived
+  from the real stores, so they tick even when done over MCP.
+- **Dots** on nav tabs the person has not opened yet.
+- "New here" ends when the checklist is complete or dismissed. After that the dots and
+  checklist go away; Help stays.
+
+### Help
+
+The **?** in the header (or pressing `?` anywhere outside a text field) opens a drawer
+with: the demo case and the screen tour, the checklist (and a way to bring it back or
+start the introduction over), a short tour for every feature, **Ask about this app**
+(the assistant's system prompt now includes `prompts/app_guide.md`), **What's new**
+(edit `WHATS_NEW` in `static/guide.js` to announce a change -- the help button shows a
+dot until it is read), a searchable glossary, and keyboard shortcuts. Cards with a
+small **?** on their heading start the tour for just that card.
+
+Empty tables and lists now explain what belongs in them and offer the action that
+fills them.
+
 ## 2. Connecting an org
 
-On the **Connections** tab, you need:
+On the **Home** tab (open the **Connect a new org** card), you need:
 
 - **Org ID**: a short slug you choose (e.g. `acme_prod`) -- used in every API/MCP
   call afterwards.
@@ -468,6 +527,77 @@ for example:
 The token is sent once, used to fetch metadata, and is never written to disk (see
 below).
 
+### How the fetch is parallelised
+
+The fetch used to run strictly in sequence -- walk the ApexClass cursor one
+page at a time, then triggers, then one request per flow in a row, then one
+query per LWC bundle in a row, and only then parse. On a large org that was
+thousands of round trips back to back (80+ minutes for one org), almost all of
+it waiting on the network. It now runs in three stages:
+
+1. **List** everything at once: the object model, ApexClass / ApexTrigger ids
+   and sizes (no source -- cheap), FlowDefinitions, LWC bundles.
+2. **Fetch and parse in parallel.** Apex bodies are fetched by `Id IN (...)`
+   chunks (up to 100 ids or ~1.5M characters of source each, largest classes
+   first), flows one request each, LWC resources 25 bundles per query,
+   workflow field updates in one go. All of these share one cap on requests in
+   flight. Each chunk is parsed in a worker thread **the moment it arrives**
+   and its source dropped, so parsing overlaps the network and memory stays at
+   a few chunks rather than the whole org.
+3. **Index and save** -- the one step that needs every card at once.
+
+Four further things keep it fast and polite:
+
+- **Managed-package code is listed, not fetched.** Apex classes, triggers and
+  LWC bundles with a `NamespacePrefix` come back as `(hidden)` in a subscriber
+  org anyway, so their source is never requested. Each still gets a stub card
+  (`source_fetched: false`) so the name resolves, calls into the package still
+  count as edges, and a managed trigger still appears in its object's entry
+  points. The org's **own** namespace (from `Organization.NamespacePrefix`) is
+  treated as customer code and fetched. Managed **flows** are still fetched --
+  they are declarative automation that can write customer fields -- unless
+  `TS_SF_SKIP_MANAGED_FLOWS=1`.
+- **Flows go through the Tooling Composite API**, 10 flow GETs per request
+  (one round trip, one API call against the daily limit). A subrequest that
+  fails is refetched on its own; an org that rejects Composite falls back to
+  one GET per flow for the rest of the fetch, with a single warning.
+- **Concurrency adapts.** Requests in flight start at the configured maximum;
+  a throttling signal (429, 502-504, the concurrent-request 403, a timeout)
+  halves the cap, and a run of successes grows it back one at a time. A busy
+  production org whose integrations are already near Salesforce's limit gets
+  backed off automatically instead of starved.
+- **Apex is parsed in worker processes** on orgs with 800+ classes to parse
+  (regex parsing holds the GIL, so threads parse one chunk at a time; measured
+  1,500 classes: 36s threads vs 20s with 2 processes on a 2-CPU box). Small
+  orgs keep threads, since spawning workers costs a second or so. If the pool
+  cannot start or a worker dies, parsing carries on in threads with a warning.
+
+Transient failures (timeouts, dropped connections, 5xx, Salesforce's
+concurrent-request 403) are retried with backoff; a 401 stops every in-flight
+request immediately. Against the mock org with 150 ms of latency per request,
+concurrency 8 is ~5x faster than concurrency 1 and builds an identical
+knowledgebase (`tests/test_parallel_fetch_e2e.py`).
+
+Tuning (environment variables; defaults are conservative):
+
+| Variable | Default | What it does |
+|---|---|---|
+| `TS_SF_FETCH_CONCURRENCY` | 8 | Salesforce requests in flight per org fetch (max 20). Salesforce allows 25 concurrent long-running requests per org, shared with the org's own integrations -- stay well under it on production. |
+| `TS_SF_ID_CHUNK` | 100 | Apex ids per body request (10-200). |
+| `TS_SF_CHUNK_CHARS` | 1500000 | Source characters per Apex chunk, from `LengthWithoutComments`. |
+| `TS_SF_LWC_CHUNK` | 25 | LWC bundles per resource query. |
+| `TS_SF_MAX_ATTEMPTS` | 4 | Attempts per request before a chunk is recorded as a warning. |
+| `TS_SF_COMPOSITE_SIZE` | 10 | Flow GETs per Composite request (1-25; 1 disables Composite). |
+| `TS_SF_FETCH_MANAGED_CODE` | 0 | 1 fetches managed-package Apex/LWC source too (normally `(hidden)`). |
+| `TS_SF_SKIP_MANAGED_FLOWS` | 0 | 1 skips managed-package flows as well. |
+| `TS_PARSE_WORKERS` | min(4, CPUs-1) | Apex parse worker processes; 0 = threads only. |
+| `TS_PARSE_POOL_MIN_CLASSES` | 800 | Below this many classes to parse, use threads. |
+
+Each finished fetch records `last_fetch_stats` (seconds, requests, retries,
+the adaptive limiter's lowest cap and throttle events, whether Composite was
+used, parse mode, managed components skipped) on the org's registry entry and prints the same line to the
+server console, so the effect of a tuning change is measurable.
+
 ### Watching the fetch
 
 A fetch of a real org runs for minutes, and a single status word for all of that
@@ -476,17 +606,18 @@ button again, which is precisely the wrong thing to do. So a progress panel
 opens over the form and reports:
 
 - a **percentage**, weighted by how long each phase actually takes rather than
-  divided evenly — fetching Apex bodies dominates a real org, so equal slices
-  would sit at 30% for minutes and then sprint through the last five steps;
-- the **current phase** in plain words ("Fetching Apex classes"), with the whole
-  sequence listed and a tick against each finished one, so "still going" becomes
-  "three phases left";
+  divided evenly; during the parallel fetch phase it moves with the weighted
+  progress of every stream at once;
+- the **current phase** in plain words, with the whole sequence listed and a
+  tick against each finished one, and -- under the parallel fetch phase -- a
+  mini bar per stream (Apex classes 1,893 / 4,089, flows done, ...), so "40%"
+  reads as "classes 70%, flows finished";
 - **live counts** as each phase completes — 214 objects, 1,893 Apex classes;
 - **elapsed time**, so the panel is visibly alive even during the long stretches.
 
 The panel covers the form deliberately: the one action that must not happen
 during a fetch is starting a second one. **Run in the background** dismisses it
-without cancelling — the fetch continues server-side, the Connections table
+without cancelling — the fetch continues server-side, the org card on Home
 updates when it lands, and the button says what it does rather than "Cancel",
 which would be a lie.
 
@@ -509,7 +640,7 @@ already on record. Over the API that is `POST /api/orgs/{org_id}/refresh` with
 Each component's content hash decides what counts as changed, so a refresh is cheap
 even for a large org, and the result says what actually moved -- "3 changed, 1 new"
 rather than just "done". That summary is also kept on the org's registry entry, so
-the Connections table shows what the last refresh found. `POST /api/orgs` with an
+the org card on Home shows what the last refresh found. `POST /api/orgs` with an
 existing `org_id` still works and behaves identically; the refresh endpoint just
 saves you retyping the fields it can look up itself.
 
@@ -952,7 +1083,7 @@ a new chat for each question throws that away. Use the conversation list
 | --- | --- | --- |
 | Read (15) | `list_orgs`, `get_org_stats`, `get_component`, `find_field_writers`, `get_entry_points`, `search_knowledgebase`, `get_incident`, `normalize_log`, ... | Run automatically. Already gated by org visibility. |
 | Write (3) | `file_incident`, `record_resolution`, `set_org_visibility` | **Require a click.** The transcript shows the exact arguments and nothing runs until you confirm. |
-| Excluded (2) | `create_org_connection`, `refresh_org` | **Never offered.** Both take a live Salesforce access token; a model should never be positioned to supply or invent one. Use the Connections tab. |
+| Excluded (2) | `create_org_connection`, `refresh_org` | **Never offered.** Both take a live Salesforce access token; a model should never be positioned to supply or invent one. Use the Home tab. |
 
 Org-scoped tools appear only once an org is selected -- 21 tool definitions cost
 3-5k tokens on *every* request inside the loop, so gating them roughly halves the
@@ -1024,10 +1155,29 @@ admin-reset destruction, share redaction, and the streamed tool-call reassembly.
 
 ## 5. Coverage and known limitations
 
-- **Apex classes/triggers**: fetched via the Tooling API's standard
-  `SELECT Id, Name, Body FROM ApexClass`/`ApexTrigger` query -- this is a
-  well-documented, reliable capability and was exercised against a mock server that
-  mirrors it exactly.
+- **Apex classes/triggers**: listed via `SELECT Id, Name, NamespacePrefix,
+  LengthWithoutComments FROM ApexClass`/`ApexTrigger`, then bodies fetched by
+  `WHERE Id IN (...)` chunks in parallel (see "How the fetch is parallelised").
+  Standard Tooling API SOQL; mock-validated. The `LengthWithoutComments` listing
+  falls back to a plain listing if an org rejects that field. Managed-package
+  classes/triggers are listed only (stub cards, `source_fetched: false`); a
+  managed trigger's object comes from `TableEnumOrId`, which Salesforce returns
+  as a name for standard objects but as an id for custom ones -- so a managed
+  trigger on a custom object has no object on its card.
+- **Who invokes what (inbound edges)**: from `X.method(...)` calls, `new X(...)`
+  constructors, `Type.forName('X')` with a literal name, flow actionCalls and
+  subflows, LWC `@salesforce/apex/X.method` imports, and -- since extractor
+  3.2.0 -- **async dispatch**: `System.enqueueJob`, `Database.executeBatch`,
+  `System.scheduleBatch` and `System.schedule`, with the calling method, line and
+  delay / scope size / cron when the source gives them. The job instance is
+  resolved from `new X(...)`, from a variable assigned `new X(...)` or declared as
+  `X`, or `this` (self-chaining). A Queueable/Batchable/Schedulable card carries
+  `entry_points[].invoked_by`. Still invisible: `Type.forName` with a computed
+  name, callers inside managed packages (hidden source), jobs scheduled by hand
+  in Setup, and classes registered by name in custom settings / custom metadata
+  (e.g. CPQ pricing callbacks). **Orgs connected before 3.2.0 need a Refresh**
+  to pick these edges up -- the knowledgebase is derived from source that is
+  never stored, so it cannot be re-derived offline.
 - **Custom objects**: via the standard REST API's global describe (`/sobjects/`) --
   also standard and reliable.
 - **Flows**: fetched via `FlowDefinition` (to find each flow's active version) then
@@ -1151,6 +1301,7 @@ webapp/
     log_normalizer.py     condenses a raw debug log into normalized JSON
     rca.py                assembles an RCA context pack; finds field writers
     incidents.py         exception/field signature matching for recurrence detection
+    guide.py              per-user onboarding state, home summary, free-text known-issue matching
     auth.py               users, roles, password hashing, API tokens, role dependencies
     org_access.py         per-org visibility: owner, public/private, who may view/manage
     llm_config.py         the SHARED LLM connection, read from the server's environment
@@ -1164,8 +1315,13 @@ webapp/
     main.py               FastAPI app / routes (incl. auth, admin, usage, chat endpoints)
   static/                 index.html, app.js, style.css -- the web UI (incl. login, admin, tokens)
     chat.js               chat, both modes: transcript, tool rows, model picker, sharing
+    home.js               Home page: triage bar, org cards, admin strip, quota chip, Ctrl+K palette
+    guide.js              onboarding + help: welcome, checklist, tours, demo case, help drawer
     shared.html           standalone read-only page for a shared transcript (no session)
   tests/
+    test_guide_and_home.py     onboarding state, self-ticking checklist, home summary,
+                               known-issue matching and its visibility (HTTP)
+    test_ui_home_guide.js      home page, triage bar, palette, tours, demo, help (jsdom)
     mock_salesforce.py    mock Tooling/REST API used to validate the whole flow without a live org
     test_org_visibility.py     private/public org access across several users
     test_refresh_and_password.py  refresh endpoint + change-your-own-password

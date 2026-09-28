@@ -139,14 +139,41 @@ function escapeHtml(s) {
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
-/** Fill a <tbody>, with a proper empty state instead of a blank void. */
+/** Fill a <tbody>, with a proper empty state instead of a blank void.
+ *  `emptyMessage` is either plain text or an emptyStateHtml() spec -- the
+ *  latter for tables where "nothing here" is the moment to explain what
+ *  belongs here and offer the one action that puts it there. */
 function fillTable(tbody, rows, colspan, emptyMessage, rowFn) {
   tbody.innerHTML = "";
   if (!rows || !rows.length) {
-    tbody.innerHTML = `<tr class="empty-row"><td colspan="${colspan}">${escapeHtml(emptyMessage)}</td></tr>`;
+    const rich = emptyMessage && typeof emptyMessage === "object";
+    tbody.innerHTML = `<tr class="empty-row${rich ? " rich" : ""}"><td colspan="${colspan}">${
+      rich ? emptyStateHtml(emptyMessage) : escapeHtml(emptyMessage)}</td></tr>`;
     return;
   }
   rows.forEach(r => tbody.appendChild(rowFn(r)));
+}
+
+/** A teaching empty state: what goes here, why it matters, and a button to
+ *  do it. `actions[].onclick` is app-authored code, never user data.
+ *  `role: "user"` hides an action from readers, who could not complete it. */
+function emptyStateHtml({ title, body = "", actions = [], icon = "" }) {
+  const canWrite = !CURRENT_USER || CURRENT_USER.role !== "reader";
+  const acts = actions.filter(a => a.role !== "user" || canWrite);
+  return `<div class="empty-state">
+      ${icon ? `<div class="empty-icon" aria-hidden="true">${icon}</div>` : ""}
+      <div class="empty-title">${escapeHtml(title)}</div>
+      ${body ? `<div class="empty-body">${body}</div>` : ""}
+      ${acts.length ? `<div class="empty-actions">${acts.map(a =>
+        `<button type="button" class="${a.primary ? "primary" : "secondary"}" onclick="${escapeHtml(a.onclick)}">${
+          escapeHtml(a.label)}</button>`).join("")}</div>` : ""}
+    </div>`;
+}
+
+/** Tell the onboarding guide something happened (guide.js). Guarded: the
+ *  render tests load app.js on its own. */
+function track(event) {
+  if (typeof guideMark === "function") guideMark(event);
 }
 
 function setBusy(el, message = "Loading...") {
@@ -191,6 +218,8 @@ function showView(name) {
   // Full-screen chat takes over the window, so the page must not also scroll
   // behind it -- two scrollbars over one conversation is disorienting.
   document.body.classList.toggle("chat-fullscreen", name === "chat");
+  if (typeof guideTabSeen === "function") guideTabSeen(name);
+  if (name === "connections" && typeof loadHome === "function") loadHome();
   if (name === "dashboard") loadDashboard();
   if (name === "incidents") loadIncidents();
   if (name === "known") loadKnownIssues();
@@ -227,6 +256,7 @@ function setActiveOrg(id) {
   document.getElementById("fieldWriterResults").innerHTML = "";
   renderOrgPicker();
   loadDashboard(); loadIncidents(); loadKnownIssues();
+  if (typeof renderHomeOrgs === "function") renderHomeOrgs();
   // The chat dock scopes its tools to CURRENT_ORG, so it has to hear about
   // this too -- otherwise its org chip quietly disagrees with the rest of the
   // app and the assistant answers about the wrong org.
@@ -476,13 +506,31 @@ async function loadOrgs() {
   // The dock can mount before this resolves (enterApp does not await it), so
   // its org chip would otherwise be stuck on whatever it saw first.
   if (typeof chatOrgChanged === "function") chatOrgChanged();
+  renderOrgsTable();
+  if (typeof renderHomeOrgs === "function") renderHomeOrgs();
+  markInFlightOrgs();
+}
+
+/** The table form of the org list. Split out of loadOrgs so pinning an org
+ *  or switching the active one can redraw it without refetching. */
+function renderOrgsTable() {
   const tbody = document.getElementById("orgsTable");
-  fillTable(tbody, Object.entries(ORGS), 10,
-    "No orgs you can see yet. Connect one above, or ask a colleague to make theirs public.",
+  const pinned = typeof isPinned === "function" ? isPinned : () => false;
+  const entries = Object.entries(ORGS).sort(([a], [b]) => (pinned(b) - pinned(a)) || a.localeCompare(b));
+  fillTable(tbody, entries, 11, {
+      title: "No orgs you can see yet",
+      body: "Connect one above to build its knowledgebase, or ask a colleague to make theirs public. "
+          + "Want to see what an investigation looks like first? The demo case uses made-up data.",
+      actions: [
+        { label: "Connect an org", onclick: "toggleConnect(true)", primary: true, role: "user" },
+        { label: "Play the demo case", onclick: "startDemo()" },
+      ],
+    },
     ([id, o]) => {
       const c = o.component_counts || {};
       const tr = document.createElement("tr");
-      tr.innerHTML = `<td><a class="link" onclick="setActiveOrg('${escapeHtml(id)}'); showView('dashboard')">${escapeHtml(id)}</a></td>
+      tr.innerHTML = `<td>${typeof pinButton === "function" ? pinButton(id) : ""}</td>
+        <td><a class="link" onclick="setActiveOrg('${escapeHtml(id)}'); showView('dashboard')">${escapeHtml(id)}</a></td>
         <td>${escapeHtml(o.name)}</td><td>${visibilityCell(id, o)}</td>
         <td>${o.owner ? escapeHtml(o.owner) : "<span class='muted'>(none)</span>"}</td>
         <td>${c.apex_classes ?? "-"}</td><td>${c.apex_triggers ?? "-"}</td>
@@ -494,21 +542,25 @@ async function loadOrgs() {
   // A fetch someone else started should be visible here, not just in the
   // panel of whoever clicked the button -- otherwise a colleague sees an org
   // with stale counts and no clue that it is mid-refresh, and reaches for the
-  // Refresh button that will now be rejected.
-  markInFlightOrgs();
+  // Refresh button that will now be rejected. (Drawn by markInFlightOrgs,
+  // which loadOrgs calls after this.)
 }
 
 async function markInFlightOrgs() {
   for (const id of Object.keys(ORGS)) {
     const s = await apiJson(`/api/orgs/${encodeURIComponent(id)}/status`, {}, null);
     if (!s || ["done", "error", "unknown"].includes(s.status)) continue;
-    const cell = [...document.querySelectorAll("#orgsTable tr")]
-      .find(tr => tr.querySelector("a.link")?.textContent === id)?.cells[8];
-    if (!cell) continue;
-    cell.innerHTML = `<div class="muted">${escapeHtml(s.step_label || s.status)} &mdash; ${
+    const html = `<div class="muted">${escapeHtml(s.step_label || s.status)} &mdash; ${
       s.percent || 0}%</div>
       <div class="progress-track" style="height:5px; margin-top:4px;">
         <div class="progress-fill" style="width:${s.percent || 0}%"></div></div>`;
+    const cell = [...document.querySelectorAll("#orgsTable tr")]
+      .find(tr => tr.querySelector("a.link")?.textContent === id)?.cells[9];
+    if (cell) cell.innerHTML = html;
+    // The same signal on the org's card, which is what most people look at.
+    const slot = [...document.querySelectorAll(".org-card")]
+      .find(c => c.dataset.org === id)?.querySelector(".org-card-inflight");
+    if (slot) slot.innerHTML = html;
   }
 }
 
@@ -521,20 +573,62 @@ function changesHint(o) {
   return `<div class="muted">${bits.join(", ")} last refresh</div>`;
 }
 
-// Owner/admin get a live dropdown to flip an org public <-> private;
-// everyone else just sees the current state as a badge.
+const VIS_ICON = {
+  private: '<svg viewBox="0 0 16 16" width="10" height="10" aria-hidden="true"><rect x="3" y="7" width="10" height="7" rx="1.5" fill="currentColor"/><path d="M5 7V5a3 3 0 0 1 6 0v2" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>',
+  public: '<svg viewBox="0 0 16 16" width="10" height="10" aria-hidden="true"><circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M1.8 8h12.4M8 1.8c2 2 2 10.4 0 12.4M8 1.8c-2 2-2 10.4 0 12.4" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>',
+};
+
+/** The private/public switch. "On" means public, because that is the state
+ *  that changes something for other people -- the one worth a coloured track.
+ *  A real <button role="switch">, so it is reachable by keyboard and reads
+ *  as a switch to a screen reader. */
+function visToggleHtml(isPublic, { onclick = "", id = "", title = "", disabled = false } = {}) {
+  return `<button type="button" role="switch" class="vis-toggle${isPublic ? " on" : ""}"
+      aria-checked="${isPublic}" ${id ? `id="${id}"` : ""} ${disabled ? "disabled" : ""}
+      title="${escapeHtml(title)}" onclick="${onclick}">
+      <span class="vis-track" aria-hidden="true"><span class="vis-knob">${isPublic ? VIS_ICON.public : VIS_ICON.private}</span></span>
+      <span class="vis-label">${isPublic ? "Public" : "Private"}</span>
+    </button>`;
+}
+
+// Owner/admin get a live switch to flip an org public <-> private; everyone
+// else just sees the current state as a badge.
 function visibilityCell(id, o) {
   const vis = o.visibility || "public";
   if (!o.can_manage) return `<span class="badge visibility-${vis}">${vis}</span>`;
-  return `<select class="vis-select" onclick="event.stopPropagation()" onchange="setOrgVisibility('${escapeHtml(id)}', this.value, this)">
-      <option value="private" ${vis === "private" ? "selected" : ""}>private</option>
-      <option value="public" ${vis === "public" ? "selected" : ""}>public</option>
-    </select>`;
+  const safeId = escapeHtml(String(id).replace(/\\/g, "\\\\").replace(/'/g, "\\'"));
+  return visToggleHtml(vis === "public", {
+    onclick: `event.stopPropagation(); toggleOrgVisibility('${safeId}', this)`,
+    title: vis === "public"
+      ? "Public: everyone signed in can see this org. Click to make it private."
+      : "Private: only you and admins can see this org. Click to make it public.",
+  });
+}
+
+/** Paint a switch as on/off without waiting for the server. */
+function setVisToggle(el, isPublic) {
+  if (!el) return;
+  el.classList.toggle("on", isPublic);
+  el.setAttribute("aria-checked", String(isPublic));
+  el.querySelector(".vis-label").textContent = isPublic ? "Public" : "Private";
+  el.querySelector(".vis-knob").innerHTML = isPublic ? VIS_ICON.public : VIS_ICON.private;
+}
+
+async function toggleOrgVisibility(id, el) {
+  const current = (ORGS[id] && ORGS[id].visibility) || "public";
+  const next = current === "public" ? "private" : "public";
+  // Going public exposes the org to every account on the server, so a
+  // stray click should not do it silently. Going private narrows access and
+  // needs no confirmation.
+  if (next === "public" && !await confirmModal(`Make ${id} public?`,
+      "Everyone signed in to this app will be able to see its knowledgebase, incidents and known issues, "
+      + "and file incidents against it. Only you or an admin can still refresh it.", "Make public")) return;
+  await setOrgVisibility(id, next, el);
 }
 
 async function setOrgVisibility(id, visibility, el) {
   const previous = ORGS[id] ? ORGS[id].visibility : null;
-  if (el) el.disabled = true;
+  if (el) { el.disabled = true; if (el.classList.contains("vis-toggle")) setVisToggle(el, visibility === "public"); }
   const res = await api(`/api/orgs/${encodeURIComponent(id)}/visibility`, {
     method: "PATCH", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ visibility }),
@@ -542,11 +636,27 @@ async function setOrgVisibility(id, visibility, el) {
   if (el) el.disabled = false;
   if (!res.ok) {
     toast("Could not change visibility: " + await errorText(res), "error");
-    if (el && previous) el.value = previous;
+    if (el && previous) {
+      if (el.classList.contains("vis-toggle")) setVisToggle(el, previous === "public");
+      else el.value = previous;
+    }
     return;
   }
   toast(`${id} is now ${visibility}.`, "ok");
   await loadOrgs();
+}
+
+/** The Connect form's switch writes into the hidden #newVisibility input,
+ *  which is what createOrg() reads. */
+function toggleNewOrgVisibility(el) {
+  const input = document.getElementById("newVisibility");
+  const isPublic = input.value !== "public";
+  input.value = isPublic ? "public" : "private";
+  setVisToggle(el, isPublic);
+  const hint = document.getElementById("newVisDesc");
+  if (hint) hint.textContent = isPublic
+    ? "Everyone signed in to this app can see it and file incidents against it."
+    : "Only you and admins can see it.";
 }
 
 /** Re-fetch an org already on record. The only thing that can't be reused is
@@ -601,6 +711,7 @@ async function createOrg() {
     statusEl.className = "status-line error"; return;
   }
   document.getElementById("newAccessToken").value = "";  // don't leave a token sitting in the DOM
+  track("connect");
   pollOrgStatus(org_id, { verb: "Connecting" });
 }
 
@@ -652,7 +763,7 @@ function openProgress(org_id, { verb = "Connecting" } = {}) {
   document.getElementById("pgHide").onclick = () => {
     PROGRESS.hidden[org_id] = true;
     closeProgress();
-    toast(`${org_id} is still being fetched. The Connections table will update when it finishes.`, "info");
+    toast(`${org_id} is still being fetched. Its card on Home will update when it finishes.`, "info");
   };
   PROGRESS.orgId = org_id;
   delete PROGRESS.hidden[org_id];
@@ -692,9 +803,17 @@ function renderProgress(s) {
     const current = s.step_index || 0;
     stepsHost.innerHTML = (s.steps || []).map((step, i) => {
       const n = i + 1;
-      const cls = s.status === "done" || n < current ? "done" : n === current ? "active" : "";
-      const mark = s.status === "done" || n < current ? "&#10003;" : n === current ? "&#9679;" : "&#9675;";
-      return `<li class="${cls}"><span class="progress-mark">${mark}</span>${escapeHtml(step.label)}</li>`;
+      // The server now says each step's state outright; older payloads only
+      // carry step_index, so fall back to deriving it.
+      const state = s.status === "done" ? "done"
+        : step.state || (n < current ? "done" : n === current ? "active" : "pending");
+      const cls = state === "pending" ? "" : state;
+      const mark = state === "done" ? "&#10003;" : state === "active" ? "&#9679;" : "&#9675;";
+      // The fetch phase runs several streams at once; show each one's own
+      // bar under it so "40% overall" reads as "classes 70%, flows 10%".
+      const tracks = state === "active" && (s.tracks || []).length ? renderTracks(s.tracks) : "";
+      return `<li class="${cls}${tracks ? " has-tracks" : ""}"><span class="progress-mark">${mark}</span>${
+        escapeHtml(step.label)}${tracks}</li>`;
     }).join("");
   }
 
@@ -702,12 +821,30 @@ function renderProgress(s) {
   if (countsHost) {
     const labels = { objects: "objects", classes: "Apex classes", triggers: "triggers",
                      flows: "flows", lwc: "LWC bundles",
-                     workflow_field_updates: "field updates", components: "components" };
+                     workflow_field_updates: "field updates", components: "components",
+                     managed_skipped: "managed (listed, not fetched)" };
     const entries = Object.entries(s.counts || {}).filter(([, v]) => v != null);
     countsHost.innerHTML = entries.length
       ? entries.map(([k, v]) => `<span class="count-pill"><b>${v}</b> ${escapeHtml(labels[k] || k)}</span>`).join("")
       : "";
   }
+}
+
+/** Per-stream progress for the parallel fetch phase. `total` is null while a
+ *  stream has not been sized yet (workflow field updates arrive in one go),
+ *  which renders as a sweeping bar rather than a made-up number. */
+function renderTracks(tracks) {
+  return `<ul class="progress-tracks">${tracks.map(t => {
+    const known = t.total != null && t.total > 0;
+    const pct = t.state === "done" ? 100 : known ? Math.min(100, Math.round(100 * (t.done || 0) / t.total)) : 0;
+    const figure = t.state === "done" ? "&#10003;"
+      : known ? `${t.done || 0} / ${t.total}` : t.total === 0 ? "none" : "&hellip;";
+    const cls = t.state === "done" ? "done" : t.state === "failed" ? "failed" : known ? "" : "indeterminate";
+    return `<li class="progress-track-row ${cls}">
+      <span class="progress-track-label">${escapeHtml(t.label || t.name)}</span>
+      <span class="progress-track-mini"><span style="width:${pct}%"></span></span>
+      <span class="progress-track-figure">${figure}</span></li>`;
+  }).join("")}</ul>`;
 }
 
 async function pollOrgStatus(org_id, { verb = "Working", showPanel = true } = {}) {
@@ -768,7 +905,13 @@ async function loadDashboard() {
   const el = document.getElementById("dashStats");
   if (!CURRENT_ORG) {
     document.getElementById("dashOrgTitle").textContent = "Org stats";
-    el.innerHTML = `<p class="muted">Connect an org on the Connections tab first.</p>`;
+    el.innerHTML = emptyStateHtml({
+      title: "No org selected",
+      body: "The dashboard shows one org's knowledgebase: component counts, async jobs, integration "
+          + "points and the risk rollups. Connect an org on Home, or pick one in the header.",
+      actions: [{ label: "Go to Home", onclick: "showView('connections')", primary: true },
+                { label: "Play the demo case", onclick: "startDemo()" }],
+    });
     return;
   }
   document.getElementById("dashOrgTitle").textContent = `Org stats -- ${CURRENT_ORG}`;
@@ -803,6 +946,7 @@ async function runSearch() {
     ? `<p><b>${title}:</b> ${items.map(i => `<span class="pill link" onclick="${onClick}('${escapeHtml(i)}')">${escapeHtml(i)}</span>`).join(" ")}</p>`
     : "";
   const any = data.components.length || data.objects.length || data.fields.length;
+  track("search");
   // Results REPLACE the previous ones -- the old version appended forever,
   // so a few searches left a wall of stale JSON.
   el.innerHTML = any
@@ -845,6 +989,7 @@ async function findFieldWriters() {
   setBusy(el, "Looking up writers...");
   const data = await apiJson(`/api/orgs/${encodeURIComponent(CURRENT_ORG)}/field-writers/${encodeURIComponent(field)}`, {}, null);
   el.innerHTML = renderFieldWriters(data, field);
+  if (data) track("writers");
 }
 
 // ---------- incidents ----------
@@ -870,6 +1015,7 @@ async function fileIncident() {
   }
   const data = await res.json();
   const m = data.meta;
+  track("incident");
   statusEl.textContent = m.recurrence
     ? `RECURRENCE -- seen ${m.prior_occurrences} time(s) before.`
     : (m.signature ? "NEW ISSUE filed." : "Filed (no signature -- no exception and no field given).");
@@ -883,7 +1029,14 @@ async function loadIncidents() {
   if (!CURRENT_ORG) return;
   const tbody = document.getElementById("incidentsTable");
   const incidents = await apiJson(`/api/orgs/${encodeURIComponent(CURRENT_ORG)}/incidents`, {}, []) || [];
-  fillTable(tbody, incidents, 4, "No incidents filed for this org yet.", m => {
+  fillTable(tbody, incidents, 4, {
+    title: `No incidents filed for ${CURRENT_ORG} yet`,
+    body: "An incident is a debug log, a suspect field, or both, checked against this org's knowledgebase. "
+        + "The report ranks the likely culprits, and every one you file teaches Known Issues -- so the "
+        + "second time the same failure appears, the answer is already there.",
+    actions: [{ label: "File the first one", onclick: "document.getElementById('incLabel').focus()", primary: true, role: "user" },
+              { label: "See an example", onclick: "startDemo(4)" }],
+  }, m => {
     const tr = document.createElement("tr");
     tr.onclick = () => showIncidentDetail(m.incident_id);
     const badge = m.recurrence ? `<span class="badge recurrence">RECURRENCE</span>` : `<span class="badge new">NEW</span>`;
@@ -1017,7 +1170,7 @@ async function recordResolution(signature) {
   });
   statusEl.textContent = res.ok ? "Resolution saved." : "Failed: " + await errorText(res);
   statusEl.className = res.ok ? "status-line ok" : "status-line error";
-  if (res.ok) { toast("Resolution saved to the known-issues library.", "ok"); loadKnownIssues(); }
+  if (res.ok) { toast("Resolution saved to the known-issues library.", "ok"); track("fix"); loadKnownIssues(); }
 }
 
 // ---------- known issues ----------
@@ -1060,8 +1213,14 @@ function renderKnownIssues() {
   if (!entries.length) {
     host.innerHTML = total
       ? `<p class="muted">No known issue matches that filter.</p>`
-      : `<p class="muted">Nothing yet. Every incident you file with an exception or a suspect field
-         adds its signature here, and any resolution you record shows up alongside it.</p>`;
+      : emptyStateHtml({
+          title: "No known issues for this org yet",
+          body: "Every incident filed with an exception or a suspect field adds its signature here, and "
+              + "any fix someone records shows up alongside it. It is the org's memory: the more incidents "
+              + "are filed, the more often the answer is already on file.",
+          actions: [{ label: "File an incident", onclick: "showView('incidents')", primary: true, role: "user" },
+                    { label: "See how it pays off", onclick: "startDemo(8)" }],
+        });
     return;
   }
 
@@ -1110,6 +1269,7 @@ async function editKnownResolution(signature) {
   });
   if (!res.ok) { toast("Could not save: " + await errorText(res), "error"); return; }
   toast("Fix recorded.", "ok");
+  track("fix");
   loadKnownIssues();
 }
 
@@ -1144,6 +1304,7 @@ async function normalizeLog() {
   const data = await res.json();
 
   CURRENT_NORMALIZED = data.normalized_log;
+  track("normalize");
   CURRENT_NORMALIZED_NAME = data.log_id || label || (fileInput.files[0].name.replace(/\.[^.]+$/, "")) || "normalized_log";
   document.getElementById("logResultActions").style.display = "block";
   const n = data.normalized_log;
@@ -1171,7 +1332,12 @@ function downloadCurrentNormalized() {
 async function loadLogs() {
   const tbody = document.getElementById("logsTable");
   const logs = await apiJson("/api/logs", {}, []) || [];
-  fillTable(tbody, logs, 5, "No stored logs yet. Tick “Store in the library” above to keep one.", m => {
+  fillTable(tbody, logs, 5, {
+    title: "No stored logs yet",
+    body: "Normalizing works without keeping anything. Tick <b>Store in the library</b> above when a log is "
+        + "worth coming back to -- only the normalized JSON is kept, never the raw log.",
+    actions: [{ label: "Normalize a log", onclick: "document.getElementById('logFile').click()", primary: true, role: "user" }],
+  }, m => {
     const tr = document.createElement("tr");
     tr.onclick = () => showLogDetail(m.log_id);
     tr.innerHTML = `<td>${fmtWhen(m.timestamp)}</td><td>${escapeHtml(m.log_id)}</td>
@@ -1336,6 +1502,8 @@ function enterApp() {
   document.getElementById("appRoot").style.display = "";
   applyRole();
   loadOrgs();
+  if (typeof initHome === "function") initHome();
+  if (typeof initGuide === "function") initGuide();
   // The dock remembers whether it was open, per browser. Guarded because
   // chat.js is a separate script and a cached index.html could load without it.
   if (typeof initChatDock === "function") initChatDock();
@@ -1611,6 +1779,7 @@ async function createToken() {
   const el = document.getElementById("tokenCreateResult");
   if (!res.ok) { el.innerHTML = `<p class="status-line error">${escapeHtml(await errorText(res))}</p>`; return; }
   const data = await res.json();
+  track("token");
   el.innerHTML = `<div class="token-reveal">
       <b>Copy this token now (role: ${escapeHtml(data.role)}):</b><br>
       <span id="tokenValue">${escapeHtml(data.token)}</span>
@@ -1634,7 +1803,12 @@ async function loadTokens() {
   const tbody = document.getElementById("tokensTable");
   const tokens = await apiJson("/api/tokens", {}, []) || [];
   const apiTokens = tokens.filter(t => t.kind !== "session");
-  fillTable(tbody, apiTokens, 7, "No API tokens yet. Create one above to point the MCP server at this app.", t => {
+  fillTable(tbody, apiTokens, 7, {
+    title: "No API tokens yet",
+    body: "A token lets Claude Desktop, or any MCP client, use these same tools as you -- with your role "
+        + "and your org visibility. Create one above, then follow the setup steps.",
+    actions: [{ label: "Show me how to connect Claude Desktop", onclick: "openMcpSetup()", primary: true }],
+  }, t => {
     const tr = document.createElement("tr");
     tr.innerHTML = `<td>${escapeHtml(t.label || "(none)")}</td><td>${escapeHtml(t.role)}</td>
       <td>${escapeHtml(t.username)}</td><td>${fmtWhen(t.created_at)}</td>

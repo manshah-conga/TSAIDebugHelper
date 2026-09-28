@@ -227,16 +227,26 @@ sandbox.document.createElement = () => trackedEl("created");
 
 console.log("\n-- org fetch progress --");
 sandbox.renderProgress({
-  status: "fetching_classes", percent: 18, step_index: 3, step_count: 10,
+  status: "fetching", percent: 18, step_index: 3, step_count: 5,
   step_label: "Fetching Apex classes", elapsed_seconds: 95,
   counts: { objects: 214, classes: 1893 },
   steps: [
-    { name: "connecting", label: "Verifying the connection" },
-    { name: "fetching_objects", label: "Reading the object model" },
-    { name: "fetching_classes", label: "Fetching Apex classes" },
-    { name: "fetching_triggers", label: "Fetching Apex triggers" },
+    { name: "connecting", label: "Verifying the connection", state: "done" },
+    { name: "listing", label: "Listing the org's components", state: "done" },
+    { name: "fetching", label: "Fetching and analysing components (in parallel)", state: "active" },
+    { name: "indexing", label: "Fetching Apex triggers", state: "pending" },
+  ],
+  tracks: [
+    { name: "classes", label: "Apex classes", done: 1893, total: 4089, state: "active" },
+    { name: "flows", label: "Flows / Process Builder", done: 142, total: 142, state: "done" },
+    { name: "workflow", label: "Workflow field updates", done: 0, total: null, state: "active" },
   ],
 });
+check("per-stream bars are drawn under the active phase",
+  has(registry.pgSteps.innerHTML, "progress-tracks") && has(registry.pgSteps.innerHTML, "1893 / 4089"));
+check("a finished stream is ticked", has(registry.pgSteps.innerHTML, "progress-track-row done"));
+check("an unsized stream sweeps rather than inventing a figure",
+  has(registry.pgSteps.innerHTML, "progress-track-row indeterminate"));
 check("the bar reflects the reported percentage", registry.pgFill.style.width === "18%",
   registry.pgFill.style.width);
 check("the percentage is shown as a number too", registry.pgPercent.textContent === "18%");

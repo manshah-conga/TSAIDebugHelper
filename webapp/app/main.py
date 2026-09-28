@@ -32,6 +32,7 @@ from . import env_file
 from . import llm
 from . import llm_config
 from . import usage as usage_ledger
+from . import guide as guide_mod
 from .onboarding import run_onboarding, JOBS, progress_payload, job_in_flight
 from .log_normalizer import parse_log_text
 from .rca import assemble_context, lookup_field_writers
@@ -416,6 +417,7 @@ def admin_delete_user(username: str, request: Request):
     # Otherwise a deleted account's name lives on in the admin usage report
     # forever, which is both untidy and a small privacy problem.
     usage_ledger.forget_user(username)
+    storage.forget_guide(username)
     return {"ok": True}
 
 
@@ -1121,6 +1123,59 @@ def my_usage(days: int = usage_ledger.DEFAULT_DAYS, ident=Depends(auth.require_r
     summary["quota"] = limits_policy.quota_status(ident["username"],
                                                   auth.get_user(ident["username"]))
     return summary
+
+
+# ---------- home page + onboarding guide ----------
+#
+# See app/guide.py. The guide document is per account and holds nothing
+# sensitive -- what has been clicked, what has been seen, a few preferences --
+# so every role may read and write its own, and nobody else's.
+
+class GuideUpdateRequest(BaseModel):
+    visit: bool = False
+    event: Optional[str] = None
+    tour_done: Optional[str] = None
+    tab_seen: Optional[str] = None
+    welcome_seen: bool = False
+    checklist_dismissed: Optional[bool] = None
+    seen_version: Optional[str] = None
+    reset: bool = False
+    prefs: Optional[dict] = None
+
+
+@app.get("/api/me/guide", dependencies=Dep_reader)
+def get_guide(ident=Depends(auth.require_reader)):
+    return guide_mod.guide_payload(ident)
+
+
+@app.post("/api/me/guide", dependencies=Dep_reader)
+def post_guide(req: GuideUpdateRequest, ident=Depends(auth.require_reader)):
+    try:
+        # Every field's default already means "leave it alone", so the plain
+        # attribute read is enough -- no dependence on pydantic's dump API.
+        change = {k: getattr(req, k) for k in (
+            "visit", "event", "tour_done", "tab_seen", "welcome_seen",
+            "checklist_dismissed", "seen_version", "reset", "prefs")}
+        return guide_mod.update_guide(ident, change)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/home", dependencies=Dep_reader)
+def home_summary(ident=Depends(auth.require_reader)):
+    """Everything the home page needs beyond /api/orgs, in one request:
+    incident and known-issue counts per visible org, the latest recorded
+    fixes, whether you have an API token yet, and -- for admins -- a small
+    health strip."""
+    return guide_mod.home_payload(ident)
+
+
+@app.get("/api/triage/known", dependencies=Dep_reader)
+def triage_known(q: str, ident=Depends(auth.require_reader)):
+    """Free-text "have we seen this before?" across every org the caller can
+    see. Used by the home page's What's broken? bar with a pasted exception
+    message; respects org visibility exactly like every other read."""
+    return {"query": q, "matches": guide_mod.match_known(ident, q)}
 
 
 # ---------- chat ----------

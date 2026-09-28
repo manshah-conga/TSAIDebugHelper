@@ -433,7 +433,7 @@ function openOrgPicker() {
           <span class="chat-row-title">No org</span>
           <span class="chat-row-meta">log normalizing only</span>
         </button>
-        ${rows || '<p class="muted">No orgs connected yet -- connect one on the Connections tab.</p>'}
+        ${rows || '<p class="muted">No orgs connected yet -- connect one on the Home tab.</p>'}
       </div>
       <div class="modal-actions"><button type="button" class="secondary" data-cancel>Cancel</button></div>
     </div>`;
@@ -758,6 +758,7 @@ async function sendMessage() {
   if (!text || CHAT.streaming) return;
   CHAT.el.input.value = "";
   CHAT.el.input.style.height = "";
+  if (typeof track === "function") track("ask");
   await sendTurn(text, []);
 }
 
@@ -1280,6 +1281,31 @@ function askAbout(question) {
   prefillChat(question);
 }
 
+/** Take the person to the full-screen chat and SEND the question, in a
+ *  fresh conversation scoped to the active org. Used where the question is
+ *  the whole point of the click (the Home page's What's broken? bar when the
+ *  text reads like a question), unlike askAbout, which pre-fills so the
+ *  engineer can edit first.
+ *
+ *  Does not change the remembered dock/full-screen preference: this is a
+ *  one-off redirect, not a choice about how they like to work. If an answer
+ *  is still streaming, the question is pre-filled instead of interrupting it. */
+async function askNow(question) {
+  question = String(question || "").trim();
+  if (!question) return;
+  if (CHAT.open) toggleChatDock(false);
+  showView("chat");
+  if (!CHAT.el.input) return;
+  if (CHAT.streaming) {
+    prefillChat(question);
+    toast("The assistant is still answering -- your question is ready to send when it finishes.", "info", 6000);
+    return;
+  }
+  if (CHAT.chatId || (CHAT.messages || []).length) newChat();
+  CHAT.el.input.value = question;
+  await sendMessage();
+}
+
 function prefillChat(question) {
   if (!CHAT.el.input) return;
   CHAT.el.input.value = question;
@@ -1430,6 +1456,11 @@ document.addEventListener("keydown", e => {
     e.preventDefault();
     if (CHAT.mode === "full" && document.body.classList.contains("chat-fullscreen")) {
       CHAT.el.input && CHAT.el.input.focus();
+    } else if (typeof openPalette === "function") {
+      // Everywhere else it is the command palette (home.js), whose last
+      // entry is always "ask the assistant" -- so the old behaviour is one
+      // Enter away rather than gone.
+      openPalette();
     } else {
       openChatFull();
     }

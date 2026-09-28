@@ -241,6 +241,25 @@ def _truncate(result):
 
 # ---------- system prompt ----------
 
+_APP_GUIDE_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                               "prompts", "app_guide.md")
+_APP_GUIDE = None
+
+
+def app_guide():
+    """A short description of the app's own screens, so the Help drawer's
+    "Ask about this app" gets a real answer instead of general Salesforce
+    advice. Read once; a missing file just means no guide, not a broken chat."""
+    global _APP_GUIDE
+    if _APP_GUIDE is None:
+        try:
+            with open(_APP_GUIDE_PATH, "r", encoding="utf-8") as f:
+                _APP_GUIDE = f.read().strip()
+        except OSError:
+            _APP_GUIDE = ""
+    return _APP_GUIDE
+
+
 def system_prompt(username, org_id, org_label=None, org_list=None):
     lines = [
         "You are the assistant inside the TS Intelligent Debug Helper, a tool Conga "
@@ -256,7 +275,10 @@ def system_prompt(username, org_id, org_label=None, org_list=None):
         "- Start from the evidence the user has. A debug log goes through normalize_log; "
         "a 'wrong value, no exception' report goes through find_field_writers.",
         "- Use get_entry_points to see everything that fires on an object's save, and "
-        "get_inbound_references to find what invokes a component.",
+        "get_inbound_references to find what invokes a component -- including who "
+        "enqueues/executes/schedules an async job (via System.enqueueJob etc.). An "
+        "empty inbound result is evidence, not a licence to guess: say what it does "
+        "not cover rather than inventing a caller.",
         "- Rank suspects by what the log actually shows executing, not by what could "
         "theoretically be involved. Name the specific component and say why.",
         "- Order of automation matters: a trigger writing a value that a later workflow "
@@ -308,6 +330,9 @@ def system_prompt(username, org_id, org_label=None, org_list=None):
                       "org-specific lookups need the user to pick an org in the composer first."]
     if org_list:
         lines += ["", "Orgs this user can see: " + ", ".join(org_list[:40]) + "."]
+    guide = app_guide()
+    if guide:
+        lines += ["", guide]
     return {"role": "system", "content": "\n".join(lines)}
 
 

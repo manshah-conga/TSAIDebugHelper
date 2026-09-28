@@ -73,12 +73,53 @@ def _resolve_action_calls(flows, org_index):
 
 # ---------- inbound / entry-point indexes (§7) ----------
 
-def _build_inbound(apex, flows):
+_ASYNC_MECHANISMS = {"System.enqueueJob", "Database.executeBatch", "System.schedule", "System.scheduleBatch"}
+
+
+def _build_inbound(apex, flows, lwc=None):
     inbound = defaultdict(lambda: {"called_by": []})
     for cid, card in apex.items():
-        for tgt in _call_targets(card):
-            inbound[tgt]["called_by"].append(
-                {"id": cid, "type": card["type"], "via": "method_call"})
+        # Async dispatches first: they carry the method, line and delay, which
+        # is what a 'where is this Queueable enqueued from?' answer needs.
+        dispatched = set()
+        for d in card.get("async_dispatches", []) or []:
+            tgt = d.get("target")
+            if not tgt or tgt == cid:
+                continue
+            dispatched.add(tgt)
+            entry = {"id": cid, "type": card["type"], "via": d.get("mechanism"),
+                     "method": d.get("method"), "line": d.get("line"),
+                     "in_loop": d.get("in_loop")}
+            for k in ("delay_minutes", "scope_size", "job_name", "cron", "inner_class"):
+                if d.get(k) is not None:
+                    entry[k] = d[k]
+            inbound[tgt]["called_by"].append(entry)
+        for c in card.get("calls_to", []):
+            if isinstance(c, str):
+                inbound[c]["called_by"].append({"id": cid, "type": card["type"], "via": "method_call"})
+                continue
+            tgt = c.get("target")
+            if not tgt:
+                continue
+            vias = [v for v in (c.get("via") or ["method_call"]) if v not in _ASYNC_MECHANISMS]
+            if tgt in dispatched:
+                # the `new X(` that built the job is the same edge as the dispatch
+                vias = [v for v in vias if v != "constructor"]
+            if not vias:
+                continue
+            entry = {"id": cid, "type": card["type"], "via": vias[0] if len(vias) == 1 else ",".join(vias)}
+            if c.get("methods_called"):
+                entry["methods_called"] = c["methods_called"]
+            inbound[tgt]["called_by"].append(entry)
+    for cid, card in (lwc or {}).items():
+        by_class = defaultdict(list)
+        for imp in card.get("apex_methods_imported", []) or []:
+            cls, _, meth = imp.partition(".")
+            if cls:
+                by_class[cls].append(meth)
+        for cls, meths in by_class.items():
+            inbound[cls]["called_by"].append({"id": cid, "type": "LWC", "via": "lwc_apex_import",
+                                              "methods_called": sorted(set(m for m in meths if m))})
     for cid, card in flows.items():
         for ac in card.get("action_calls", []):
             if ac.get("action_type") == "apex" and ac.get("action_name"):
@@ -170,6 +211,10 @@ def _apex_flags(card):
         flags.append("soql_in_loop")
     if any(s.get("is_dynamic") for s in card.get("soql", [])):
         flags.append("dynamic_soql")
+    if any(d.get("in_loop") for d in card.get("async_dispatches", []) or []):
+        # 50 enqueueJob per sync transaction (1 from inside a Queueable),
+        # 5 queued/active batch jobs -- a dispatch in a loop is a limit bug.
+        flags.append("async_dispatch_in_loop")
     controller = any(e.get("kind") in ("AuraEnabled", "RemoteAction", "RestResource")
                      for e in card.get("entry_points", []))
     if controller and any(s.get("enforces_fls") is False and not s.get("is_dynamic")
@@ -294,8 +339,24 @@ def build_index(apex, flows, lwc, workflow=None, coverage=None):
             entry["used_in_entry_criteria_of"] = sorted(entry_crit[field])
         field_touch_out[field] = entry
 
-    inbound_index = _build_inbound(apex, flows)
+    inbound_index = _build_inbound(apex, flows, lwc)
     entry_points_index = _build_entry_points(apex, flows, workflow)
+
+    # Stamp who starts each async job straight onto the job's own card, so
+    # get_component on a Queueable/Batchable/Schedulable answers "where is
+    # this invoked from?" without a second lookup.
+    async_invocations = {}
+    for cid, card in apex.items():
+        callers = [c for c in inbound_index.get(cid, {}).get("called_by", [])
+                   if c.get("via") in _ASYNC_MECHANISMS]
+        for ep in card.get("entry_points", []):
+            if ep.get("kind") in ("Queueable", "Batchable", "Schedulable") and not ep.get("inner_class"):
+                ep["invoked_by"] = [{k: c[k] for k in ("id", "via", "method", "line", "delay_minutes",
+                                                        "scope_size", "cron", "job_name") if c.get(k) is not None}
+                                    for c in callers]
+        if callers:
+            async_invocations[cid] = [{"by": c["id"], "via": c["via"], "method": c.get("method"),
+                                       "line": c.get("line")} for c in callers]
 
     stats = {
         "counts": {
@@ -313,6 +374,8 @@ def build_index(apex, flows, lwc, workflow=None, coverage=None):
             "schedulable": [c["id"] for c in apex.values() if any(e["kind"] == "Schedulable" for e in c.get("entry_points", []))],
             "future": [c["id"] for c in apex.values() if any(e["kind"] == "future" for e in c.get("entry_points", []))],
         },
+        # job class -> where it is enqueued / executed / scheduled from
+        "async_invocations": async_invocations,
         "integration_points": {
             "classes_with_callouts": [c["id"] for c in apex.values() if c.get("callouts")],
             "named_credentials_referenced": sorted({nc for c in apex.values() for nc in c.get("named_credentials", [])}),

@@ -259,9 +259,10 @@ async def refresh_org(org_id: str, access_token: str) -> dict:
 @mcp.tool()
 async def get_org_connection_status(org_id: str) -> dict:
     """Check the progress of an org connection/fetch that was queued via
-    create_org_connection. Status values: queued, connecting,
-    fetching_objects, fetching_classes, fetching_triggers, fetching_flows,
-    fetching_lwc, fetching_workflow, extracting, indexing, saving, done, error."""
+    create_org_connection. Status values: queued, connecting, listing,
+    fetching (classes, triggers, flows, LWC and workflow are fetched and
+    analysed in parallel -- `tracks` gives done/total for each), indexing,
+    saving, done, error."""
     return await _get(f"/api/orgs/{org_id}/status")
 
 
@@ -294,7 +295,10 @@ async def get_component(org_id: str, component_id: str) -> dict:
     """Get the full stored knowledgebase card for one component (an Apex
     class/trigger, a flow, or an LWC bundle) -- its structure, objects/
     fields touched, calls made, and (for Apex) any detected static mutable
-    state or risky field writes. Use search_knowledgebase or
+    state or risky field writes. For Apex, `async_dispatches` lists every
+    System.enqueueJob / Database.executeBatch / System.schedule(Batch) the
+    component makes, and a Queueable/Batchable/Schedulable class's
+    `entry_points[].invoked_by` lists who starts it. Use search_knowledgebase or
     find_field_writers first if you don't already know the exact id.
 
     For a flow, the card's `elements` include each assignment element's
@@ -357,10 +361,20 @@ async def find_field_writers(org_id: str, field_api_name: str) -> dict:
 @mcp.tool()
 async def get_inbound_references(org_id: str, component_id: str) -> dict:
     """Reverse-call lookup (schema v3): everything in the org that INVOKES a
-    given class/flow -- flows via actionCall (with the resolved Apex method),
-    classes via method call, flows via subflow. Answers 'what else calls
-    this?' without scanning every card. The complement of get_component's
-    outbound `calls_to`."""
+    given class/flow. Each `called_by` row has a `via`:
+      - System.enqueueJob / Database.executeBatch / System.scheduleBatch /
+        System.schedule -- Apex that STARTS this async job, with the calling
+        `method`, `line`, and `delay_minutes` / `scope_size` / `cron` when the
+        source gives them (use this for "where is this Queueable/Batch
+        invoked from?")
+      - method_call / constructor (`new X(...)`) / Type.forName('X')
+      - actionCall (a flow, with the resolved @InvocableMethod), subflow
+      - lwc_apex_import (an LWC importing @salesforce/apex/Class.method)
+    Not covered (an empty result does not rule these out): dynamic
+    Type.forName with a non-literal name, callers inside managed packages
+    whose source is hidden, jobs scheduled by hand in Setup, and classes
+    registered by name in custom settings/metadata (e.g. CPQ callbacks).
+    The complement of get_component's outbound `calls_to`."""
     return await _get(f"/api/orgs/{org_id}/inbound/{component_id}")
 
 
