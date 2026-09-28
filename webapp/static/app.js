@@ -89,7 +89,8 @@ function toast(message, kind = "info", ms = 5000) {
 
 // ---------- modal (replaces prompt()/alert() for anything with input) ----------
 
-/** modal({title, body, fields:[{name,label,type,placeholder,value}], submitLabel})
+/** modal({title, body, fields:[{name,label,type,placeholder,value,options,hint}], submitLabel})
+ *  `options` (string[]) adds a datalist of suggestions; `hint` a line under the input.
  *  -> Promise<null | {name: value}>.  Escape / Cancel / backdrop resolve null. */
 function modal({ title, body = "", fields = [], submitLabel = "OK", danger = false }) {
   return new Promise(resolve => {
@@ -103,7 +104,11 @@ function modal({ title, body = "", fields = [], submitLabel = "OK", danger = fal
           ${fields.map(f => `
             <label for="mf-${f.name}">${escapeHtml(f.label)}</label>
             <input id="mf-${f.name}" name="${f.name}" type="${f.type || "text"}"
-                   placeholder="${escapeHtml(f.placeholder || "")}" value="${escapeHtml(f.value || "")}">
+                   placeholder="${escapeHtml(f.placeholder || "")}" value="${escapeHtml(f.value || "")}"
+                   ${f.options ? `list="mf-${f.name}-list" autocomplete="off"` : ""}>
+            ${f.options ? `<datalist id="mf-${f.name}-list">${f.options.map(o =>
+              `<option value="${escapeHtml(o)}"></option>`).join("")}</datalist>` : ""}
+            ${f.hint ? `<div class="field-hint">${f.hint}</div>` : ""}
           `).join("")}
           <div class="modal-actions">
             <button type="button" class="secondary" data-cancel>Cancel</button>
@@ -124,7 +129,7 @@ function modal({ title, body = "", fields = [], submitLabel = "OK", danger = fal
     document.addEventListener("keydown", onKey);
     document.body.appendChild(back);
     const first = back.querySelector("input");
-    if (first) first.focus(); else back.querySelector("[type=submit]").focus();
+    if (first) { first.focus(); if (first.value) first.select(); } else back.querySelector("[type=submit]").focus();
   });
 }
 
@@ -237,11 +242,19 @@ function renderOrgPicker() {
   if (!CURRENT_ORG || !ORGS[CURRENT_ORG]) CURRENT_ORG = ids[0];
   el.innerHTML = "Active org: <select id='orgSelect'></select>";
   const sel = document.getElementById("orgSelect");
-  ids.forEach(id => {
-    const opt = document.createElement("option");
-    opt.value = id; opt.textContent = `${id} (${ORGS[id].name})`;
-    if (id === CURRENT_ORG) opt.selected = true;
-    sel.appendChild(opt);
+  // Grouped under the customer account once anyone uses accounts, so a
+  // customer's production org and its sandboxes sit together here as well.
+  const groups = accountGroups(Object.entries(ORGS));
+  const grouped = showAccountHeaders(groups);
+  groups.forEach(g => {
+    const parent = grouped ? document.createElement("optgroup") : sel;
+    if (grouped) { parent.label = g.name || "Unassigned"; sel.appendChild(parent); }
+    g.orgs.forEach(([id, o]) => {
+      const opt = document.createElement("option");
+      opt.value = id; opt.textContent = `${id} (${o.name})`;
+      if (id === CURRENT_ORG) opt.selected = true;
+      parent.appendChild(opt);
+    });
   });
   sel.addEventListener("change", () => setActiveOrg(sel.value));
 }
@@ -336,6 +349,35 @@ function suspectRow(s, rank) {
 
 /** The transaction shape from a normalized log -- shared by the incident view
  *  and the standalone log library, since it needs no org knowledge at all. */
+// One governor-limit tile per entry. The normalizer emits {used, max}; older
+// fixtures and the demo use {used, limit} -- accept either so a key rename
+// can never again render as "0/undefined".
+function renderLimitGrid(limits) {
+  return `<div class="limits">` + Object.keys(limits).map(k => {
+    const v = limits[k];
+    let used = null, cap = null, close = false, peak = null;
+    if (v && typeof v === "object") {
+      used = v.used ?? null;
+      cap = v.max ?? v.limit ?? null;
+      close = !!v.close_to_limit;
+      peak = v.peak_used ?? null;
+    }
+    // Colour by the worst point in the log, not just the last checkpoint:
+    // a log with several transactions can end on a tiny one.
+    const worst = peak != null ? peak : used;
+    const pct = (worst != null && cap) ? Math.round((worst / cap) * 100) : null;
+    const cls = close ? "high" : pct === null ? "" : pct >= 90 ? "high" : pct >= 70 ? "medium" : "low";
+    const figure = used == null ? escapeHtml(String(v))
+      : cap == null ? String(used) : `${used}/${cap}`;
+    const tips = [];
+    if (close) tips.push("Salesforce flagged this as CLOSE TO LIMIT");
+    if (peak != null) tips.push(`Peaked at ${peak}/${cap} at an earlier checkpoint -- this log likely holds more than one transaction`);
+    return `<div class="limit ${cls}"${tips.length ? ` title="${escapeHtml(tips.join(". "))}"` : ""}>
+      <span>${escapeHtml(k)}</span><b>${figure}</b>
+      ${pct !== null ? `<i>${peak != null ? `peak ${peak} · ` : ""}${pct}%</i>` : ""}</div>`;
+  }).join("") + `</div>`;
+}
+
 function renderNormalizedLog(n, { heading = true } = {}) {
   if (!n) return "";
   const exc = n.exceptions || [];
@@ -402,20 +444,18 @@ function renderNormalizedLog(n, { heading = true } = {}) {
   }
 
   const limits = n.limits_final || {};
-  const limitKeys = Object.keys(limits);
-  if (limitKeys.length) {
-    parts.push(`<h3>Governor limits at the end of the transaction</h3><div class="limits">` +
-      limitKeys.map(k => {
-        const v = limits[k];
-        // Values look like {used, limit} or "12 out of 100" depending on the log.
-        let used = null, cap = null;
-        if (v && typeof v === "object") { used = v.used; cap = v.limit; }
-        const pct = (used != null && cap) ? Math.round((used / cap) * 100) : null;
-        const cls = pct === null ? "" : pct >= 90 ? "high" : pct >= 70 ? "medium" : "low";
-        return `<div class="limit ${cls}"><span>${escapeHtml(k)}</span>
-          <b>${used != null ? `${used}/${cap}` : escapeHtml(String(v))}</b>
-          ${pct !== null ? `<i>${pct}%</i>` : ""}</div>`;
-      }).join("") + `</div>`);
+  if (Object.keys(limits).length) {
+    parts.push(`<h3>Governor limits at the end of the transaction</h3>` + renderLimitGrid(limits));
+    // Managed packages get their own per-namespace limits. Only surface the
+    // ones that actually consumed something -- all-zero blocks are noise.
+    const others = Object.entries(n.limits_by_namespace || {})
+      .filter(([ns, lim]) => ns !== "(default)" && lim !== limits
+        && Object.values(lim || {}).some(v => v && (v.used > 0 || v.peak_used > 0)));
+    if (others.length) {
+      parts.push(`<details><summary>Managed-package namespaces (${others.length})</summary>` +
+        others.map(([ns, lim]) => `<h4 class="mono">${escapeHtml(ns)}</h4>${renderLimitGrid(lim)}`).join("") +
+        `</details>`);
+    }
   }
 
   const dbg = n.user_debug || [];
@@ -511,13 +551,156 @@ async function loadOrgs() {
   markInFlightOrgs();
 }
 
+// ---------- customer accounts ----------
+//
+// Orgs carry an optional `account` -- the customer they belong to -- so a
+// customer's production org and its sandboxes stack under one heading
+// (server side: app/accounts.py). `environment` and `my_domain` come from
+// the server too; the fallbacks below mirror its rules for orgs that are not
+// in ORGS yet (the Connect form) or an older server that does not send them.
+
+const UNASSIGNED_KEY = "__unassigned__";
+const ENV_META = {
+  production: { label: "Production", short: "PROD" },
+  sandbox: { label: "Sandbox", short: "SANDBOX" },
+  developer: { label: "Developer Edition", short: "DEV" },
+  scratch: { label: "Scratch org", short: "SCRATCH" },
+  unknown: { label: "Other", short: "" },
+};
+const ENV_RANK = { production: 0, sandbox: 1, developer: 2, scratch: 3, unknown: 4 };
+
+function accountKey(name) {
+  const n = String(name ?? "").replace(/\s+/g, " ").trim();
+  return n ? n.toLowerCase() : UNASSIGNED_KEY;
+}
+
+function hostOf(url) {
+  let u = String(url || "").trim();
+  if (!u) return "";
+  if (!u.includes("://")) u = "https://" + u;
+  try { return new URL(u).hostname.toLowerCase(); } catch (e) { return ""; }
+}
+
+function envFromUrl(url) {
+  const h = hostOf(url);
+  if (!h) return "unknown";
+  if (h.includes(".scratch.")) return "scratch";
+  if (h.includes(".develop.")) return "developer";
+  if (h.includes(".sandbox.") || h.startsWith("test.") || /^cs\d+\./.test(h) || h.split(".")[0].includes("--")) return "sandbox";
+  if (h.includes("salesforce.com") || h.includes("force.com")) return "production";
+  return "unknown";
+}
+
+function myDomainOf(url) {
+  const h = hostOf(url);
+  if (!h || !/(\.my\.salesforce\.com|force\.com)$/.test(h)) return null;
+  const first = h.split(".")[0];
+  if (/^(na|cs|eu|ap|um|gs)\d+$/.test(first)) return null;
+  return first.split("--")[0] || null;
+}
+
+function orgEnv(o) { return (o && o.environment) || envFromUrl(o && o.instance_url); }
+function orgMyDomain(o) { return (o && o.my_domain) || myDomainOf(o && o.instance_url); }
+
+function envBadge(o) {
+  const e = orgEnv(o), m = ENV_META[e];
+  if (!m || !m.short) return "";
+  return `<span class="env-badge env-${e}" title="${escapeHtml(m.label)} org">${m.short}</span>`;
+}
+
+/** "1 Production · 3 Sandbox" for a group header. */
+function envSummary(orgs) {
+  const n = {};
+  orgs.forEach(([, o]) => { const e = orgEnv(o); n[e] = (n[e] || 0) + 1; });
+  return Object.keys(n).sort((a, b) => ENV_RANK[a] - ENV_RANK[b])
+    .map(e => `${n[e]} ${e === "unknown" ? "other" : ENV_META[e].label.replace(" Edition", "").replace(" org", "")}`).join(" \u00b7 ");
+}
+
+function isAccountPinned(key) {
+  const prefs = typeof homePrefs === "function" ? homePrefs() : {};
+  return (prefs.pinned_accounts || []).includes(key);
+}
+
+function isAccountCollapsed(key) {
+  const prefs = typeof homePrefs === "function" ? homePrefs() : {};
+  return (prefs.collapsed_accounts || []).includes(key);
+}
+
+/** key -> the spelling to show. The server snaps new names to the one in
+ *  use, so a mismatch only comes from older data; the commonest spelling
+ *  wins, and between equals one with capitals beats all-lowercase. */
+function accountSpellings(orgs = Object.values(ORGS)) {
+  const tally = new Map();
+  orgs.forEach(o => {
+    const name = String(o.account ?? "").replace(/\s+/g, " ").trim();
+    if (!name) return;
+    const key = accountKey(name);
+    if (!tally.has(key)) tally.set(key, new Map());
+    tally.get(key).set(name, (tally.get(key).get(name) || 0) + 1);
+  });
+  const out = new Map();
+  tally.forEach((counts, key) => {
+    out.set(key, [...counts.entries()].sort(([a, n], [b, m]) =>
+      (m - n) || ((b !== b.toLowerCase()) - (a !== a.toLowerCase())) || a.localeCompare(b))[0][0]);
+  });
+  return out;
+}
+
+function accountDisplayName(name) {
+  const key = accountKey(name);
+  return key === UNASSIGNED_KEY ? null : (accountSpellings().get(key) || String(name).trim());
+}
+
+/** Every distinct account name on the orgs this person can see. */
+function accountNames() {
+  return [...accountSpellings().values()].sort((a, b) => a.localeCompare(b));
+}
+
+/** Group [id, org] entries by account. Pinned accounts first, then A-Z,
+ *  Unassigned last. Inside a group: pinned orgs, the active org, production
+ *  before sandboxes, then id. */
+function accountGroups(entries) {
+  const pinnedOrg = typeof isPinned === "function" ? isPinned : () => false;
+  const map = new Map();
+  const spell = accountSpellings(Object.values(ORGS));
+  entries.forEach(([id, o]) => {
+    const key = accountKey(o.account);
+    if (!map.has(key)) map.set(key, { key, name: key === UNASSIGNED_KEY ? null : (spell.get(key) || String(o.account).trim()), orgs: [] });
+    map.get(key).orgs.push([id, o]);
+  });
+  const groups = [...map.values()];
+  groups.forEach(g => g.orgs.sort(([a, oa], [b, ob]) =>
+    (pinnedOrg(b) - pinnedOrg(a)) || ((b === CURRENT_ORG) - (a === CURRENT_ORG))
+    || (ENV_RANK[orgEnv(oa)] - ENV_RANK[orgEnv(ob)]) || a.localeCompare(b)));
+  return groups.sort((a, b) =>
+    ((a.key === UNASSIGNED_KEY) - (b.key === UNASSIGNED_KEY))
+    || (isAccountPinned(b.key) - isAccountPinned(a.key))
+    || (a.name || "").localeCompare(b.name || ""));
+}
+
+/** Headings only earn their space once someone has started using accounts:
+ *  one "Unassigned" heading over every org is noise. */
+function showAccountHeaders(groups) {
+  return groups.length > 1 || (groups.length === 1 && groups[0].key !== UNASSIGNED_KEY);
+}
+
 /** The table form of the org list. Split out of loadOrgs so pinning an org
- *  or switching the active one can redraw it without refetching. */
+ *  or switching the active one can redraw it without refetching. Grouped by
+ *  account the same way as the cards, one header row per account. */
 function renderOrgsTable() {
   const tbody = document.getElementById("orgsTable");
-  const pinned = typeof isPinned === "function" ? isPinned : () => false;
-  const entries = Object.entries(ORGS).sort(([a], [b]) => (pinned(b) - pinned(a)) || a.localeCompare(b));
-  fillTable(tbody, entries, 11, {
+  const matches = typeof orgMatchesFilter === "function" ? orgMatchesFilter : () => true;
+  const filtering = typeof orgFilterText === "function" && !!orgFilterText();
+  const groups = accountGroups(Object.entries(ORGS).filter(([id, o]) => matches(id, o)))
+    .filter(g => typeof accountInFocus !== "function" || accountInFocus(g.key));
+  const headers = showAccountHeaders(accountGroups(Object.entries(ORGS)));
+  const rows = [];
+  groups.forEach(g => {
+    if (headers) rows.push({ head: g });
+    if (!headers || filtering || !isAccountCollapsed(g.key)
+        || (typeof accountFocusKey === "function" && accountFocusKey())) g.orgs.forEach(e => rows.push({ org: e }));
+  });
+  fillTable(tbody, Object.keys(ORGS).length ? rows : [], 12, {
       title: "No orgs you can see yet",
       body: "Connect one above to build its knowledgebase, or ask a colleague to make theirs public. "
           + "Want to see what an investigation looks like first? The demo case uses made-up data.",
@@ -526,17 +709,28 @@ function renderOrgsTable() {
         { label: "Play the demo case", onclick: "startDemo()" },
       ],
     },
-    ([id, o]) => {
-      const c = o.component_counts || {};
+    row => {
       const tr = document.createElement("tr");
+      if (row.head) {
+        const g = row.head;
+        tr.className = "acct-row" + (g.key === UNASSIGNED_KEY ? " unassigned" : "");
+        tr.dataset.account = g.key;
+        tr.innerHTML = `<td colspan="12">${typeof accountHeadHtml === "function"
+          ? accountHeadHtml(g, { compact: true }) : escapeHtml(g.name || "Unassigned")}</td>`;
+        return tr;
+      }
+      const [id, o] = row.org;
+      const c = o.component_counts || {};
+      tr.dataset.org = id;
       tr.innerHTML = `<td>${typeof pinButton === "function" ? pinButton(id) : ""}</td>
         <td><a class="link" onclick="setActiveOrg('${escapeHtml(id)}'); showView('dashboard')">${escapeHtml(id)}</a></td>
-        <td>${escapeHtml(o.name)}</td><td>${visibilityCell(id, o)}</td>
+        <td>${escapeHtml(o.name)}</td><td>${envBadge(o) || "<span class='muted'>-</span>"}</td><td>${visibilityCell(id, o)}</td>
         <td>${o.owner ? escapeHtml(o.owner) : "<span class='muted'>(none)</span>"}</td>
         <td>${c.apex_classes ?? "-"}</td><td>${c.apex_triggers ?? "-"}</td>
         <td>${c.flows ?? "-"}</td><td>${c.lwc_components ?? "-"}</td>
         <td>${fmtWhen(o.last_extracted_at)}${changesHint(o)}</td>
-        <td>${o.can_manage ? `<button class="secondary" onclick="event.stopPropagation(); refreshOrg('${escapeHtml(id)}')">Refresh</button>` : ""}</td>`;
+        <td class="row-actions">${o.can_manage ? `<button class="secondary" onclick="event.stopPropagation(); refreshOrg('${escapeHtml(id)}')">Refresh</button>
+          ${typeof moveOrgToAccount === "function" ? `<button class="link-btn" onclick="event.stopPropagation(); moveOrgToAccount('${escapeHtml(id)}')">Move</button>` : ""}` : ""}</td>`;
       return tr;
     });
   // A fetch someone else started should be visible here, not just in the
@@ -555,7 +749,7 @@ async function markInFlightOrgs() {
       <div class="progress-track" style="height:5px; margin-top:4px;">
         <div class="progress-fill" style="width:${s.percent || 0}%"></div></div>`;
     const cell = [...document.querySelectorAll("#orgsTable tr")]
-      .find(tr => tr.querySelector("a.link")?.textContent === id)?.cells[9];
+      .find(tr => tr.dataset.org === id)?.cells[10];
     if (cell) cell.innerHTML = html;
     // The same signal on the org's card, which is what most people look at.
     const slot = [...document.querySelectorAll(".org-card")]
@@ -697,6 +891,8 @@ async function createOrg() {
   const instance_url = document.getElementById("newInstanceUrl").value.trim();
   const access_token = document.getElementById("newAccessToken").value.trim();
   const visibility = document.getElementById("newVisibility").value;
+  const accountEl = document.getElementById("newAccount");
+  const account = accountEl ? accountEl.value.replace(/\s+/g, " ").trim() : "";
   const statusEl = document.getElementById("createStatus");
   if (!org_id || !org_name || !instance_url || !access_token) {
     statusEl.textContent = "All fields are required."; statusEl.className = "status-line error"; return;
@@ -704,13 +900,14 @@ async function createOrg() {
   statusEl.textContent = "Queued..."; statusEl.className = "status-line";
   const res = await api("/api/orgs", {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ org_id, org_name, instance_url, access_token, visibility }),
+    body: JSON.stringify({ org_id, org_name, instance_url, access_token, visibility, account: account || null }),
   });
   if (!res.ok) {
     statusEl.textContent = "Failed to queue: " + await errorText(res);
     statusEl.className = "status-line error"; return;
   }
   document.getElementById("newAccessToken").value = "";  // don't leave a token sitting in the DOM
+  if (accountEl) { accountEl.value = ""; delete accountEl.dataset.touched; }
   track("connect");
   pollOrgStatus(org_id, { verb: "Connecting" });
 }
@@ -914,7 +1111,8 @@ async function loadDashboard() {
     });
     return;
   }
-  document.getElementById("dashOrgTitle").textContent = `Org stats -- ${CURRENT_ORG}`;
+  const acct = ORGS[CURRENT_ORG] && accountDisplayName(ORGS[CURRENT_ORG].account);
+  document.getElementById("dashOrgTitle").textContent = `Org stats -- ${acct ? `${acct} \u203a ` : ""}${CURRENT_ORG}`;
   setBusy(el);
   const s = await apiJson(`/api/orgs/${encodeURIComponent(CURRENT_ORG)}/stats`, {}, null);
   if (!s) { el.innerHTML = "<p class='muted'>No knowledgebase yet for this org.</p>"; return; }
@@ -1312,6 +1510,10 @@ async function normalizeLog() {
   statusEl.textContent = "Normalized." + (data.stored ? ` Stored as ${data.log_id}.` : "")
     + ` ${excCount} exception(s), ${(n.execution_units || []).length} execution unit(s).`;
   statusEl.className = "status-line ok";
+  // Only one rendering of a log on this page at a time -- a stale detail card
+  // left open below made the page look like it had two of every section.
+  const detailCard = document.getElementById("logDetailCard");
+  if (detailCard) detailCard.style.display = "none";
   document.getElementById("logResult").innerHTML =
     renderNormalizedLog(n) + collapsibleJson("Normalized JSON", n);
   if (data.stored) loadLogs();
@@ -1350,6 +1552,12 @@ async function loadLogs() {
 async function showLogDetail(logId) {
   const card = document.getElementById("logDetailCard");
   card.style.display = "block";
+  // Opening a stored log replaces the upload result above rather than
+  // stacking a second full copy of the same sections under it.
+  const uploadResult = document.getElementById("logResult");
+  if (uploadResult) uploadResult.innerHTML = "";
+  const uploadActions = document.getElementById("logResultActions");
+  if (uploadActions) uploadActions.style.display = "none";
   setBusy("logDetail");
   card.scrollIntoView({ behavior: "smooth" });
   const data = await apiJson(`/api/logs/${encodeURIComponent(logId)}`, {}, null);

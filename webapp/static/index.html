@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>TS Intelligent Debug Helper</title>
-<link rel="stylesheet" href="/static/style.css?v=22">
+<link rel="stylesheet" href="/static/style.css?v=24">
 </head>
 <body>
 
@@ -163,7 +163,13 @@
         <label>Org Name</label>
         <input id="newOrgName" placeholder="Acme Corp - Production">
         <label>Instance URL</label>
-        <input id="newInstanceUrl" placeholder="https://acme.my.salesforce.com">
+        <input id="newInstanceUrl" placeholder="https://acme.my.salesforce.com" oninput="suggestNewOrgAccount()">
+        <label for="newAccount">Customer account</label>
+        <input id="newAccount" list="accountOptions" autocomplete="off" placeholder="e.g. Acme Corp"
+               oninput="newAccountEdited()" aria-describedby="newAccountHint">
+        <datalist id="accountOptions"></datalist>
+        <div class="field-hint" id="newAccountHint">Groups this org with the customer's other orgs (production and
+          sandboxes) on Home. Filled in from the Instance URL; leave empty to decide later.</div>
         <label>Access Token</label>
         <input id="newAccessToken" type="password" placeholder="00D...">
         <label for="newVisToggle">Who can see this org?</label>
@@ -185,23 +191,33 @@
 
     <div class="card" id="orgsCard" data-tour="orgs">
       <div class="card-head">
-        <h2>Connected orgs</h2>
+        <h2>Accounts &amp; orgs</h2>
         <div class="card-head-tools">
-          <input id="orgFilter" class="org-filter" placeholder="Filter orgs" oninput="renderHomeOrgs()">
+          <span id="acctTools" class="acct-tools" style="display:none;">
+            <button type="button" class="link-btn" onclick="setAllAccountsCollapsed(false)">Expand all</button>
+            <button type="button" class="link-btn" onclick="setAllAccountsCollapsed(true)">Collapse all</button>
+          </span>
+          <input id="orgFilter" class="org-filter" placeholder="Filter accounts &amp; orgs" oninput="renderHomeOrgs(); renderOrgsTable(); markInFlightOrgs()">
           <div class="seg" role="group" aria-label="Org layout">
             <button type="button" id="orgViewCards" onclick="setOrgView('cards')">Cards</button>
             <button type="button" id="orgViewTable" onclick="setOrgView('table')">Table</button>
           </div>
         </div>
       </div>
-      <p class="muted">You see every public org, plus your own private ones. Admins see all orgs.
-        Star an org to keep it at the top.</p>
-      <div id="orgCards" class="org-cards"></div>
-      <div id="orgTableWrap" style="display:none;">
-        <table>
-          <thead><tr><th></th><th>Org ID</th><th>Name</th><th>Visibility</th><th>Owner</th><th>Classes</th><th>Triggers</th><th>Flows</th><th>LWC</th><th>Last refreshed</th><th></th></tr></thead>
-          <tbody id="orgsTable"></tbody>
-        </table>
+      <p class="muted">Orgs are grouped by customer account. You see every public org, plus your own private
+        ones; admins see all. Star an org or an account to keep it at the top.</p>
+      <div id="acctNudge"></div>
+      <div id="orgsLayout" class="orgs-layout">
+        <aside id="acctRail" class="acct-rail" aria-label="Accounts" style="display:none;"></aside>
+        <div class="orgs-main">
+          <div id="orgCards"></div>
+          <div id="orgTableWrap" style="display:none;">
+            <table class="orgs-table">
+              <thead><tr><th></th><th>Org ID</th><th>Name</th><th>Env</th><th>Visibility</th><th>Owner</th><th>Classes</th><th>Triggers</th><th>Flows</th><th>LWC</th><th>Last refreshed</th><th></th></tr></thead>
+              <tbody id="orgsTable"></tbody>
+            </table>
+          </div>
+        </div>
       </div>
     </div>
   </section>
@@ -481,12 +497,12 @@
 </aside>
 
 </div>
-<script src="/static/app.js?v=22"></script>
-<script src="/static/chat.js?v=22"></script>
+<script src="/static/app.js?v=24"></script>
+<script src="/static/chat.js?v=24"></script>
 <!-- Home page + command palette, then onboarding/help. Both are optional
      layers over app.js: every call into them from app.js is guarded, so a
      cached page that loads without them still works. -->
-<script src="/static/home.js?v=22"></script>
-<script src="/static/guide.js?v=22"></script>
+<script src="/static/home.js?v=24"></script>
+<script src="/static/guide.js?v=24"></script>
 </body>
 </html>

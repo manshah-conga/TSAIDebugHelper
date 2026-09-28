@@ -99,7 +99,8 @@ def main():
         print("\n-- first connection --")
         r = c.post("/api/orgs", json={
             "org_id": "mockorg", "org_name": "Mock Org", "instance_url": instance_url,
-            "access_token": mock_salesforce.EXPECTED_TOKEN, "visibility": "private"})
+            "access_token": mock_salesforce.EXPECTED_TOKEN, "visibility": "private",
+            "account": "Mock Customer"})
         check("connect accepted", r.status_code == 200, r.text[:200])
         s = _wait_done(c, "mockorg")
         check("first fetch completed", s.get("status") == "done", str(s)[:300])
@@ -107,6 +108,12 @@ def main():
         check("reported as a first connection, not a refresh", ch.get("first_connection") is True, str(ch))
         first_total = ch.get("total", 0)
         check("indexed some components", first_total > 0, str(ch))
+
+        check("account from the Connect form is on record",
+              storage.load_registry()["mockorg"].get("account") == "Mock Customer")
+        # Moved while nothing is running; the refreshes below must keep it.
+        r = c.patch("/api/orgs/mockorg/account", json={"account": "Moved Customer"})
+        check("account can be changed after connecting", r.status_code == 200, r.text[:200])
 
         print("\n-- refresh with nothing changed in the org --")
         r = c.post("/api/orgs/mockorg/refresh",
@@ -140,6 +147,7 @@ def main():
         reg = storage.load_registry()["mockorg"]
         check("owner preserved", reg.get("owner") == "admin", str(reg.get("owner")))
         check("visibility preserved", reg.get("visibility") == "private", str(reg.get("visibility")))
+        check("account preserved across refreshes", reg.get("account") == "Moved Customer", str(reg.get("account")))
         check("summary persisted for the UI's 'last refresh' hint",
               isinstance(reg.get("last_refresh_changes"), dict), str(reg.get("last_refresh_changes"))[:120])
 

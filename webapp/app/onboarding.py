@@ -259,7 +259,7 @@ async def _gather_or_cancel(coros):
 
 
 async def run_onboarding(org_id, org_name, instance_url, access_token, existing_hashes=None,
-                         owner=None, visibility=None):
+                         owner=None, visibility=None, account=None):
     """`owner` / `visibility` carry the per-org access settings (see
     app/org_access.py) through to the registry write at the end. On a
     re-connect of an existing org they are passed as the values already on
@@ -548,7 +548,11 @@ async def run_onboarding(org_id, org_name, instance_url, access_token, existing_
     # snapshot taken before the first one landed.
     def _write_entry(registry):
         prior = registry.get(org_id, {})
-        registry[org_id] = {
+        # Start from what is on record so settings changed while this fetch
+        # was running (an account move, say) survive the write -- the fetch
+        # only owns the fields it sets below.
+        entry = dict(prior)
+        entry.update({
             "name": org_name,
             "instance_url": instance_url,
             # Access settings: keep whatever is already on record unless the
@@ -562,7 +566,13 @@ async def run_onboarding(org_id, org_name, instance_url, access_token, existing_
             "warnings": list(JOBS[org_id]["warnings"]),
             "last_refresh_changes": changes,
             "last_fetch_stats": fetch_stats,
-        }
+        })
+        # Account: an explicit value from the Connect form wins; otherwise
+        # keep whatever is on record (a refresh never regroups an org).
+        if account:
+            from . import accounts
+            entry["account"] = accounts.snap_to_existing(account, registry, skip_org=org_id)
+        registry[org_id] = entry
 
     await asyncio.to_thread(storage.mutate_registry, _write_entry)
 

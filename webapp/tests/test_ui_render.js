@@ -70,9 +70,18 @@ const normalizedLog = {
   user_debug: ["entering recalc", "line total = null"],
   validation_failures: [],
   flow_events: [],
+  // {used, max} is what log_normalizer.py emits; {used, limit} is the legacy
+  // demo shape. Both must render.
   limits_final: {
-    soql_queries: { used: 97, limit: 100 },
-    dml_rows: { used: 400, limit: 10000 },
+    "SOQL queries": { used: 97, max: 100 },
+    "DML rows": { used: 400, limit: 10000 },
+    "CPU time": { used: 9600, max: 10000, close_to_limit: true },
+    "heap size": { used: 0, max: 6000000, peak_used: 5800000 },
+  },
+  limits_by_namespace: {
+    "(default)": {},
+    "Apttus": { "SOQL queries": { used: 14, max: 100 } },
+    "Apttus_Approval": { "SOQL queries": { used: 0, max: 100 } },
   },
   involved_components: ["QuoteHandler", "QuoteTrigger"],
 };
@@ -138,6 +147,17 @@ check("renders SOQL and DML tables", has(logHtml, "Quote__c") && has(logHtml, "u
 check("renders the callout endpoint", has(logHtml, "pricing.internal"));
 check("flags a governor limit at 97% as high", has(logHtml, 'class="limit high"') && has(logHtml, "97%"));
 check("does not flag a limit at 4% as high", has(logHtml, "4%"));
+check("the parser's {used, max} shape renders the cap", has(logHtml, "97/100"));
+check("never renders an undefined cap", !has(logHtml, "undefined"));
+check("the legacy {used, limit} shape still renders", has(logHtml, "400/10000"));
+check("a CLOSE TO LIMIT flag is shown as high", has(logHtml, "CLOSE TO LIMIT"));
+check("a managed namespace that used limits is listed", has(logHtml, "Managed-package namespaces (1)") && has(logHtml, "Apttus"));
+check("an all-zero managed namespace is not listed", !has(logHtml, "Apttus_Approval"));
+check("a limit that dropped between checkpoints shows its peak", has(logHtml, "peak 5800000"));
+check("the peak, not the trailing 0, drives the colour",
+  /class="limit high"[^>]*title="Peaked at 5800000/.test(logHtml));
+check("exactly one governor-limits section per rendering",
+  (logHtml.match(/Governor limits at the end/g) || []).length === 1);
 check("no raw JSON blob in the readable view", !has(logHtml, '"execution_units":'));
 
 const noExc = sandbox.renderNormalizedLog({ ...normalizedLog, exceptions: [] });

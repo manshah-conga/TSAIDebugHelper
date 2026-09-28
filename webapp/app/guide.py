@@ -63,6 +63,8 @@ PREF_KEYS = {
     "org_view": str,          # "cards" | "table"
     "connect_open": bool,     # explicit choice; absent = automatic
     "mcp_card_dismissed": bool,
+    "collapsed_accounts": list,   # account keys (casefolded) folded on Home
+    "pinned_accounts": list,      # account keys kept at the top
 }
 MAX_PINNED = 50
 

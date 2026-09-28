@@ -29,7 +29,48 @@ from common import write_json, truncate
 
 DML_BEGIN_RE = re.compile(r"Op:(\w+)\|Type:(\w+)\|Rows:(\d+)")
 SOQL_END_ROWS_RE = re.compile(r"Rows:(\d+)")
-LIMIT_LINE_RE = re.compile(r"^\s*Number of (.+?):\s*(\d+)\s*out of\s*(\d+)\s*$")
+# Keep in sync with webapp/app/log_normalizer.py (parse_limit_blocks).
+LIMIT_LINE_RE = re.compile(r"^\s*(?:Number of|Maximum)\s+(.+?):\s*(\d+)\s*out of\s*(\d+)(.*)$")
+LIMIT_NS_RE = re.compile(r"\|LIMIT_USAGE_FOR_NS\|([^|]*)")
+DEFAULT_NS = "(default)"
+
+
+def parse_limit_blocks(lines):
+    """Final governor-limit usage per namespace. Each LIMIT_USAGE_FOR_NS|<ns>|
+    header starts a block; the last block per namespace is the end-of-
+    transaction figure. limits_final = the (default) namespace, else the
+    first seen -- a managed package's all-zero block must not overwrite it."""
+    by_ns, order, current = {}, [], None
+    peaks = defaultdict(dict)  # usage should only grow; a drop = >1 transaction
+    for raw in lines:
+        ns_m = LIMIT_NS_RE.search(raw)
+        if ns_m:
+            current = ns_m.group(1).strip() or DEFAULT_NS
+            by_ns[current] = {}
+            if current not in order:
+                order.append(current)
+            continue
+        m = LIMIT_LINE_RE.match(raw)
+        if not m:
+            continue
+        ns = current or DEFAULT_NS
+        if ns not in by_ns:
+            by_ns[ns] = {}
+            order.append(ns)
+        name, used = m.group(1).strip(), int(m.group(2))
+        entry = {"used": used, "max": int(m.group(3))}
+        if "CLOSE TO LIMIT" in m.group(4).upper():
+            entry["close_to_limit"] = True
+        by_ns[ns][name] = entry
+        peaks[ns][name] = max(peaks[ns].get(name, 0), used)
+    if not order:
+        return {}, {}
+    for ns in order:
+        for name, entry in by_ns[ns].items():
+            if peaks[ns].get(name, 0) > entry["used"]:
+                entry["peak_used"] = peaks[ns][name]
+    final = by_ns.get(DEFAULT_NS) or by_ns[order[0]]
+    return final, {ns: by_ns[ns] for ns in order}
 CLASS_METHOD_STACK_RE = re.compile(r"^Class\.([\w.]+?)(?:\.(\w+))?:\s*line\s*(\d+)")
 TRIGGER_STACK_RE = re.compile(r"^Trigger\.(\w+):\s*line\s*(\d+)")
 NORMALIZE_LITERAL_RE = re.compile(r"'[^']*'|:\w+|\b\d+\b")
@@ -58,7 +99,6 @@ def parse_log(path, index_ids=None):
     exceptions = []
     flow_events = []
     validation_failures = []
-    limits_final = {}
     in_fatal_stack = False
     current_stack_lines = []
     current_exception = None
@@ -155,12 +195,8 @@ def parse_log(path, index_ids=None):
         elif evt == "LIMIT_USAGE_FOR_NS":
             continue  # handled by scanning raw text block below
 
-    # governor limits: scan the whole file for "Number of X: N out of M" and
-    # keep only the LAST occurrence of each limit name (the final snapshot)
-    for raw in lines:
-        m = LIMIT_LINE_RE.match(raw)
-        if m:
-            limits_final[m.group(1).strip()] = {"used": int(m.group(2)), "max": int(m.group(3))}
+    # governor limits: last block per namespace = end-of-transaction snapshot
+    limits_final, limits_by_namespace = parse_limit_blocks(lines)
 
     # collapse repeated SOQL / DML into signature groups
     def collapse(events, key_fields, group_key):
@@ -234,6 +270,7 @@ def parse_log(path, index_ids=None):
         "validation_failures": validation_failures,
         "flow_events": flow_events,
         "limits_final": limits_final,
+        "limits_by_namespace": limits_by_namespace,
         "involved_components": sorted(involved),
     }
 

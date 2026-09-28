@@ -104,6 +104,8 @@ def get_entry(org_id, registry=None):
 def visible_orgs(ident, registry=None):
     """The registry, filtered to what this identity is allowed to see, with
     `can_manage` decorated on each entry for the UI."""
+    from . import accounts   # local: accounts imports this module
+
     registry = registry if registry is not None else storage.load_registry()
     out = {}
     for org_id, entry in registry.items():
@@ -113,6 +115,11 @@ def visible_orgs(ident, registry=None):
         decorated["visibility"] = visibility_of(entry)
         decorated["owner"] = owner_of(entry)
         decorated["can_manage"] = can_manage(entry, ident)
+        # Account grouping (app/accounts.py). `environment` and `my_domain`
+        # are derived from the instance URL on every read, never stored.
+        decorated["account"] = accounts.account_of(entry)
+        decorated["environment"] = accounts.environment(entry.get("instance_url"))
+        decorated["my_domain"] = accounts.my_domain(entry.get("instance_url"))
         out[org_id] = decorated
     return out
 

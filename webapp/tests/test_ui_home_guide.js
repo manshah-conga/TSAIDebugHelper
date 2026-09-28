@@ -377,6 +377,114 @@ await dismissChecklist();
 check("dismissing hides the checklist", $("guideChecklistHost").innerHTML === "");
 check("...and the nav dots", dots().length === 0);
 
+log("\\n-- customer accounts --");
+check("no account headings while nobody uses accounts", !document.querySelector(".acct-group") && !!document.querySelector("#orgCards > .org-cards"));
+check("...but a nudge to start grouping", $("acctNudge").textContent.includes("Organize into accounts"));
+const recent = new Date(Date.now() - 86400000).toISOString();
+const savedOrgs = ORGS;
+ORGS = {
+  acme_uat: { name: "Acme UAT", account: "acme ", instance_url: "https://acme--uat.sandbox.my.salesforce.com", environment: "sandbox",
+    my_domain: "acme", can_manage: true, owner: "dana", visibility: "private", last_extracted_at: recent, component_counts: {} },
+  acme_prod: { name: "Acme Prod", account: "Acme", instance_url: "https://acme.my.salesforce.com", environment: "production",
+    my_domain: "acme", can_manage: true, owner: "dana", visibility: "private", last_extracted_at: recent, component_counts: {} },
+  globex: { name: "Globex", account: "Globex", instance_url: "https://globex.my.salesforce.com", environment: "production",
+    my_domain: "globex", can_manage: false, owner: "sam", visibility: "public", last_extracted_at: "2026-01-01T00:00:00Z", component_counts: {} },
+  initech_dev: { name: "Initech Dev", instance_url: "https://initech--dev.sandbox.my.salesforce.com", can_manage: true,
+    owner: "dana", visibility: "private", last_extracted_at: recent, component_counts: {} },
+};
+CURRENT_ORG = "acme_prod";
+renderOrgPicker(); renderHomeOrgs(); renderOrgsTable();
+const groupKeys = () => [...document.querySelectorAll("#orgCards .acct-group")].map(g => g.dataset.account);
+check("grouped by account, case-insensitively, unassigned last", JSON.stringify(groupKeys()) === '["acme","globex","__unassigned__"]', JSON.stringify(groupKeys()));
+const acmeGroup = () => document.querySelector('#orgCards .acct-group[data-account="acme"]');
+check("production stacks before its sandbox", [...acmeGroup().querySelectorAll(".org-card")].map(c => c.dataset.org).join() === "acme_prod,acme_uat");
+check("the heading rolls up the environments", acmeGroup().querySelector(".acct-head").textContent.includes("2 orgs")
+  && acmeGroup().querySelector(".acct-head").textContent.includes("1 Production \\u00b7 1 Sandbox"), acmeGroup().querySelector(".acct-head").textContent);
+check("environment is inferred when the server omits it", !!document.querySelector('.org-card[data-org="initech_dev"] .env-badge.env-sandbox'));
+check("the stale org shows on its account", document.querySelector('.acct-group[data-account="globex"] .acct-chip.stale') !== null);
+check("the rail lists every account", $("acctRail").style.display === "" && $("acctRail").querySelectorAll(".rail-item").length === 4);
+check("Rename only where you manage every org", acmeGroup().textContent.includes("Rename")
+  && !document.querySelector('.acct-group[data-account="globex"]').textContent.includes("Rename"));
+check("Unassigned offers to organize", document.querySelector('.acct-group[data-account="__unassigned__"]').textContent.includes("Organize into accounts"));
+check("the nudge goes once accounts exist", $("acctNudge").innerHTML === "");
+check("table gets one header row per account", $("orgsTable").querySelectorAll("tr.acct-row").length === 3
+  && $("orgsTable").querySelectorAll("tr[data-org]").length === 4);
+check("header picker groups by account", [...$("orgSelect").querySelectorAll("optgroup")].map(g => g.label).join() === "Acme,Globex,Unassigned");
+
+await toggleAccountCollapsed("acme");
+check("folding saves a preference", (GUIDE.prefs.collapsed_accounts || []).includes("acme"));
+check("...hides its cards", !document.querySelector('.org-card[data-org="acme_prod"]'));
+check("...says the active org is inside", acmeGroup().textContent.includes("active org inside"));
+check("...and folds the table too", !$("orgsTable").querySelector('tr[data-org="acme_prod"]') && !!$("orgsTable").querySelector('tr.acct-row[data-account="acme"]'));
+$("orgFilter").value = "acme";
+renderHomeOrgs();
+check("a filter opens folded groups and matches account names", !!document.querySelector('.org-card[data-org="acme_uat"]')
+  && !document.querySelector('.org-card[data-org="globex"]'));
+$("orgFilter").value = "";
+await toggleAccountCollapsed("acme");
+focusAccount("globex");
+check("the rail narrows to one account", JSON.stringify(groupKeys()) === '["globex"]');
+check("...in the table as well", $("orgsTable").querySelectorAll("tr[data-org]").length === 1);
+focusAccount("globex");
+check("clicking it again shows every account", groupKeys().length === 3);
+await toggleAccountPin("globex");
+check("a pinned account moves to the top", groupKeys()[0] === "globex");
+await toggleAccountPin("globex");
+
+$("newInstanceUrl").value = "https://acme--full.sandbox.my.salesforce.com";
+suggestNewOrgAccount();
+check("Connect suggests a sibling's account", $("newAccount").value === "Acme" && $("newAccountHint").textContent.includes("sandbox"), $("newAccount").value);
+check("...and offers existing accounts", $("accountOptions").querySelectorAll("option").length === 2);
+$("newAccount").value = "Custom"; newAccountEdited();
+$("newInstanceUrl").value = "https://other.my.salesforce.com"; suggestNewOrgAccount();
+check("...but never overwrites what you typed", $("newAccount").value === "Custom");
+connectToAccount("Globex");
+check("+ Add org pre-fills the account", $("newAccount").value === "Globex" && $("connectCard").classList.contains("open"));
+toggleConnect(false);
+$("newAccount").value = ""; delete $("newAccount").dataset.touched; $("newInstanceUrl").value = "";
+
+let sentAcct = null;
+const realFetch2 = window.fetch;
+window.fetch = async (u, o) => {
+  if (o && o.method === "PATCH" && String(u).includes("/account")) {
+    sentAcct = { u: String(u), body: JSON.parse(o.body) };
+    return { ok: true, status: 200, json: async () => ({ org_id: "initech_dev", account: "Initech" }), text: async () => "" };
+  }
+  return realFetch2(u, o);
+};
+const moving = moveOrgToAccount("initech_dev");
+await tick(20);
+const mv = document.querySelector(".modal-backdrop #mf-account");
+check("Move suggests the org's My Domain", mv && mv.value === "initech", mv && mv.value);
+check("...and lists existing accounts", document.querySelectorAll("#mf-account-list option").length === 2);
+mv.value = "Initech";
+document.querySelector(".modal-backdrop form").dispatchEvent(new window.Event("submit", { cancelable: true }));
+await moving;
+window.fetch = realFetch2;
+check("Move sends the PATCH", sentAcct && sentAcct.u.includes("/api/orgs/initech_dev/account") && sentAcct.body.account === "Initech", JSON.stringify(sentAcct));
+
+ORGS = {
+  s1: { name: "S1", instance_url: "https://apttus2--uat.sandbox.my.salesforce.com", can_manage: true },
+  s2: { name: "S2", instance_url: "https://apttus2--dev.sandbox.my.salesforce.com", can_manage: true },
+  s3: { name: "S3", instance_url: "https://box--uat.sandbox.my.salesforce.com", can_manage: true },
+};
+organizeUnassigned();
+await tick(10);
+const orgInputs = [...document.querySelectorAll(".organize-modal .org-acct")];
+check("Organize pre-fills from My Domain", orgInputs.map(i => i.value).join() === "apttus2,apttus2,box", orgInputs.map(i => i.value).join());
+orgInputs[0].value = "Conga"; orgInputs[0].oninput();
+check("renaming one suggestion renames its siblings", orgInputs[1].value === "Conga" && orgInputs[2].value === "box");
+orgInputs[1].value = "Other"; orgInputs[1].oninput();
+check("...but not a row edited by hand", orgInputs[0].value === "Conga");
+check("the apply button counts the rows", document.querySelector("#orgApply").textContent === "Apply to 3 orgs");
+document.querySelector(".organize-modal [data-cancel]").click();
+ORGS = { a1: { name: "A", account: "Acme", instance_url: "https://acme.my.salesforce.com" } };
+const pal = paletteStaticItems().filter(i => i.group === "Accounts");
+check("the palette can jump to an account", pal.length === 1 && pal[0].label === "Acme");
+ORGS = savedOrgs;
+CURRENT_ORG = "acme";
+renderOrgPicker(); renderHomeOrgs(); renderOrgsTable();
+
 log("\\n-- empty states --");
 ORGS = {};
 renderOrgsTable(); renderHomeOrgs();

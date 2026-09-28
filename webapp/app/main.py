@@ -25,6 +25,7 @@ from . import auth
 from . import limits as limits_policy
 from . import rate_limit
 from . import org_access
+from . import accounts as accounts_mod
 from . import secrets_store
 from . import chat_store
 from . import chat as chat_agent
@@ -468,10 +469,25 @@ class NewOrgRequest(BaseModel):
     # On a re-connect of an org you already own, omitting this keeps the
     # visibility it already has.
     visibility: Optional[str] = None
+    # The customer this org belongs to (see app/accounts.py). Omitted on a
+    # new org -> taken from a visible sibling on the same My Domain if one
+    # has an account, else left unassigned. Omitted on a re-connect -> kept.
+    account: Optional[str] = None
 
 
 class VisibilityRequest(BaseModel):
     visibility: str
+
+
+class AccountRequest(BaseModel):
+    # null / "" unassigns the org.
+    account: Optional[str] = None
+
+
+class RenameAccountRequest(BaseModel):
+    from_account: str
+    # null / "" ungroups every org in the account; an existing name merges.
+    to_account: Optional[str] = None
 
 
 @app.post("/api/orgs", dependencies=Dep_user)
@@ -538,16 +554,20 @@ def create_org(req: NewOrgRequest, background_tasks: BackgroundTasks,
 
     try:
         visibility = org_access.normalize_visibility(req.visibility, default=default_visibility)
+        account = accounts_mod.normalize_account(req.account)
     except ValueError as e:
         raise HTTPException(400, str(e))
+    if account is None and existing_entry is None:
+        account = accounts_mod.suggest(req.instance_url, ident, registry).get("matched_account")
 
     existing = storage.read_json(os.path.join(storage.kb_dir(req.org_id), "file_hashes.json"), {})
     JOBS[req.org_id] = {"status": "queued", "detail": "", "warnings": [], "owner": owner}
     background_tasks.add_task(
         run_onboarding, req.org_id, req.org_name, req.instance_url, req.access_token, existing,
-        owner, visibility,
+        owner, visibility, account,
     )
-    return {"org_id": req.org_id, "status": "queued", "owner": owner, "visibility": visibility}
+    return {"org_id": req.org_id, "status": "queued", "owner": owner, "visibility": visibility,
+            "account": account}
 
 
 @app.get("/api/orgs", dependencies=Dep_reader)
@@ -592,6 +612,43 @@ def set_visibility(org_id: str, req: VisibilityRequest, ident=Depends(auth.requi
     only to its owner and admins). Owner or admin only."""
     try:
         return org_access.set_visibility(org_id, req.visibility, ident)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.patch("/api/orgs/{org_id}/account", dependencies=Dep_reader)
+def set_org_account(org_id: str, req: AccountRequest, ident=Depends(auth.require_reader)):
+    """Move an org into a customer account (or out of one, with null).
+    Owner or admin only. The name is snapped to the spelling already in use
+    by other orgs, so 'ibm' joins an existing 'IBM'."""
+    try:
+        return accounts_mod.set_account(org_id, req.account, ident)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/accounts", dependencies=Dep_reader)
+def list_accounts(ident=Depends(auth.require_reader)):
+    """Customer accounts you can see, each with its org ids and a count per
+    environment (production / sandbox / ...). Orgs with no account are
+    grouped under `account: null`."""
+    return {"accounts": accounts_mod.list_accounts(ident)}
+
+
+@app.get("/api/accounts/suggest", dependencies=Dep_reader)
+def suggest_account(instance_url: str, ident=Depends(auth.require_reader)):
+    """What account a new org on this instance URL probably belongs to:
+    the account of a visible org on the same My Domain, else the My Domain
+    name itself. Also reports the environment the URL implies."""
+    return accounts_mod.suggest(instance_url, ident)
+
+
+@app.post("/api/accounts/rename", dependencies=Dep_user)
+def rename_account(req: RenameAccountRequest, ident=Depends(auth.require_user)):
+    """Rename (or merge, or ungroup) an account across every org in it that
+    you manage. Refused if you can see an org in it that you do not manage."""
+    try:
+        return accounts_mod.rename_account(req.from_account, req.to_account, ident)
     except ValueError as e:
         raise HTTPException(400, str(e))
 

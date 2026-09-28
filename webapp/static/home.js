@@ -308,19 +308,187 @@ function applyOrgView(view) {
   document.getElementById("orgViewTable").classList.toggle("on", view === "table");
 }
 
+// ---------- account grouping (Home) ----------
+//
+// The org list is grouped by customer account: a heading per account with
+// its environment mix, freshness and open incidents, and the orgs stacked
+// under it. On a wide screen a rail on the left lists the accounts, so a
+// person supporting twenty customers picks one instead of scrolling past
+// everyone else's sandboxes. Collapsed and pinned accounts are per-person
+// preferences (collapsed_accounts / pinned_accounts), like pinned orgs.
+
+function orgFilterText() {
+  const el = document.getElementById("orgFilter");
+  return el ? (el.value || "").trim().toLowerCase() : "";
+}
+
+function orgMatchesFilter(id, o) {
+  const q = orgFilterText();
+  if (!q) return true;
+  return [id, o.name, o.owner, o.account, ENV_META[orgEnv(o)]?.label]
+    .some(v => String(v || "").toLowerCase().includes(q));
+}
+
+/** The account the rail has narrowed the list to, or null for all. */
+function accountFocusKey() {
+  const k = HOME.accountFocus;
+  if (!k) return null;
+  // Forget a focus on an account that no longer exists (renamed, emptied).
+  if (!Object.values(ORGS).some(o => accountKey(o.account) === k)) { HOME.accountFocus = null; return null; }
+  return k;
+}
+
+function accountInFocus(key) {
+  const f = accountFocusKey();
+  return !f || f === key;
+}
+
+function focusAccount(key) {
+  HOME.accountFocus = key && HOME.accountFocus !== key ? key : null;
+  renderHomeOrgs();
+  renderOrgsTable();
+  markInFlightOrgs();
+}
+
+async function toggleAccountCollapsed(key) {
+  const set = new Set(homePrefs().collapsed_accounts || []);
+  if (set.has(key)) set.delete(key); else set.add(key);
+  await savePrefs({ collapsed_accounts: [...set] });
+  renderHomeOrgs(); renderOrgsTable(); markInFlightOrgs();
+}
+
+async function setAllAccountsCollapsed(collapsed) {
+  const keys = accountGroups(Object.entries(ORGS)).map(g => g.key);
+  await savePrefs({ collapsed_accounts: collapsed ? keys : [] });
+  renderHomeOrgs(); renderOrgsTable(); markInFlightOrgs();
+}
+
+async function toggleAccountPin(key) {
+  const set = new Set(homePrefs().pinned_accounts || []);
+  if (set.has(key)) set.delete(key); else set.add(key);
+  await savePrefs({ pinned_accounts: [...set] });
+  renderHomeOrgs(); renderOrgsTable(); renderOrgPicker();
+}
+
+const AVATAR_TINTS = ["purple", "green", "yellow", "orange", "harbor"];
+
+function accountAvatar(g) {
+  if (g.key === UNASSIGNED_KEY) return `<span class="acct-avatar unassigned" aria-hidden="true">?</span>`;
+  const words = g.name.split(/[\s\-_.]+/).filter(Boolean);
+  const initials = (words.length > 1 ? words[0][0] + words[1][0] : g.name.slice(0, 2)).toUpperCase();
+  let h = 0;
+  for (const ch of g.key) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return `<span class="acct-avatar tint-${AVATAR_TINTS[h % AVATAR_TINTS.length]}" aria-hidden="true">${escapeHtml(initials)}</span>`;
+}
+
+/** Roll-up of one account's orgs for its heading and the rail. */
+function accountStats(g) {
+  const stats = (HOME.summary && HOME.summary.orgs) || {};
+  let stale = 0, unresolved = 0, incidents = 0, manageable = 0, freshest = null;
+  g.orgs.forEach(([id, o]) => {
+    const d = daysSince(o.last_extracted_at);
+    if (d !== null && d > STALE_DAYS) stale++;
+    if (d !== null && (freshest === null || d < freshest)) freshest = d;
+    const st = stats[id] || {};
+    unresolved += st.unresolved || 0;
+    incidents += st.incidents || 0;
+    if (o.can_manage) manageable++;
+  });
+  return { stale, unresolved, incidents, manageable, freshest,
+           all_manageable: manageable === g.orgs.length, has_active: g.orgs.some(([id]) => id === CURRENT_ORG) };
+}
+
+/** One account heading. Used by the cards (full) and as the table's group
+ *  row (`compact`). Clicking the name area folds the group. */
+function accountHeadHtml(g, { compact = false } = {}) {
+  const s = accountStats(g);
+  const k = jsArg(g.key);
+  const unassigned = g.key === UNASSIGNED_KEY;
+  const filtering = !!orgFilterText() || !!accountFocusKey();
+  const collapsed = !filtering && isAccountCollapsed(g.key);
+  const pinned = isAccountPinned(g.key);
+  const chips = [
+    s.unresolved ? `<span class="acct-chip warn" title="Incidents with no fix recorded yet">${s.unresolved} without a fix</span>` : "",
+    s.stale ? `<span class="acct-chip stale" title="Not refreshed in ${STALE_DAYS} days">${s.stale} stale</span>` : "",
+    collapsed && s.has_active ? `<span class="active-tag">active org inside</span>` : "",
+  ].join("");
+  const acts = [];
+  if (!unassigned && canWriteRole())
+    acts.push(`<button type="button" class="link-btn" onclick="event.stopPropagation(); connectToAccount('${jsArg(g.name)}')" title="Connect another org for ${escapeHtml(g.name)}">+ Add org</button>`);
+  if (!unassigned && s.all_manageable)
+    acts.push(`<button type="button" class="link-btn" onclick="event.stopPropagation(); renameAccount('${jsArg(g.name)}')">Rename</button>`);
+  if (unassigned && s.manageable)
+    acts.push(`<button type="button" class="link-btn" onclick="event.stopPropagation(); organizeUnassigned()">Organize into accounts</button>`);
+  return `<div class="acct-head${compact ? " compact" : ""}${unassigned ? " unassigned" : ""}">
+      <button type="button" class="acct-toggle" aria-expanded="${!collapsed}" ${filtering ? "disabled" : ""}
+              onclick="toggleAccountCollapsed('${k}')" title="${collapsed ? "Expand" : "Collapse"}">
+        <span class="acct-chevron${collapsed ? "" : " open"}" aria-hidden="true">&#9656;</span>
+        ${accountAvatar(g)}
+        <span class="acct-title">
+          <span class="acct-name">${unassigned ? "Unassigned" : escapeHtml(g.name)}</span>
+          <span class="acct-meta">${g.orgs.length} org${g.orgs.length === 1 ? "" : "s"} &middot; ${escapeHtml(envSummary(g.orgs))}${
+            unassigned ? " &middot; not grouped under a customer yet" : ""}${
+            s.freshest !== null ? ` &middot; last refresh ${agoText(s.freshest)}` : ""}</span>
+        </span>
+      </button>
+      <span class="acct-chips">${chips}</span>
+      <span class="acct-actions">${acts.join("")}
+        ${unassigned ? "" : `<button type="button" class="pin-btn${pinned ? " on" : ""}" aria-pressed="${pinned}"
+          title="${pinned ? "Unpin account" : "Pin account to the top"}"
+          onclick="event.stopPropagation(); toggleAccountPin('${k}')">${pinned ? "&#9733;" : "&#9734;"}</button>`}
+      </span>
+    </div>`;
+}
+
+/** The left rail: every account with its org count and a warning dot. */
+function accountRailHtml(groups) {
+  const focus = accountFocusKey();
+  const total = groups.reduce((n, g) => n + g.orgs.length, 0);
+  const item = (g) => {
+    const s = accountStats(g);
+    const dot = s.unresolved ? "warn" : s.stale ? "stale" : "";
+    return `<button type="button" class="rail-item${focus === g.key ? " on" : ""}${g.key === UNASSIGNED_KEY ? " unassigned" : ""}"
+        onclick="focusAccount('${jsArg(g.key)}')" aria-pressed="${focus === g.key}"
+        title="${escapeHtml(g.name || "Unassigned")}: ${g.orgs.length} org(s)${s.unresolved ? `, ${s.unresolved} incident(s) without a fix` : ""}${s.stale ? `, ${s.stale} stale` : ""}">
+        ${accountAvatar(g)}
+        <span class="rail-name">${g.key === UNASSIGNED_KEY ? "Unassigned" : escapeHtml(g.name)}</span>
+        ${isAccountPinned(g.key) ? `<span class="rail-pin" aria-label="pinned">&#9733;</span>` : ""}
+        ${dot ? `<span class="rail-dot ${dot}" aria-hidden="true"></span>` : ""}
+        <span class="rail-count">${g.orgs.length}</span>
+      </button>`;
+  };
+  return `<div class="rail-title">Accounts</div>
+    <button type="button" class="rail-item all${focus ? "" : " on"}" onclick="focusAccount(null)" aria-pressed="${!focus}">
+      <span class="acct-avatar all" aria-hidden="true">&#9776;</span><span class="rail-name">All accounts</span>
+      <span class="rail-count">${total}</span></button>
+    <div class="rail-sep"></div>
+    ${groups.map(item).join("")}`;
+}
+
 function renderHomeOrgs() {
   const host = document.getElementById("orgCards");
   if (!host) return;
   applyOrgView();
   applyConnectState();
-  const q = (document.getElementById("orgFilter").value || "").trim().toLowerCase();
+  refreshAccountOptions();
+  const q = orgFilterText();
   const stats = (HOME.summary && HOME.summary.orgs) || {};
   const all = Object.entries(ORGS);
-  const entries = all
-    .filter(([id, o]) => !q || id.toLowerCase().includes(q) || (o.name || "").toLowerCase().includes(q)
-                         || (o.owner || "").toLowerCase().includes(q))
-    .sort(([a], [b]) => (isPinned(b) - isPinned(a)) || ((b === CURRENT_ORG) - (a === CURRENT_ORG)) || a.localeCompare(b));
-  document.getElementById("orgFilter").style.display = all.length > 6 ? "" : "none";
+  document.getElementById("orgFilter").style.display = all.length > 4 ? "" : "none";
+
+  const allGroups = accountGroups(all);
+  const headers = showAccountHeaders(allGroups);
+  const rail = document.getElementById("acctRail");
+  const railOn = headers && allGroups.length >= 3;
+  if (rail) {
+    rail.innerHTML = railOn ? accountRailHtml(allGroups) : "";
+    rail.style.display = railOn ? "" : "none";
+    document.getElementById("orgsLayout").classList.toggle("with-rail", railOn);
+  }
+  if (!railOn) HOME.accountFocus = null;
+  const tools = document.getElementById("acctTools");
+  if (tools) tools.style.display = headers && allGroups.length > 1 ? "" : "none";
+  renderAccountNudge(allGroups, headers);
 
   if (!all.length) {
     host.innerHTML = emptyStateHtml({
@@ -338,12 +506,40 @@ function renderHomeOrgs() {
     });
     return;
   }
-  if (!entries.length) {
+
+  const groups = accountGroups(all.filter(([id, o]) => orgMatchesFilter(id, o))).filter(g => accountInFocus(g.key));
+  if (!groups.length) {
     host.innerHTML = `<p class="muted">No org matches "${escapeHtml(q)}".</p>`;
     return;
   }
-  host.innerHTML = entries.map(([id, o]) => orgCardHtml(id, o, stats[id])).join("");
+  if (!headers) {
+    host.innerHTML = `<div class="org-cards">${groups[0].orgs.map(([id, o]) => orgCardHtml(id, o, stats[id])).join("")}</div>`;
+  } else {
+    const expandAll = !!q || !!accountFocusKey();
+    host.innerHTML = groups.map(g => {
+      const collapsed = !expandAll && isAccountCollapsed(g.key);
+      return `<section class="acct-group${collapsed ? " collapsed" : ""}${g.key === UNASSIGNED_KEY ? " unassigned" : ""}" data-account="${escapeHtml(g.key)}">
+          ${accountHeadHtml(g)}
+          ${collapsed ? "" : `<div class="org-cards">${g.orgs.map(([id, o]) => orgCardHtml(id, o, stats[id])).join("")}</div>`}
+        </section>`;
+    }).join("");
+  }
   showTriageKind();   // its "lookups use <org>" line follows the active org
+}
+
+/** Nobody has used accounts yet: one slim prompt to start, instead of a
+ *  single "Unassigned" heading over everything. */
+function renderAccountNudge(groups, headers) {
+  const el = document.getElementById("acctNudge");
+  if (!el) return;
+  const manageable = Object.values(ORGS).some(o => o.can_manage && !o.account);
+  if (headers || !manageable || Object.keys(ORGS).length < 2) { el.innerHTML = ""; return; }
+  el.innerHTML = `<div class="acct-nudge">
+      <span><b>Group orgs by customer.</b> Put a customer's production org and its sandboxes under one
+        account so they stack together here, in the org picker and in search. Suggestions come from each
+        org's My Domain.</span>
+      <button type="button" class="primary" onclick="organizeUnassigned()">Organize into accounts</button>
+    </div>`;
 }
 
 function orgCardHtml(id, o, st) {
@@ -366,7 +562,7 @@ function orgCardHtml(id, o, st) {
         ${pinButton(id)}
         <div class="org-card-title">
           <a class="org-card-name" title="${escapeHtml(o.name || id)}" onclick="setActiveOrg('${a}'); showView('dashboard')">${escapeHtml(o.name || id)}</a>
-          <div class="muted mono">${escapeHtml(id)}${active ? ` <span class="active-tag">active</span>` : ""}</div>
+          <div class="muted mono">${envBadge(o)}${escapeHtml(id)}${active ? ` <span class="active-tag">active</span>` : ""}</div>
         </div>
         <div class="org-card-vis">${visibilityCell(id, o)}</div>
       </div>
@@ -390,9 +586,224 @@ function orgCardHtml(id, o, st) {
         <button type="button" class="secondary" onclick="setActiveOrg('${a}'); showView('dashboard')">Dashboard</button>
         <button type="button" class="secondary" onclick="setActiveOrg('${a}'); showView('incidents')">Incidents</button>
         ${o.can_manage ? `<button type="button" class="secondary${stale ? " emphasis" : ""}" onclick="refreshOrg('${a}')">Refresh</button>` : ""}
-        ${!active ? `<button type="button" class="link-btn" onclick="setActiveOrg('${a}')">Make active</button>` : ""}
+        <span class="org-card-links">
+          ${o.can_manage ? `<button type="button" class="link-btn" onclick="moveOrgToAccount('${a}')" title="Change which customer account this org is under">Move</button>` : ""}
+          ${!active ? `<button type="button" class="link-btn" onclick="setActiveOrg('${a}')">Make active</button>` : ""}
+        </span>
       </div>
     </div>`;
+}
+
+// ---------- account actions ----------
+
+/** Best guess at an org's account: a sibling on the same My Domain that
+ *  already has one, else the My Domain name itself. */
+function suggestAccountFor(url, skipId = null) {
+  const dom = myDomainOf(url);
+  if (!dom) return { suggestion: "", matched: null, dom: null };
+  const sib = Object.entries(ORGS).find(([id, o]) => id !== skipId && o.account && orgMyDomain(o) === dom);
+  const matched = sib ? accountDisplayName(sib[1].account) : null;
+  return { suggestion: matched || dom, matched, dom };
+}
+
+async function patchOrgAccount(id, account) {
+  const res = await api(`/api/orgs/${encodeURIComponent(id)}/account`, {
+    method: "PATCH", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ account: account || null }),
+  });
+  if (!res.ok) return { ok: false, error: await errorText(res) };
+  return { ok: true, ...(await res.json()) };
+}
+
+async function moveOrgToAccount(id) {
+  const o = ORGS[id] || {};
+  const guess = o.account ? null : suggestAccountFor(o.instance_url, id);
+  const answer = await modal({
+    title: `Move ${id}`,
+    body: `Choose the customer account <b>${escapeHtml(o.name || id)}</b> belongs to. Pick an existing
+           account to stack it with that customer's other orgs, or type a new name.`,
+    fields: [{ name: "account", label: "Customer account", value: o.account || (guess && guess.suggestion) || "",
+               placeholder: "e.g. Acme Corp", options: accountNames(),
+               hint: o.account ? "Clear the box to leave it unassigned."
+                 : guess && guess.matched ? `Suggested: another org on the <span class="mono">${escapeHtml(guess.dom)}</span> My Domain is under <b>${escapeHtml(guess.matched)}</b>.`
+                 : guess && guess.dom ? `Suggested from the org's My Domain (<span class="mono">${escapeHtml(guess.dom)}</span>) &mdash; rename it to the customer's name if you like.`
+                 : "Clear the box to leave it unassigned." }],
+    submitLabel: "Move",
+  });
+  if (!answer) return;
+  const next = answer.account.replace(/\s+/g, " ").trim();
+  if (accountKey(next) === accountKey(o.account)) return;
+  const r = await patchOrgAccount(id, next);
+  if (!r.ok) { toast("Could not move the org: " + r.error, "error"); return; }
+  toast(r.account ? `${id} is now under ${r.account}.` : `${id} is no longer under an account.`, "ok");
+  await loadOrgs();
+}
+
+async function renameAccount(name) {
+  const members = Object.entries(ORGS).filter(([, o]) => accountKey(o.account) === accountKey(name));
+  const answer = await modal({
+    title: `Rename ${name}`,
+    body: `Renames the account on its ${members.length} org${members.length === 1 ? "" : "s"}. Typing the name of
+           another account merges the two.`,
+    fields: [{ name: "account", label: "Account name", value: name, options: accountNames().filter(n => accountKey(n) !== accountKey(name)),
+               hint: "Clear the box to ungroup these orgs." }],
+    submitLabel: "Rename",
+  });
+  if (!answer) return;
+  const next = answer.account.replace(/\s+/g, " ").trim();
+  if (next === name) return;
+  const into = accountNames().find(n => accountKey(n) === accountKey(next) && accountKey(n) !== accountKey(name));
+  if (into && !await confirmModal(`Merge ${name} into ${into}?`,
+      `The ${members.length} org(s) under ${escapeHtml(name)} will be listed under ${escapeHtml(into)}.`, "Merge")) return;
+  if (!next && !await confirmModal(`Ungroup ${name}?`,
+      `Its ${members.length} org(s) go back to Unassigned. Nothing about the orgs themselves changes.`, "Ungroup")) return;
+  const res = await api("/api/accounts/rename", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ from_account: name, to_account: next || null }),
+  });
+  if (!res.ok) { toast("Could not rename: " + await errorText(res), "error"); return; }
+  const r = await res.json();
+  // Carry the person's fold/pin choices over to the new name.
+  const oldKey = accountKey(name), newKey = accountKey(r.to);
+  const prefs = homePrefs(), patch = {};
+  ["collapsed_accounts", "pinned_accounts"].forEach(k => {
+    const list = prefs[k] || [];
+    if (list.includes(oldKey)) patch[k] = [...new Set(list.filter(x => x !== oldKey).concat(r.to ? [newKey] : []))];
+  });
+  if (Object.keys(patch).length) await savePrefs(patch);
+  if (HOME.accountFocus === oldKey) HOME.accountFocus = r.to ? newKey : null;
+  toast(r.to ? `${name} renamed to ${r.to} (${r.orgs.length} org(s)).` : `${name} ungrouped.`, "ok");
+  await loadOrgs();
+}
+
+/** Bulk-assign every unassigned org this person manages, with suggestions
+ *  pre-filled so the common case is one click. */
+async function organizeUnassigned() {
+  const rows = Object.entries(ORGS).filter(([, o]) => !o.account && o.can_manage)
+    .map(([id, o]) => ({ id, o, ...suggestAccountFor(o.instance_url, id) }))
+    .sort((a, b) => (a.suggestion || "~").localeCompare(b.suggestion || "~") || a.id.localeCompare(b.id));
+  if (!rows.length) { toast("Every org you manage is already under an account.", "info"); return; }
+  const names = accountNames();
+  const back = document.createElement("div");
+  back.className = "modal-backdrop";
+  back.innerHTML = `
+    <div class="modal modal-wide organize-modal" role="dialog" aria-modal="true">
+      <h3>Organize orgs into accounts</h3>
+      <p class="muted">Each org is pre-filled with a suggestion: the account of another org on the same
+        My Domain (a sandbox shares its production org's), otherwise the My Domain name. Renaming a
+        suggestion renames it on every row that shares it. Untick what you want to leave for later.</p>
+      <datalist id="orgAcctOptions">${[...new Set(names.concat(rows.map(r => r.suggestion).filter(Boolean)))]
+        .map(n => `<option value="${escapeHtml(n)}"></option>`).join("")}</datalist>
+      <div class="organize-table-wrap"><table class="organize-table">
+        <thead><tr><th><input type="checkbox" id="orgAllChk" checked aria-label="Select all"></th>
+          <th>Org</th><th>Env</th><th>Customer account</th></tr></thead>
+        <tbody>${rows.map((r, i) => `<tr>
+            <td><input type="checkbox" class="org-chk" data-i="${i}" ${r.suggestion ? "checked" : ""} aria-label="Include ${escapeHtml(r.id)}"></td>
+            <td class="org-name-cell"><b>${escapeHtml(r.o.name || r.id)}</b><div class="muted mono">${escapeHtml(r.id)}</div></td>
+            <td>${envBadge(r.o) || "<span class='muted'>-</span>"}</td>
+            <td><input class="org-acct" data-i="${i}" list="orgAcctOptions" autocomplete="off"
+                 value="${escapeHtml(r.suggestion || "")}" placeholder="Customer name">
+              ${r.matched ? `<div class="field-hint">matches an existing account</div>` : ""}</td>
+          </tr>`).join("")}</tbody></table></div>
+      <div class="status-line" id="orgStatus"></div>
+      <div class="modal-actions">
+        <button type="button" class="secondary" data-cancel>Cancel</button>
+        <button type="button" class="primary" id="orgApply">Apply</button>
+      </div>
+    </div>`;
+  document.body.appendChild(back);
+  const close = () => back.remove();
+  back.querySelector("[data-cancel]").onclick = close;
+  back.onclick = e => { if (e.target === back) close(); };
+  const chks = [...back.querySelectorAll(".org-chk")];
+  const inputs = [...back.querySelectorAll(".org-acct")];
+  const count = () => {
+    const n = chks.filter((c, i) => c.checked && inputs[i].value.trim()).length;
+    back.querySelector("#orgApply").textContent = n ? `Apply to ${n} org${n === 1 ? "" : "s"}` : "Apply";
+    back.querySelector("#orgApply").disabled = !n;
+  };
+  back.querySelector("#orgAllChk").onchange = e => { chks.forEach(c => { c.checked = e.target.checked; }); count(); };
+  chks.forEach(c => { c.onchange = count; });
+  // Renaming one suggestion renames it on every row that shared it and has
+  // not been edited by hand: "apttus2" -> "Conga" once, not once per sandbox.
+  inputs.forEach((inp, i) => {
+    inp.dataset.orig = inp.value;
+    inp.oninput = () => {
+      const before = inp.dataset.last ?? inp.dataset.orig;
+      inp.dataset.edited = "1";
+      inputs.forEach((other, j) => {
+        if (j !== i && !other.dataset.edited && other.value === before && before) {
+          other.value = inp.value; if (inp.value.trim()) chks[j].checked = true;
+        }
+      });
+      inp.dataset.last = inp.value;
+      if (inp.value.trim()) chks[i].checked = true;
+      count();
+    };
+  });
+  count();
+  back.querySelector("#orgApply").onclick = async () => {
+    const btn = back.querySelector("#orgApply");
+    btn.disabled = true;
+    let done = 0; const failed = [];
+    for (let i = 0; i < rows.length; i++) {
+      const name = inputs[i].value.replace(/\s+/g, " ").trim();
+      if (!chks[i].checked || !name) continue;
+      back.querySelector("#orgStatus").textContent = `Moving ${rows[i].id}...`;
+      const r = await patchOrgAccount(rows[i].id, name);
+      if (r.ok) done++; else failed.push(`${rows[i].id}: ${r.error}`);
+    }
+    close();
+    toast(failed.length ? `Grouped ${done} org(s); ${failed.length} failed -- ${failed[0]}` : `Grouped ${done} org(s) into accounts.`,
+          failed.length ? "error" : "ok", 6000);
+    await loadOrgs();
+  };
+  setTimeout(() => (inputs[0] || back.querySelector("#orgApply")).focus(), 0);
+}
+
+// ---------- Connect form: account field ----------
+
+function refreshAccountOptions() {
+  const dl = document.getElementById("accountOptions");
+  if (!dl) return;
+  dl.innerHTML = accountNames().map(n => `<option value="${escapeHtml(n)}"></option>`).join("");
+}
+
+/** As the Instance URL is typed, pre-fill the account from its My Domain --
+ *  unless the person has already typed one themselves. */
+function suggestNewOrgAccount() {
+  const input = document.getElementById("newAccount");
+  const hint = document.getElementById("newAccountHint");
+  if (!input || !hint) return;
+  const url = document.getElementById("newInstanceUrl").value;
+  const env = envFromUrl(url);
+  const g = suggestAccountFor(url);
+  const envText = url.trim() && ENV_META[env] && env !== "unknown" ? `Looks like a <b>${ENV_META[env].label.toLowerCase()}</b> org. ` : "";
+  if (input.dataset.touched) {
+    hint.innerHTML = envText + (input.value.trim() ? `Will be listed under <b>${escapeHtml(input.value.trim())}</b>.` : "Leave empty to decide later.");
+    return;
+  }
+  input.value = g.suggestion || "";
+  hint.innerHTML = envText + (g.matched
+    ? `Suggested <b>${escapeHtml(g.matched)}</b>: another org you can see is on the same My Domain.`
+    : g.dom ? `Suggested from the My Domain <span class="mono">${escapeHtml(g.dom)}</span> &mdash; change it to the customer's name if you prefer.`
+    : "Groups this org with the customer's other orgs on Home. Leave empty to decide later.");
+}
+
+function newAccountEdited() {
+  const input = document.getElementById("newAccount");
+  if (input.value.trim()) input.dataset.touched = "1"; else delete input.dataset.touched;
+  suggestNewOrgAccount();
+}
+
+/** "+ Add org" on an account heading: open Connect with the account set. */
+function connectToAccount(name) {
+  toggleConnect(true);
+  const input = document.getElementById("newAccount");
+  if (!input) return;
+  input.value = name;
+  input.dataset.touched = "1";
+  suggestNewOrgAccount();
 }
 
 function openUnresolved(id) {
@@ -776,10 +1187,17 @@ function paletteStaticItems() {
     { label: "Change password", keywords: "account", run: () => changeOwnPassword() },
   ].filter(Boolean).map(a => ({ group: "Actions", ...a }));
   const orgs = Object.entries(ORGS).map(([id, o]) => ({
-    group: "Orgs", label: `${o.name || id}`, hint: id === CURRENT_ORG ? `${id} · active` : id,
-    keywords: `${id} org switch`, run: () => { setActiveOrg(id); },
+    group: "Orgs", label: `${o.name || id}`,
+    hint: [accountDisplayName(o.account), id, id === CURRENT_ORG ? "active" : null].filter(Boolean).join(" · "),
+    keywords: `${id} ${o.account || ""} ${orgEnv(o)} org switch`, run: () => { setActiveOrg(id); },
   }));
-  return [...acts, ...items, ...orgs];
+  const accts = accountGroups(Object.entries(ORGS)).filter(g => g.key !== UNASSIGNED_KEY).map(g => ({
+    group: "Accounts", label: g.name, hint: `${g.orgs.length} org${g.orgs.length === 1 ? "" : "s"} · ${envSummary(g.orgs)}`,
+    keywords: `account customer ${g.orgs.map(([id]) => id).join(" ")}`,
+    run: () => { showView("connections"); HOME.accountFocus = null; focusAccount(g.key);
+                 document.getElementById("orgsCard").scrollIntoView({ behavior: "smooth" }); },
+  }));
+  return [...acts, ...items, ...accts, ...orgs];
 }
 
 function paletteScore(item, q) {

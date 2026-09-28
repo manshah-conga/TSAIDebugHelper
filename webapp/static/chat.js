@@ -417,11 +417,17 @@ function openOrgPicker() {
   const ids = Object.keys(ORGS || {});
   const back = chatEl("div", "modal-backdrop");
 
-  const rows = ids.map(id => `
+  const row = id => `
     <button type="button" class="chat-row ${id === CURRENT_ORG ? "on" : ""}" data-org="${escapeHtml(id)}">
       <span class="chat-row-title">${escapeHtml(id)}</span>
       <span class="chat-row-meta">${escapeHtml((ORGS[id] || {}).name || "")}</span>
-    </button>`).join("");
+    </button>`;
+  // Same account grouping as Home and the header picker.
+  const groups = typeof accountGroups === "function" ? accountGroups(Object.entries(ORGS || {})) : [];
+  const rows = groups.length && showAccountHeaders(groups)
+    ? groups.map(g => `<div class="chat-list-group">${escapeHtml(g.name || "Unassigned")}</div>`
+        + g.orgs.map(([id]) => row(id)).join("")).join("")
+    : ids.map(row).join("");
 
   back.innerHTML = `
     <div class="modal" role="dialog" aria-modal="true" style="width:460px;">

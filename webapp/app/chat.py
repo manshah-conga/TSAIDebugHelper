@@ -58,6 +58,7 @@ from mcp_server import mcp, CURRENT_TOKEN
 # choices at the same time.
 BASE_TOOLS = {
     "list_orgs",
+    "list_accounts",
     "normalize_log",
     "list_normalized_logs",
     "get_normalized_log",
@@ -83,6 +84,7 @@ WRITE_TOOLS = {
     "file_incident",
     "record_resolution",
     "set_org_visibility",
+    "set_org_account",
 }
 
 # Never offered at all: both take a live Salesforce access token.

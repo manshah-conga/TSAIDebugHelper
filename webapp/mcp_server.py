@@ -206,7 +206,8 @@ async def _post_form(path: str, data: dict, files: Optional[dict] = None):
 
 @mcp.tool()
 async def create_org_connection(org_id: str, org_name: str, instance_url: str,
-                                access_token: str, visibility: str = "private") -> dict:
+                                access_token: str, visibility: str = "private",
+                                account: str = "") -> dict:
     """Connect a new Salesforce org: fetch its Apex classes/triggers, flows,
     LWC components and custom objects via the Tooling API, then build and
     store the derived knowledgebase for it. Only the derived JSON is ever
@@ -221,12 +222,41 @@ async def create_org_connection(org_id: str, org_name: str, instance_url: str,
     Either way, only the owner or an admin can re-connect/refresh the org or
     change its visibility later (see set_org_visibility). Re-connecting an
     org you already own keeps its current visibility unless you pass a new
-    one explicitly."""
+    one explicitly.
+
+    `account` is the customer this org belongs to (e.g. "IBM"), used to group
+    a customer's production org and sandboxes together. Leave it empty on a
+    new org to inherit the account of a visible org on the same My Domain
+    (sandboxes share their production org's My Domain prefix)."""
     return await _post_json("/api/orgs", {
         "org_id": org_id, "org_name": org_name,
         "instance_url": instance_url, "access_token": access_token,
-        "visibility": visibility,
+        "visibility": visibility, "account": account or None,
     })
+
+
+@mcp.tool()
+async def set_org_account(org_id: str, account: str = "") -> dict:
+    """Move a connected org into a customer account (e.g. "IBM"), or pass an
+    empty account to unassign it. The name is matched case-insensitively to
+    an account already in use, so "ibm" joins "IBM". Owner or admin only."""
+    async with _client() as c:
+        try:
+            r = await c.patch(f"/api/orgs/{org_id}/account", json={"account": account or None})
+        except httpx.ConnectError:
+            return _conn_error()
+        if r.status_code >= 400:
+            return _auth_error(r.status_code) or {"error": f"{r.status_code}: {r.text}"}
+        return r.json()
+
+
+@mcp.tool()
+async def list_accounts() -> dict:
+    """List the customer accounts you can see, each with its org ids and a
+    count per environment (production / sandbox / developer / scratch).
+    Orgs not yet grouped appear under account null. Use this to answer
+    "which orgs belong to customer X?" before picking an org_id."""
+    return await _get("/api/accounts")
 
 
 @mcp.tool()
@@ -270,7 +300,9 @@ async def get_org_connection_status(org_id: str) -> dict:
 async def list_orgs() -> dict:
     """List the orgs your API token's account is allowed to see -- every
     public org, plus your own private ones (plus everyone's, for an admin
-    token) -- with component counts, `owner`, `visibility`, `can_manage` and
+    token) -- with component counts, `owner`, `visibility`, `can_manage`,
+    `account` (the customer it belongs to, or null), `environment`
+    (production / sandbox / developer / scratch, derived from the URL) and
     the last-refreshed timestamp for each. Use this to discover valid org_id
     values for the other tools. An org that does not appear here will report
     "no such org" from every other tool, whether it is private to someone

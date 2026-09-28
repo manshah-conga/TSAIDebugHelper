@@ -9,7 +9,12 @@ from collections import defaultdict
 
 DML_BEGIN_RE = re.compile(r"Op:(\w+)\|Type:(\w+)\|Rows:(\d+)")
 SOQL_END_ROWS_RE = re.compile(r"Rows:(\d+)")
-LIMIT_LINE_RE = re.compile(r"^\s*Number of (.+?):\s*(\d+)\s*out of\s*(\d+)\s*$")
+# "  Number of SOQL queries: 12 out of 100"
+# "  Maximum CPU time: 9800 out of 10000 ******* CLOSE TO LIMIT"
+LIMIT_LINE_RE = re.compile(r"^\s*(?:Number of|Maximum)\s+(.+?):\s*(\d+)\s*out of\s*(\d+)(.*)$")
+# "21:20:56.1 (1234)|LIMIT_USAGE_FOR_NS|(default)|" -- one block per namespace
+LIMIT_NS_RE = re.compile(r"\|LIMIT_USAGE_FOR_NS\|([^|]*)")
+DEFAULT_NS = "(default)"
 CLASS_METHOD_STACK_RE = re.compile(r"^Class\.([\w.]+?)(?:\.(\w+))?:\s*line\s*(\d+)")
 TRIGGER_STACK_RE = re.compile(r"^Trigger\.(\w+):\s*line\s*(\d+)")
 NORMALIZE_LITERAL_RE = re.compile(r"'[^']*'|:\w+|\b\d+\b")
@@ -22,6 +27,60 @@ def normalize_signature(text):
 def truncate(s, n=180):
     s = " ".join(s.split())
     return s if len(s) <= n else s[: n - 3] + "..."
+
+
+def parse_limit_blocks(lines):
+    """Final governor-limit usage, per namespace.
+
+    Salesforce writes a LIMIT_USAGE_FOR_NS|<ns>| header followed by
+    "Number of X: N out of M" lines -- one block for the org's own code
+    ("(default)") and one per managed package that ran (Apttus, ...). The
+    blocks repeat at each CUMULATIVE_LIMIT_USAGE checkpoint, so the last block
+    per namespace is the end-of-transaction figure. Merging all blocks into one
+    dict (the old behaviour) let a managed package's all-zero block overwrite
+    the org's real usage.
+
+    Returns (limits_final, limits_by_namespace). limits_final is the default
+    namespace (the customer's code), falling back to the first namespace seen.
+
+    Checkpoints are cumulative within one transaction, so usage should never
+    go down. When it does, the log holds more than one transaction (async
+    chains, batch chunks, resumed flows) and the last block can be a tiny
+    trailing one -- e.g. "0 CPU time" after 1,600+ code units. So each entry
+    also carries `peak_used` (highest value seen at any checkpoint) whenever
+    it exceeds the final figure.
+    """
+    by_ns, order, current = {}, [], None
+    peaks = defaultdict(dict)
+    for raw in lines:
+        ns_m = LIMIT_NS_RE.search(raw)
+        if ns_m:
+            current = ns_m.group(1).strip() or DEFAULT_NS
+            by_ns[current] = {}  # new checkpoint: replace, don't merge
+            if current not in order:
+                order.append(current)
+            continue
+        m = LIMIT_LINE_RE.match(raw)
+        if not m:
+            continue
+        ns = current or DEFAULT_NS
+        if ns not in by_ns:
+            by_ns[ns] = {}
+            order.append(ns)
+        name, used = m.group(1).strip(), int(m.group(2))
+        entry = {"used": used, "max": int(m.group(3))}
+        if "CLOSE TO LIMIT" in m.group(4).upper():
+            entry["close_to_limit"] = True
+        by_ns[ns][name] = entry
+        peaks[ns][name] = max(peaks[ns].get(name, 0), used)
+    if not order:
+        return {}, {}
+    for ns in order:
+        for name, entry in by_ns[ns].items():
+            if peaks[ns].get(name, 0) > entry["used"]:
+                entry["peak_used"] = peaks[ns][name]
+    final = by_ns.get(DEFAULT_NS) or by_ns[order[0]]
+    return final, {ns: by_ns[ns] for ns in order}
 
 
 def parse_debug_level_header(raw_header):
@@ -54,7 +113,6 @@ def parse_log_text(text, index_ids=None):
     soql_open, dml_open = [], []
     soql_events, dml_events = [], []
     callouts, user_debug, exceptions, flow_events, validation_failures = [], [], [], [], []
-    limits_final = {}
     in_fatal_stack = False
     current_stack_lines, current_exception = [], None
 
@@ -133,10 +191,7 @@ def parse_log_text(text, index_ids=None):
                 current_exception = {"type": msg.split(":")[0].strip(), "message": msg, "stack": []}
                 exceptions.append(current_exception)
 
-    for raw in lines:
-        m = LIMIT_LINE_RE.match(raw)
-        if m:
-            limits_final[m.group(1).strip()] = {"used": int(m.group(2)), "max": int(m.group(3))}
+    limits_final, limits_by_namespace = parse_limit_blocks(lines)
 
     def collapse(events, group_key):
         groups = defaultdict(lambda: {"count": 0, "total_rows": 0, "example": None})
@@ -194,5 +249,6 @@ def parse_log_text(text, index_ids=None):
         "soql_summary": sorted(soql_summary, key=lambda x: -x["occurrences"]),
         "dml_summary": sorted(dml_summary, key=lambda x: -x["occurrences"]),
         "callouts": callouts, "user_debug": user_debug, "validation_failures": validation_failures,
-        "flow_events": flow_events, "limits_final": limits_final, "involved_components": sorted(involved),
+        "flow_events": flow_events, "limits_final": limits_final,
+        "limits_by_namespace": limits_by_namespace, "involved_components": sorted(involved),
     }

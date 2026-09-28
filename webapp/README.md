@@ -654,6 +654,48 @@ the org card on Home shows what the last refresh found. `POST /api/orgs` with an
 existing `org_id` still works and behaves identically; the refresh endpoint just
 saves you retyping the fields it can look up itself.
 
+### Customer accounts: grouping a customer's orgs
+
+Every org can carry an **account** -- the customer it belongs to -- so a customer's
+production org and its sandboxes stack together instead of sitting in one flat list.
+The account is a label on the org's registry entry (`registry.json`, `"account"`);
+there is no separate accounts table, so nothing needs migrating and an org can never
+point at a deleted account. Orgs without one are listed under **Unassigned**.
+
+On **Home** the "Accounts & orgs" card groups orgs by account in both the Cards and
+Table layouts. Each account heading rolls up its orgs: how many, the environment mix
+(Production / Sandbox / Developer / Scratch, read from the instance URL), the latest
+refresh, stale orgs and incidents without a fix. A heading can be folded (remembered
+per person), starred to keep it at the top, renamed, or used to **+ Add org** with the
+account already filled in. With three or more accounts a rail on the left lists them;
+clicking one narrows the list to that customer. The filter box matches account names
+too, and the header org picker, the chat's org picker and Ctrl+K all group or search
+by account.
+
+**Suggestions.** A sandbox's host is `<prod-my-domain>--<sandbox>.sandbox.my.salesforce.com`,
+so the part before `--` links a sandbox to its production org. The Connect form fills
+in the account as you type the Instance URL: the account of another org you can see on
+the same My Domain, or else the My Domain name. **Organize into accounts** (offered
+while orgs are unassigned) does the same for every unassigned org you manage in one
+dialog; renaming one suggestion there renames every row that shares it.
+
+**Names** are matched case- and whitespace-insensitively and snapped to the spelling
+already in use, so `ibm` joins an existing `IBM`.
+
+**Who can change it.** Moving an org between accounts is owner-or-admin, like
+visibility. Renaming an account retags every org in it you manage, and is refused if
+you can see an org in it that you don't manage (it would silently split the account);
+an admin rename covers everything. A refresh never changes an org's account. Only
+orgs you can see are consulted for suggestions, so a private org's account name never
+leaks.
+
+API: `PATCH /api/orgs/{org_id}/account` `{"account": "IBM"}` (null unassigns),
+`GET /api/accounts`, `GET /api/accounts/suggest?instance_url=...`,
+`POST /api/accounts/rename` `{"from_account": "...", "to_account": "..."}`, and an
+optional `account` on `POST /api/orgs`. MCP: `list_accounts`, `set_org_account`, and
+`account` on `create_org_connection`; `list_orgs` now returns `account` and
+`environment` for each org.
+
 ## 3. Working an incident
 
 On the **Org Dashboard** tab:
