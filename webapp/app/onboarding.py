@@ -353,8 +353,14 @@ async def run_onboarding(org_id, org_name, instance_url, access_token, existing_
             _track(org_id, "lwc", total=len(fetch_lwc))
             _track(org_id, "workflow", state="active")
 
+            def _parse_event(msg):
+                # surfaced live as the job's detail line while the watchdog works
+                if org_id in JOBS:
+                    JOBS[org_id]["detail"] = msg
+
             parser = chunk_parse.ApexParser(known_objects, all_class_names,
-                                            len(fetch_classes) + len(fetch_triggers), org_namespace=org_ns)
+                                            len(fetch_classes) + len(fetch_triggers), org_namespace=org_ns,
+                                            on_event=_parse_event)
             await parser.__aenter__()
 
             # ---- 2. fetch + parse, streaming ----
@@ -500,6 +506,8 @@ async def run_onboarding(org_id, org_name, instance_url, access_token, existing_
         "concurrency_adaptive": client_sf.limiter.stats(),
         "flow_composite": client_sf.composite_ok and _sf.COMPOSITE_SIZE > 1,
         "parse_mode": parser.mode,
+        # components the parse watchdog stopped (stub cards, analysis_status='timeout')
+        "parse_timeouts": parser.timed_out,
         "managed_skipped": skipped,
         "org_namespace": org_ns,
     }

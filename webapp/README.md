@@ -590,8 +590,18 @@ Tuning (environment variables; defaults are conservative):
 | `TS_SF_COMPOSITE_SIZE` | 10 | Flow GETs per Composite request (1-25; 1 disables Composite). |
 | `TS_SF_FETCH_MANAGED_CODE` | 0 | 1 fetches managed-package Apex/LWC source too (normally `(hidden)`). |
 | `TS_SF_SKIP_MANAGED_FLOWS` | 0 | 1 skips managed-package flows as well. |
-| `TS_PARSE_WORKERS` | min(4, CPUs-1) | Apex parse worker processes; 0 = threads only. |
-| `TS_PARSE_POOL_MIN_CLASSES` | 800 | Below this many classes to parse, use threads. |
+| `TS_PARSE_WORKERS` | min(4, CPUs-1), at least 1 | Apex parse worker processes; 0 = threads only (no watchdog). |
+| `TS_PARSE_POOL_MIN_CLASSES` | 800 | Below this many classes, parse in a single guard worker (or threads if the watchdog is off). |
+| `TS_PARSE_CHUNK_TIMEOUT` | 120 | Seconds a chunk may take to parse before its worker is killed and its classes re-parsed one by one. 0 disables the watchdog. |
+| `TS_PARSE_CLASS_TIMEOUT` | 30 | Seconds per class during that one-by-one pass; a class that overruns gets a stub card (`analysis_status: "timeout"`), a warning, and is listed in `fetch_stats.parse_timeouts`. |
+
+**Parse watchdog.** The Apex extractor is regex, and a pathological
+pattern/input pair can run for hours inside one C call (a class ending in a
+large block of `//` comments did exactly this and hung a fetch at 2791/3057
+with no error). Python's `re` holds the GIL while it runs, so in a thread it
+would freeze the whole app; parsing therefore runs in worker processes, which
+the watchdog can kill. One bad class costs about `CHUNK + CLASS` timeout
+seconds and a stub card; the rest of the org is analysed normally.
 
 Each finished fetch records `last_fetch_stats` (seconds, requests, retries,
 the adaptive limiter's lowest cap and throttle events, whether Composite was

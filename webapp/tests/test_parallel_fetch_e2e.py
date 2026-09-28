@@ -251,6 +251,38 @@ def main():
         inb = c.get("/api/orgs/pooled/inbound/C2C_ActivateCPIOrderQueuable").json().get("called_by", [])
         check("including cross-class edges", any(r.get("id") == "FinaliseCartBatch" for r in inb), str(inb))
 
+        print("\n-- parse watchdog: one class that hangs the extractor --")
+        # ContactTriggerUtilityTest hung a real fetch at 2791/3057 with no
+        # error. The marker makes the worker hang; the watchdog must stop it,
+        # stub that one class, and let the fetch finish.
+        os.environ["TS_PARSE_TEST_HANG"] = "1"
+        old_t = chunk_parse.CHUNK_TIMEOUT, chunk_parse.CLASS_TIMEOUT
+        chunk_parse.CHUNK_TIMEOUT, chunk_parse.CLASS_TIMEOUT = 3, 2
+        mock_salesforce.EXTRA_CLASSES[:] = [
+            {"Id": "01pH0001", "Name": "HangsForever", "NamespacePrefix": None, "ApiVersion": 50.0,
+             "Body": f"@isTest private class HangsForever {{ /*{chunk_parse.TEST_HANG_MARKER}*/ }}"}]
+        try:
+            s_h, t_h = _connect(c, "hangs", url)
+        finally:
+            os.environ.pop("TS_PARSE_TEST_HANG", None)
+            chunk_parse.CHUNK_TIMEOUT, chunk_parse.CLASS_TIMEOUT = old_t
+            mock_salesforce.EXTRA_CLASSES[:] = []
+        check("the fetch finishes instead of hanging",
+              s_h.get("status") == "done" and t_h < 60, f"{s_h.get('status')} in {t_h:.1f}s")
+        check("with every class accounted for", s_h.get("counts", {}).get("classes") == 8,
+              str(s_h.get("counts")))
+        check("and the hung class named in fetch_stats",
+              (s_h.get("fetch_stats") or {}).get("parse_timeouts") == ["class HangsForever"],
+              str(s_h.get("fetch_stats")))
+        check("and in the warnings", any("HangsForever" in w for w in s_h.get("warnings", [])),
+              str(s_h.get("warnings")))
+        hc = c.get("/api/orgs/hangs/components/HangsForever").json()
+        check("its card is a stub that says why", hc.get("analysis_status") == "timeout"
+              and "not in the knowledgebase" in (hc.get("source_note") or "").lower(), str(hc)[:300])
+        inb = c.get("/api/orgs/hangs/inbound/C2C_ActivateCPIOrderQueuable").json().get("called_by", [])
+        check("while the other classes in its chunk were fully analysed",
+              any(r.get("id") == "FinaliseCartBatch" for r in inb), str(inb))
+
         print("\n-- resilience --")
         old_attempts = sf_client.MAX_ATTEMPTS
         mock_salesforce.FAIL_NEXT_BODY_QUERIES = 2

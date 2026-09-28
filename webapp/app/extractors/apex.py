@@ -127,11 +127,24 @@ def _in_any_span(pos, spans):
 
 # ---------- method inventory (§6.4) ----------
 
+# The return-type group is a run of whitespace-free tokens joined by `\s+`
+# (`Map<String, List<Id>>` -> `Map<String,` + `List<Id>>`). It must NOT
+# contain `\s` itself: the old `[\w<>\[\],.\s]+?` followed by `\s+` could split
+# any whitespace run between the two quantifiers in O(n^2) ways, at every one
+# of O(n) start positions. A class whose tail is a big block of `//`
+# comments (stripped to bare newlines, no `(`) then took cubic time -- 400
+# lines ~24s, a few thousand lines effectively forever -- and hung the fetch
+# with no error (ContactTriggerUtilityTest).
+# A declaration can only begin at the start of the source or right after
+# `{`, `}` or `;` (plus whitespace), so the match is anchored there. Without
+# the anchor every token of a long `(`-free run (a 500-field SOQL select
+# list) is a start position that rescans the rest of the run -- quadratic.
 METHOD_DECL_RE = re.compile(
+    r"(?:(?<=[{};])|^)\s*"
     r"(?:@\w+(?:\([^)]*\))?\s*)*"
     r"(?:(public|private|protected|global)\s+)?"
     r"(static\s+)?(?:override\s+|virtual\s+|abstract\s+|testmethod\s+)*"
-    r"([\w<>\[\],.\s]+?)\s+(\w+)\s*\(([^)]*)\)\s*\{",
+    r"([\w<>\[\],.]+(?:\s+[\w<>\[\],.]+)*?)\s+(\w+)\s*\(([^)]*)\)\s*\{",
     re.IGNORECASE)
 
 
