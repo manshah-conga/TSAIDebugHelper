@@ -480,6 +480,19 @@ def bootstrap_admin():
 # ---------- FastAPI dependencies ----------
 
 def _identity_from_request(request: Request):
+    ident = _resolve_identity(request)
+    if ident:
+        # Left on the request for app/activity.py's middleware, which runs
+        # outside the router and would otherwise have to verify the token a
+        # second time just to learn who acted.
+        try:
+            request.state.activity_ident = ident
+        except Exception:  # noqa: BLE001
+            pass
+    return ident
+
+
+def _resolve_identity(request: Request):
     # 1) Bearer token (API / MCP)
     auth_header = request.headers.get("authorization", "")
     if auth_header.lower().startswith("bearer "):

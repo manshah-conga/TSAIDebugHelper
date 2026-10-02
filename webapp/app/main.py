@@ -12,6 +12,7 @@ Run with:  python -m uvicorn app.main:app --reload --port 8000
             to make it reachable from other machines)
 """
 import os
+import time
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -34,6 +35,7 @@ from . import env_file
 from . import llm
 from . import llm_config
 from . import usage as usage_ledger
+from . import activity
 from . import guide as guide_mod
 from .onboarding import run_onboarding, JOBS, progress_payload, job_in_flight
 from .log_normalizer import parse_log_text
@@ -56,6 +58,8 @@ async def lifespan(app: FastAPI):
     for line in env_file.startup_report():
         print(line, flush=True)
     print(llm_config.startup_report(), flush=True)
+    # Retention for the action ledger; cheap (one glob) and there is no scheduler.
+    activity.prune()
     async with mcp_lifespan(app):
         yield
 
@@ -95,6 +99,11 @@ Dep_org_write = [Depends(_org_view_dep), Depends(auth.require_user)]
 # transport and pulls the caller's API token off the request. It runs as
 # middleware, above the router, so the bare /mcp path is not redirected.
 app.add_middleware(MCPTransportMiddleware)
+
+# Per-action analytics (app/activity.py). Sits outside the router so it can
+# see every channel's calls -- web UI, in-app chat, remote and stdio MCP all
+# end at these routes -- and time a streamed chat answer to its last byte.
+app.add_middleware(activity.ActivityMiddleware, router=app.router)
 
 
 # ---------- authentication ----------
@@ -162,6 +171,7 @@ def signup(req: SignupRequest, request: Request, response: Response):
         max_age=auth.SESSION_TTL_DAYS * 86400,
     )
     quota = limits_policy.quota_status(created["username"], auth.get_user(created["username"]))
+    activity.note(request, username=created["username"], role=created["role"])
     return {"username": created["username"], "role": created["role"],
             "llm_unlocked": False, "quota": quota}
 
@@ -183,6 +193,7 @@ def login(req: LoginRequest, request: Request, response: Response):
     # again. Deliberately silent: login must succeed whether or not a key
     # exists, and a user with no key must not be told anything about it.
     unlocked = secrets_store.unlock_quietly(ident["username"], req.password, tid)
+    activity.note(request, username=ident["username"], role=ident["role"])
     quota = limits_policy.quota_status(ident["username"], auth.get_user(ident["username"]))
     return {"username": ident["username"], "role": ident["role"],
             "llm_unlocked": unlocked, "quota": quota}
@@ -194,6 +205,7 @@ def logout(request: Request, response: Response):
     if cookie:
         ident = auth.verify_token(cookie)
         if ident and ident.get("token_id"):
+            activity.note(request, username=ident["username"], role=ident["role"])
             secrets_store.evict(ident["token_id"])
             auth.revoke_token(ident["token_id"])
     response.delete_cookie(auth.SESSION_COOKIE)
@@ -236,7 +248,7 @@ def change_own_password(req: ChangePasswordRequest, ident=Depends(auth.require_r
 # after an update a browser can be running new UI against an old server that
 # silently ignores the new fields (log tags were dropped exactly this way).
 # The page compares the two and tells the person to restart the server.
-APP_BUILD = 26
+APP_BUILD = 27
 
 
 @app.get("/api/build")
@@ -435,6 +447,7 @@ def admin_delete_user(username: str, request: Request):
     # Otherwise a deleted account's name lives on in the admin usage report
     # forever, which is both untidy and a small privacy problem.
     usage_ledger.forget_user(username)
+    activity.forget_user(username)
     storage.forget_guide(username)
     return {"ok": True}
 
@@ -787,6 +800,7 @@ def get_entry_points(org_id: str, object_name: str):
 
 @app.post("/api/orgs/{org_id}/incidents", dependencies=Dep_org_write)
 async def create_incident(
+    request: Request,
     org_id: str,
     label: Optional[str] = Form(None),
     field: Optional[str] = Form(None),
@@ -803,8 +817,13 @@ async def create_incident(
         raw_bytes = await log_file.read()  # held in memory only; never written to disk
         raw_text = raw_bytes.decode("utf-8", errors="replace")
         log_filename = log_file.filename
+        size_bytes, line_count = len(raw_bytes), raw_text.count("\n") + 1
+        t0 = time.perf_counter()
         normalized = parse_log_text(raw_text, index_ids=set(kb["org_index"].keys()))
+        parse_ms = int((time.perf_counter() - t0) * 1000)
         del raw_bytes, raw_text  # explicit: the raw log does not outlive this request
+        activity.note(request, has_log=True,
+                      **_log_parse_facts(normalized, size_bytes, line_count, parse_ms))
     else:
         normalized = {
             "header": None, "execution_units": [], "exceptions": [], "soql_summary": [],
@@ -856,6 +875,8 @@ async def create_incident(
         "prior_resolution": prior.get("resolution") if prior else None,
     }
     storage.save_incident(org_id, incident_id, normalized, context_pack, meta)
+    activity.note(request, has_field=bool(field), recurrence=bool(prior),
+                  signature_source=sig_source if isinstance(sig_source, str) else None)
 
     return {"meta": meta, "field_writers": field_result["writers"] if field_result else None}
 
@@ -920,8 +941,22 @@ def _unique_log_id(base_id):
     return log_id
 
 
+def _log_parse_facts(normalized, size_bytes, line_count, parse_ms):
+    """The numeric facts about one parse that the activity ledger keeps."""
+    normalized = normalized or {}
+    return {
+        "size_kb": round(size_bytes / 1024.0, 1),
+        "lines": line_count,
+        "parse_ms": parse_ms,
+        "exceptions": len(normalized.get("exceptions") or []),
+        "execution_units": len(normalized.get("execution_units") or []),
+        "components": len(normalized.get("involved_components") or []),
+    }
+
+
 @app.post("/api/logs/normalize", dependencies=Dep_user)
 async def normalize_log(
+    request: Request,
     log_file: UploadFile = File(...),
     label: Optional[str] = Form(None),
     store: bool = Form(False),
@@ -951,8 +986,14 @@ async def normalize_log(
 
     raw_bytes = await log_file.read()  # in memory only
     raw_text = raw_bytes.decode("utf-8", errors="replace")
+    size_bytes, line_count = len(raw_bytes), raw_text.count("\n") + 1
+    t0 = time.perf_counter()
     normalized = parse_log_text(raw_text)  # no index_ids -> no org needed
+    parse_ms = int((time.perf_counter() - t0) * 1000)
     del raw_bytes, raw_text  # the raw log does not outlive this request
+    # Sizes and counts only -- never content. See app/activity.py.
+    activity.note(request, **_log_parse_facts(normalized, size_bytes, line_count, parse_ms),
+                  stored=bool(store), org_id=tag_org or org_id or None)
 
     now = iso_now()
     result = {"normalized_log": normalized, "stored": False, "log_id": None, "meta": None}
@@ -1266,6 +1307,52 @@ def my_usage(days: int = usage_ledger.DEFAULT_DAYS, ident=Depends(auth.require_r
     summary["quota"] = limits_policy.quota_status(ident["username"],
                                                   auth.get_user(ident["username"]))
     return summary
+
+
+# ---------- activity analytics (app/activity.py) ----------
+#
+# usage.py counts LLM tokens; this counts actions, on every channel. An
+# engineer who only ever drives the tools from Claude Desktop over MCP, or who
+# only uses the log parser, is invisible to the token ledger and fully
+# visible here.
+
+class UiEventsRequest(BaseModel):
+    events: list = []
+
+
+@app.post("/api/activity/events", dependencies=Dep_reader)
+def post_ui_events(req: UiEventsRequest, ident=Depends(auth.require_reader)):
+    """Browser-only interactions (tab switches, palette, tours, copy buttons)
+    that never reach a route of their own. Allowlisted server-side."""
+    return {"accepted": activity.ingest_ui_events(ident, req.events)}
+
+
+@app.get("/api/activity/me", dependencies=Dep_reader)
+def my_activity(days: int = activity.DEFAULT_DAYS, ident=Depends(auth.require_reader)):
+    """Your own activity on every channel. Not admin-gated, same reasoning as
+    /api/usage/me."""
+    return activity.my_report(
+        ident["username"], days=days,
+        llm_records=usage_ledger.load_records(days, username=ident["username"]),
+        registry=org_access.visible_orgs(ident))
+
+
+@app.get("/api/admin/activity", dependencies=Dep_admin)
+def admin_activity(days: int = activity.DEFAULT_DAYS, username: Optional[str] = None):
+    """Adoption, channels, features, MCP tools and clients, the log parser,
+    per user / org / account -- one payload for the whole screen."""
+    return activity.report(days=days, username=username or None,
+                           llm_records=usage_ledger.load_records(days, username=username or None),
+                           registry=storage.load_registry())
+
+
+@app.get("/api/admin/activity/export", dependencies=Dep_admin)
+def export_activity(days: int = activity.DEFAULT_DAYS, username: Optional[str] = None):
+    """Raw events as CSV, for anyone who wants to pivot it in Excel/Power BI."""
+    body = activity.export_csv(days=days, username=username or None)
+    fname = f"ts-activity-{days}d{('-' + username) if username else ''}.csv"
+    return Response(content=body, media_type="text/csv",
+                    headers={"Content-Disposition": f'attachment; filename="{fname}"'})
 
 
 # ---------- home page + onboarding guide ----------

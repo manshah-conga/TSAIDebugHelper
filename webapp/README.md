@@ -1111,6 +1111,67 @@ therefore carries `cost_available`, and the UI shows an em dash rather than a
 confident `$0.00` that an admin would reasonably read as "free". Token counts
 are reported by both, so they are the number to plan against on Azure.
 
+### Activity analytics (every channel, not just the LLM)
+
+The token ledger only sees the in-app chat. Someone who drives the tools from
+Claude Desktop / Claude Code / Copilot over MCP spends *their* client's model,
+and the log normalizer uses no model at all — both are invisible there. So a
+second ledger, `data/activity/YYYY-MM-DD.jsonl` (`app/activity.py`), records
+**actions**: one line per meaningful thing a person did, on any channel.
+
+It works because every channel ends at this app's HTTP API — the MCP tools in
+`mcp_server.py` are thin proxies over it, even when the stdio server runs on
+someone else's laptop. One middleware sees all of it. The tool bodies label
+their requests so it can tell the channels apart:
+
+| Channel      | How it is recognised                                     |
+|--------------|----------------------------------------------------------|
+| `web`        | browser session cookie, no label                         |
+| `chat`       | `X-TS-Channel: chat` (set by `app/chat.py`)              |
+| `mcp-remote` | `X-TS-Channel: mcp-remote` (set by `app/mcp_http.py`)    |
+| `mcp-stdio`  | default label in `mcp_server.py` when run as stdio       |
+| `api`        | API token with no label — a script, or an old MCP copy   |
+
+`X-TS-Tool` carries the tool name and `X-TS-Client` the MCP client
+(`claude-ai 0.1.0`, `Claude Code …`), taken from the client's `initialize`
+handshake. These are analytics labels, not credentials — authorization is still
+the token alone. Remote `initialize` handshakes are also logged as
+`mcp.connect`, so "who has connected Claude" is answerable.
+
+**Recorded:** time, account, role, channel, action (`kb.field_writers`,
+`log.parse`, `incident.file`, …), org id, tool, client, status, duration, and
+numeric facts (a log's KB, line count, parse time, exceptions found; whether it
+was stored). **Never recorded:** search text, field/component names, log
+content, chat text, request bodies. Every route is classified in
+`activity.CATALOG` as `always`, `nonweb` (list endpoints: a page load in the
+browser but a deliberate tool call over MCP) or `never` (polls, config reads),
+so the 1.5-second status poll does not bury the signal. Tab switches, palette
+commands, tours and copy buttons are reported by `static/activity.js` to
+`POST /api/activity/events` against a fixed allowlist (`activity.UI_ACTIONS`),
+capped per account per hour.
+
+The **Usage** tab now opens on **Activity · all channels**:
+
+* **Everyone** sees *Your activity* — actions, active days, lookups, logs
+  parsed, MCP tool calls, AI questions, incidents, fixes; the channel split;
+  what they use most; a recent feed. Nobody else's data (`GET /api/activity/me`).
+* **Admins** additionally see adoption KPIs (including *users with no AI
+  spend*), a per-day trend stacked by channel, user segments (*MCP only (no
+  in-app LLM)*, *In-app AI chat*, *Web UI only*, …), an adoption ladder
+  (active → looked up metadata → parsed a log → filed an incident → recorded a
+  fix), channels, every feature with users/errors/p95, MCP & chat tools, MCP
+  clients, a log-parser card (volume, sizes, parse time, % stored, exceptions
+  found), per user (click to drill down), per customer account and org, hour
+  of day, failures, and a live feed. **Export CSV** gives the raw events
+  (`GET /api/admin/activity/export`).
+
+Settings: `TS_ACTIVITY_ENABLED=0` turns the ledger off;
+`TS_ACTIVITY_RETENTION_DAYS` (default 365) is applied at start-up;
+`TS_ACTIVITY_UI_HOURLY_MAX` (default 600) caps browser events per account per
+hour; on a client machine, `TS_MCP_TELEMETRY=0` stops the stdio server sending
+tool/client labels (calls are still counted by route). Deleting an account
+removes its activity lines too.
+
 ### Choosing the org
 
 The first chip in the dock is the org selector — click it to switch, or to pick

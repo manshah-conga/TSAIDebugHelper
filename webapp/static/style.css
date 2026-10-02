@@ -1667,3 +1667,95 @@ button.secondary.danger-outline:hover { background: var(--conga-color-status-err
   border-bottom: 1px solid var(--conga-color-status-warning-border); padding: 10px var(--conga-space-8);
   font-size: var(--conga-font-size-md);
 }
+
+/* ===================================================================
+   Activity analytics (static/activity.js)
+   -------------------------------------------------------------------
+   One colour per channel, used identically in chips, stacked bars and
+   the daily trend so a reader learns the key once.
+   =================================================================== */
+:root {
+  --ch-web: var(--conga-color-purple-300);
+  --ch-chat: var(--conga-color-purple-400);
+  --ch-mcp-remote: var(--conga-color-green-200);
+  --ch-mcp-stdio: var(--conga-color-yellow-200);
+  --ch-api: var(--conga-color-gray-500);
+}
+.usage-switch {
+  display: inline-flex; gap: 2px; padding: 3px; margin-bottom: var(--conga-space-5);
+  background: var(--conga-color-surface-subtle); border-radius: var(--conga-radius-pill);
+  border: 1px solid var(--conga-color-border); max-width: 100%; flex-wrap: wrap;
+}
+.usage-switch button {
+  margin: 0; border: 0; background: transparent; color: var(--conga-color-text-muted);
+  padding: 6px 16px; border-radius: var(--conga-radius-pill); font-weight: var(--conga-font-weight-medium);
+  font-size: var(--conga-font-size-md); cursor: pointer;
+}
+.usage-switch button.active { background: var(--conga-color-brand); color: var(--conga-color-text-inverse); }
+.usage-pane[hidden] { display: none !important; }
+.act-head { display: flex; justify-content: space-between; align-items: flex-end; gap: var(--conga-space-4); flex-wrap: wrap; }
+.act-head h2 { margin-bottom: var(--conga-space-3); }
+.act-head > select { width: auto; min-width: 150px; }
+.act-controls { margin-bottom: var(--conga-space-3); }
+.act-grid { align-items: start; }
+.act-grid > .card { margin-bottom: 0; }
+.grid2.act-grid[data-admin-only] { margin-bottom: var(--conga-space-5); }
+.act-sub {
+  font-size: var(--conga-font-size-xs); text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--conga-color-text-muted); margin: var(--conga-space-3) 0 var(--conga-space-2);
+}
+.ch-bg-web { background: var(--ch-web); }
+.ch-bg-chat { background: var(--ch-chat); }
+.ch-bg-mcp-remote { background: var(--ch-mcp-remote); }
+.ch-bg-mcp-stdio { background: var(--ch-mcp-stdio); }
+.ch-bg-api { background: var(--ch-api); }
+.ch-chip {
+  display: inline-block; padding: 1px 7px; border-radius: var(--conga-radius-pill);
+  font-size: var(--conga-font-size-xs); font-weight: var(--conga-font-weight-medium); white-space: nowrap;
+  border: 1px solid transparent;
+}
+.ch-chip.ch-web { background: var(--conga-color-purple-100); color: var(--conga-color-purple-400); }
+.ch-chip.ch-chat { background: var(--conga-color-purple-400); color: var(--conga-color-white); }
+.ch-chip.ch-mcp-remote { background: var(--conga-color-green-100); color: var(--conga-color-green-300); }
+.ch-chip.ch-mcp-stdio { background: var(--conga-color-yellow-100); color: var(--conga-color-yellow-300); }
+.ch-chip.ch-api { background: var(--conga-color-gray-200); color: var(--conga-color-gray-700); }
+.ch-stack {
+  display: flex; height: 10px; border-radius: var(--conga-radius-pill); overflow: hidden;
+  background: var(--conga-color-border); width: 100%;
+}
+.ch-stack.empty { opacity: 0.5; }
+.ch-seg { display: block; height: 100%; }
+.ch-legend {
+  display: flex; flex-wrap: wrap; gap: var(--conga-space-2) var(--conga-space-4);
+  font-size: var(--conga-font-size-xs); color: var(--conga-color-text-muted); margin-top: var(--conga-space-2);
+}
+.ch-legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; vertical-align: -1px; }
+.act-bar {
+  display: flex; flex-direction: column-reverse; border-radius: 2px 2px 0 0; overflow: hidden; min-height: 2px;
+}
+.act-bar > span { display: block; min-height: 1px; }
+.act-bar.empty { background: var(--conga-color-border); min-height: 1px; }
+.act-hours { height: 90px; }
+.act-feed { max-height: 360px; overflow-y: auto; }
+.act-row {
+  display: flex; align-items: center; gap: var(--conga-space-2); flex-wrap: wrap;
+  padding: 6px 0; border-bottom: 1px solid var(--conga-color-border); font-size: var(--conga-font-size-md);
+}
+.act-row.failed .act-what { color: var(--conga-color-status-error); }
+.act-when { font-variant-numeric: tabular-nums; color: var(--conga-color-text-muted); font-size: var(--conga-font-size-sm); min-width: 108px; }
+.act-what { flex: 1 1 200px; min-width: 0; overflow-wrap: anywhere; }
+.act-code { font-size: var(--conga-font-size-xs); margin-left: 4px; }
+.act-chips { margin-bottom: var(--conga-space-4); }
+.seg-tag {
+  font-size: var(--conga-font-size-xs); background: var(--conga-color-surface-brand-subtle);
+  color: var(--conga-color-purple-400); padding: 1px 7px; border-radius: var(--conga-radius-pill); white-space: nowrap;
+}
+.ladder-row { display: grid; grid-template-columns: minmax(120px, 42%) 1fr 72px; gap: var(--conga-space-3); align-items: center; margin: 8px 0; }
+.ladder-label { font-size: var(--conga-font-size-md); }
+.ladder-track { height: 12px; background: var(--conga-color-surface-subtle); border-radius: var(--conga-radius-pill); overflow: hidden; }
+.ladder-fill { height: 100%; background: var(--conga-color-brand-accent); border-radius: var(--conga-radius-pill); }
+.ladder-num { text-align: right; font-variant-numeric: tabular-nums; font-size: var(--conga-font-size-md); }
+.table-scroll { overflow-x: auto; }
+@media (max-width: 900px) {
+  .grid2.act-grid { grid-template-columns: 1fr; }
+}

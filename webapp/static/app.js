@@ -2245,7 +2245,7 @@ function applyRole() {
 }
 
 // Must match APP_BUILD in app/main.py and the ?v= on index.html's assets.
-const CLIENT_BUILD = 26;
+const CLIENT_BUILD = 27;
 let SERVER_BUILD = null;   // null = not checked yet, 0 = a server too old to report one
 
 /** Static files are served fresh, but the server's Python is only loaded at

@@ -445,8 +445,10 @@ const TOURS = {
       body: "The token is shown once, when created. Lost it? Revoke it and make another. Help has the Claude Desktop setup steps." },
   ] },
   usage: { title: "Usage", steps: [
-    { el: "#myQuota", view: "usage", title: "Your allowance",
-      body: "Today's and the rolling window's token use against your limit. New self-registered accounts start lower until an admin verifies them." },
+    { el: "#myActivityKpis", view: "usage", title: "Your activity, every channel",
+      body: "Lookups, parsed logs, incidents and fixes -- whether you worked here, in the assistant, or from Claude/Copilot over MCP. Counts only; no search or log text is kept." },
+    { el: "#usageSwitch", view: "usage", title: "Your AI allowance",
+      body: "Switch to \"AI chat tokens\" for today's and the rolling window's token use against your limit. New self-registered accounts start lower until an admin verifies them." },
   ] },
   ask: { title: "The assistant", steps: [
     { el: "#navChat", title: "Full screen for a real investigation",

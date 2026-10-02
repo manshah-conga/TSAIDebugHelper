@@ -48,7 +48,7 @@ from . import secrets_store
 from . import usage as usage_ledger
 from .common_now import iso_now
 
-from mcp_server import mcp, CURRENT_TOKEN
+from mcp_server import mcp, CURRENT_TOKEN, CURRENT_CHANNEL
 
 # ---------- policy ----------
 
@@ -198,12 +198,16 @@ async def call_tool(name, args, api_token):
       be caught, or one bad tool call kills the whole turn.
     """
     reset = CURRENT_TOKEN.set(api_token or "")
+    # Labels the loopback request as the in-app chat for app/activity.py, so a
+    # tool the model ran is not mistaken for one an MCP client ran.
+    channel_reset = CURRENT_CHANNEL.set("chat")
     try:
         manager = getattr(mcp, "_tool_manager", None)
         if manager is not None:
             return await manager.call_tool(name, args, context=None, convert_result=False)
         return _unwrap_public(await mcp.call_tool(name, args))
     finally:
+        CURRENT_CHANNEL.reset(channel_reset)
         CURRENT_TOKEN.reset(reset)
 
 

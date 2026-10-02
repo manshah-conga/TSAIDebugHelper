@@ -73,6 +73,23 @@ API_TOKEN = os.environ.get("TS_DEBUG_HELPER_TOKEN", "").strip()
 # token: each request runs in its own context.
 CURRENT_TOKEN: ContextVar[str] = ContextVar("ts_api_token", default="")
 
+# Activity analytics labels (see app/activity.py). Every tool below is an HTTP
+# call back into the web app, so the web app's activity middleware sees every
+# tool call from every channel -- including stdio MCP on someone else's
+# machine. These say WHICH channel, tool and client a call came from. They
+# are labels, not credentials: authorization is still the token alone.
+#   CURRENT_CHANNEL  "chat" (app/chat.py) | "mcp-remote" (app/mcp_http.py);
+#                    unset means this process is the stdio server
+#   CURRENT_CLIENT   MCP client name, e.g. "claude-ai" or "Claude Code"
+#   CURRENT_TOOL     set around every tool call by the wrapper below
+CURRENT_CHANNEL: ContextVar[str] = ContextVar("ts_channel", default="")
+CURRENT_CLIENT: ContextVar[str] = ContextVar("ts_client", default="")
+CURRENT_TOOL: ContextVar[str] = ContextVar("ts_tool", default="")
+# Opt-out for a stdio user who does not want their tool calls labelled. The
+# calls are still authenticated and still counted by route, just not by tool
+# or client.
+SEND_TELEMETRY = os.environ.get("TS_MCP_TELEMETRY", "1").strip().lower() not in ("0", "false", "no")
+
 # stateless_http: every request is self-contained, which is what lets the
 # per-request token above be the whole of the auth story -- there is no
 # server-side session holding an identity between calls. It also keeps the
@@ -118,6 +135,51 @@ SERVER_INSTRUCTIONS = (
 mcp = FastMCP("ts-debug-helper", instructions=SERVER_INSTRUCTIONS, stateless_http=True)
 
 
+def _client_name_from_context(context) -> str:
+    """The MCP client's self-reported name from its initialize handshake.
+    Available on a stateful session (stdio); a stateless HTTP request has no
+    handshake of its own, so app/mcp_http.py supplies the name there."""
+    try:
+        info = context.request_context.session.client_params.clientInfo
+        name = getattr(info, "name", "") or ""
+        ver = getattr(info, "version", "") or ""
+        return f"{name} {ver}".strip()
+    except Exception:  # noqa: BLE001 - no session, no request, older SDK
+        return ""
+
+
+def _install_tool_tracking():
+    """Wrap the one method every tool call passes through -- remote, stdio and
+    the in-app chat alike -- so each call knows its own tool name. Wrapping the
+    manager rather than each tool leaves the tools' signatures (and therefore
+    their generated input schemas) untouched."""
+    manager = getattr(mcp, "_tool_manager", None)
+    original = getattr(manager, "call_tool", None)
+    if original is None or getattr(original, "_ts_tracked", False):
+        return
+
+    async def tracked_call_tool(name, arguments, *args, **kwargs):
+        tool_reset = CURRENT_TOOL.set(name or "")
+        client_reset = None
+        if not CURRENT_CLIENT.get():
+            ctx = kwargs.get("context") if "context" in kwargs else (args[0] if args else None)
+            label = _client_name_from_context(ctx) if ctx is not None else ""
+            if label:
+                client_reset = CURRENT_CLIENT.set(label)
+        try:
+            return await original(name, arguments, *args, **kwargs)
+        finally:
+            CURRENT_TOOL.reset(tool_reset)
+            if client_reset is not None:
+                CURRENT_CLIENT.reset(client_reset)
+
+    tracked_call_tool._ts_tracked = True
+    manager.call_tool = tracked_call_tool
+
+
+_install_tool_tracking()
+
+
 @mcp.prompt(
     name="field_value_investigation",
     description="Investigation protocol for 'which automation sets field X to "
@@ -144,8 +206,26 @@ def _auth_headers():
     return {"Authorization": f"Bearer {tok}"} if tok else {}
 
 
+def _header_safe(value: str, limit: int = 60) -> str:
+    return "".join(ch for ch in (value or "") if 32 <= ord(ch) < 127)[:limit]
+
+
+def _telemetry_headers():
+    if not SEND_TELEMETRY:
+        return {}
+    h = {"X-TS-Channel": CURRENT_CHANNEL.get() or "mcp-stdio"}
+    tool = _header_safe(CURRENT_TOOL.get())
+    if tool:
+        h["X-TS-Tool"] = tool
+    client = _header_safe(CURRENT_CLIENT.get())
+    if client:
+        h["X-TS-Client"] = client
+    return h
+
+
 def _client() -> httpx.AsyncClient:
-    return httpx.AsyncClient(base_url=BASE_URL, timeout=30.0, headers=_auth_headers())
+    return httpx.AsyncClient(base_url=BASE_URL, timeout=30.0,
+                             headers={**_auth_headers(), **_telemetry_headers()})
 
 
 def _auth_error(status: int):

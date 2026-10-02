@@ -52,7 +52,7 @@ const state = {
     LOG("20260926T100000Z_old", { label: "Old one", owner: "dana", archived: true, archived_by: "dana" }),
     LOG("20250101T000000Z_legacy", { owner: null, can_manage: false }),
   ],
-  uploads: [], patches: [], deletes: [], serverBuild: 26,
+  uploads: [], patches: [], deletes: [], serverBuild: 27,
 };
 
 const routes = {
@@ -257,7 +257,7 @@ $("logOrg").value = "acmeprod"; logOrgChanged(); $("logStore").checked = true;
 await normalizeLog();
 await tick(20);
 check("an upload whose tags were dropped says why", $("logStatus").textContent.includes("ignored the owner and tags"), $("logStatus").textContent);
-S.serverBuild = 26;
+S.serverBuild = 27;
 await checkServerBuild();
 check("matching builds hide the banner", $("buildBanner").style.display === "none");
 

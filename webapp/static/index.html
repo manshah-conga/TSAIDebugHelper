@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>TS Intelligent Debug Helper</title>
-<link rel="stylesheet" href="/static/style.css?v=26">
+<link rel="stylesheet" href="/static/style.css?v=27">
 </head>
 <body>
 
@@ -408,6 +408,151 @@
        from the same credential, so "who spent this" can only be answered
        here, from what the app recorded at the point of use. -->
   <section id="view-usage" class="view">
+    <!-- Two ledgers, two panes. "Activity" counts actions on every channel
+         (web UI, in-app chat, remote + stdio MCP, API scripts), so people who
+         never touch the in-app LLM -- MCP-only, log-parser-only -- are
+         visible. "AI tokens" is the original LLM spend/quota view. -->
+    <div class="usage-switch" id="usageSwitch" role="tablist" aria-label="Usage view">
+      <button type="button" role="tab" data-usage-pane="activity" class="active" onclick="showUsagePane('activity')">Activity &middot; all channels</button>
+      <button type="button" role="tab" data-usage-pane="tokens" onclick="showUsagePane('tokens')">AI chat tokens</button>
+    </div>
+
+    <div class="usage-pane" id="usagePaneActivity">
+      <div class="card">
+        <div class="act-head">
+          <h2>Your activity</h2>
+          <select id="myActDays" onchange="renderMyActivity()" aria-label="Period">
+            <option value="7">Last 7 days</option>
+            <option value="30" selected>Last 30 days</option>
+            <option value="90">Last 90 days</option>
+          </select>
+        </div>
+        <p class="muted">Everything you did here, whichever way you did it &mdash; this page, the
+          in-app assistant, or Claude/Copilot over MCP. Counts and timings only: no search text,
+          log content or chat text is ever recorded.</p>
+        <div id="myActivityKpis" class="usage-kpis"></div>
+        <div id="myActivityChannels"></div>
+        <div class="grid2 act-grid">
+          <div><h3>What you use most</h3>
+            <table><thead><tr><th>Action</th><th class="num">Times</th><th>Via</th></tr></thead>
+              <tbody id="myActivityFeatures"></tbody></table></div>
+          <div><h3>Recent</h3><div id="myActivityRecent" class="act-feed"></div></div>
+        </div>
+      </div>
+
+      <div class="card" data-admin-only>
+        <div class="act-head">
+          <h2>Adoption &amp; activity</h2>
+          <div class="usage-controls act-controls">
+            <div>
+              <label for="actDays">Period</label>
+              <select id="actDays" onchange="loadActivity()">
+                <option value="7">Last 7 days</option>
+                <option value="30" selected>Last 30 days</option>
+                <option value="90">Last 90 days</option>
+                <option value="365">Last 12 months</option>
+              </select>
+            </div>
+            <div>
+              <label for="actUser">Account</label>
+              <select id="actUser" onchange="loadActivity()"><option value="">Everyone</option></select>
+            </div>
+            <button class="secondary" onclick="loadActivity()">Refresh</button>
+            <button class="secondary" onclick="exportActivity()">Export CSV</button>
+          </div>
+        </div>
+        <div id="actKpis" class="usage-kpis"></div>
+        <div id="actTrend"></div>
+      </div>
+
+      <div class="grid2 act-grid" data-admin-only>
+        <div class="card">
+          <h2>How people use it</h2>
+          <p class="muted">Each active account, by the channels it used. <b>MCP only</b> means
+            real use with zero in-app LLM spend &mdash; invisible on the token view.</p>
+          <div id="actSegments"></div>
+        </div>
+        <div class="card">
+          <h2>Adoption ladder</h2>
+          <p class="muted">Accounts that reached each outcome in the period.</p>
+          <div id="actLadder"></div>
+        </div>
+      </div>
+
+      <div class="card" data-admin-only>
+        <h2>Channels</h2>
+        <table><thead><tr><th>Channel</th><th class="num">Actions</th><th class="num">Users</th>
+          <th class="num">Errors</th><th>Share</th></tr></thead><tbody id="actChannels"></tbody></table>
+      </div>
+
+      <div class="card" data-admin-only>
+        <h2>Features</h2>
+        <p class="muted">Every tracked action, server-side and in the browser. The bar shows which
+          channels it came through.</p>
+        <div id="actCategories" class="act-chips"></div>
+        <table><thead><tr><th>Action</th><th>Category</th><th class="num">Times</th><th class="num">Users</th>
+          <th class="num">Errors</th><th class="num">p95</th><th>Channels</th></tr></thead>
+          <tbody id="actFeatures"></tbody></table>
+      </div>
+
+      <div class="grid2 act-grid" data-admin-only>
+        <div class="card">
+          <h2>MCP &amp; chat tools</h2>
+          <table><thead><tr><th>Tool</th><th class="num">Calls</th><th class="num">Users</th>
+            <th class="num">Err</th><th class="num">p95</th><th>Via</th></tr></thead>
+            <tbody id="actTools"></tbody></table>
+        </div>
+        <div class="card">
+          <h2>MCP clients</h2>
+          <p class="muted">From the client's own handshake (remote) or its session (stdio).</p>
+          <table><thead><tr><th>Client</th><th class="num">Calls</th><th class="num">Connects</th>
+            <th class="num">Users</th><th>Last seen</th></tr></thead>
+            <tbody id="actClients"></tbody></table>
+        </div>
+      </div>
+
+      <div class="card" data-admin-only>
+        <h2>Log parser</h2>
+        <p class="muted">Standalone normalizing plus logs attached to incidents, on every channel.
+          No LLM involved, so none of this appears on the token view.</p>
+        <div id="actLogParser"></div>
+      </div>
+
+      <div class="card" data-admin-only>
+        <h2>By user</h2>
+        <p class="muted">Click a row to narrow the whole page to that account.</p>
+        <div class="table-scroll">
+        <table><thead><tr><th>User</th><th>Profile</th><th class="num">Actions</th><th class="num">Days</th>
+          <th class="num">AI Qs</th><th class="num">MCP</th><th class="num">KB</th><th class="num">Logs</th>
+          <th class="num">Incid.</th><th class="num">Fixes</th><th>Channels</th><th>Last seen</th></tr></thead>
+          <tbody id="actUsers"></tbody></table></div>
+      </div>
+
+      <div class="grid2 act-grid" data-admin-only>
+        <div class="card">
+          <h2>By customer account</h2>
+          <table><thead><tr><th>Account</th><th class="num">Orgs</th><th class="num">Actions</th>
+            <th class="num">Incidents</th></tr></thead><tbody id="actAccounts"></tbody></table>
+          <h3 style="margin-top:16px;">By org</h3>
+          <table><thead><tr><th>Org</th><th class="num">Actions</th><th class="num">Users</th>
+            <th>Mostly</th></tr></thead><tbody id="actOrgs"></tbody></table>
+        </div>
+        <div class="card">
+          <h2>When (UTC hour)</h2>
+          <div id="actHours"></div>
+          <h3 style="margin-top:16px;">Failures</h3>
+          <table><thead><tr><th>Action</th><th class="num">Status</th><th class="num">Times</th>
+            <th class="num">Users</th></tr></thead><tbody id="actErrors"></tbody></table>
+        </div>
+      </div>
+
+      <div class="card" data-admin-only>
+        <h2>Recent activity</h2>
+        <div id="actRecent" class="act-feed"></div>
+      </div>
+    </div>
+
+    <div class="usage-pane" id="usagePaneTokens" hidden>
     <!-- Every account sees its own consumption and its own quota. That was
          already true of the API (/api/usage/me has never been admin-gated);
          only this tab was hidden. Answering "is it me, and how much is
@@ -485,6 +630,7 @@
         <tbody id="usageByModel"></tbody>
       </table>
     </div>
+    </div><!-- /usagePaneTokens -->
   </section>
 
   <!-- Chat, full screen. The transcript column is capped rather than
@@ -560,12 +706,13 @@
 </aside>
 
 </div>
-<script src="/static/app.js?v=26"></script>
-<script src="/static/chat.js?v=26"></script>
+<script src="/static/app.js?v=27"></script>
+<script src="/static/chat.js?v=27"></script>
+<script src="/static/activity.js?v=27"></script>
 <!-- Home page + command palette, then onboarding/help. Both are optional
      layers over app.js: every call into them from app.js is guarded, so a
      cached page that loads without them still works. -->
-<script src="/static/home.js?v=26"></script>
-<script src="/static/guide.js?v=26"></script>
+<script src="/static/home.js?v=27"></script>
+<script src="/static/guide.js?v=27"></script>
 </body>
 </html>

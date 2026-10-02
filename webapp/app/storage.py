@@ -122,6 +122,12 @@ def usage_root():
     return os.path.join(DATA_ROOT, "usage")
 
 
+def activity_root():
+    """Per-day action ledger (app/activity.py). Late-bound like `usage_root`
+    so a test that repoints DATA_ROOT after import is honoured."""
+    return os.path.join(DATA_ROOT, "activity")
+
+
 def guide_path(username):
     """Per-user onboarding state and UI preferences (see app/guide.py).
 

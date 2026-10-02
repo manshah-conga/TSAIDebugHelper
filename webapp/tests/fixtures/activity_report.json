@@ -1,0 +1,4419 @@
+{
+ "admin": {
+  "days": 30,
+  "from": "2026-08-31",
+  "to": "2026-09-29",
+  "scope": "all users",
+  "channel_labels": {
+   "web": "Web UI",
+   "chat": "In-app AI chat",
+   "mcp-remote": "MCP (remote /mcp)",
+   "mcp-stdio": "MCP (local stdio)",
+   "api": "API token (script)"
+  },
+  "totals": {
+   "actions": 864,
+   "ui_events": 200,
+   "active_users": 6,
+   "active_days": 30,
+   "errors": 38,
+   "mcp_calls": 292,
+   "chat_tool_calls": 123,
+   "llm_turns": 40,
+   "logs_parsed": 111,
+   "incidents_filed": 103,
+   "resolutions": 121,
+   "kb_lookups": 446,
+   "non_llm_users": 4
+  },
+  "by_day": [
+   {
+    "date": "2026-08-31",
+    "events": 14,
+    "active_users": 5,
+    "channels": {
+     "web": 2,
+     "chat": 1,
+     "mcp-remote": 4,
+     "mcp-stdio": 2,
+     "api": 5
+    }
+   },
+   {
+    "date": "2026-09-01",
+    "events": 37,
+    "active_users": 6,
+    "channels": {
+     "web": 13,
+     "chat": 3,
+     "mcp-remote": 8,
+     "mcp-stdio": 5,
+     "api": 8
+    }
+   },
+   {
+    "date": "2026-09-02",
+    "events": 29,
+    "active_users": 6,
+    "channels": {
+     "web": 13,
+     "chat": 3,
+     "mcp-remote": 6,
+     "mcp-stdio": 4,
+     "api": 3
+    }
+   },
+   {
+    "date": "2026-09-03",
+    "events": 25,
+    "active_users": 5,
+    "channels": {
+     "web": 6,
+     "chat": 7,
+     "mcp-remote": 8,
+     "mcp-stdio": 0,
+     "api": 4
+    }
+   },
+   {
+    "date": "2026-09-04",
+    "events": 26,
+    "active_users": 6,
+    "channels": {
+     "web": 8,
+     "chat": 6,
+     "mcp-remote": 5,
+     "mcp-stdio": 2,
+     "api": 5
+    }
+   },
+   {
+    "date": "2026-09-05",
+    "events": 20,
+    "active_users": 6,
+    "channels": {
+     "web": 4,
+     "chat": 2,
+     "mcp-remote": 10,
+     "mcp-stdio": 0,
+     "api": 4
+    }
+   },
+   {
+    "date": "2026-09-06",
+    "events": 43,
+    "active_users": 6,
+    "channels": {
+     "web": 15,
+     "chat": 5,
+     "mcp-remote": 12,
+     "mcp-stdio": 4,
+     "api": 7
+    }
+   },
+   {
+    "date": "2026-09-07",
+    "events": 32,
+    "active_users": 6,
+    "channels": {
+     "web": 11,
+     "chat": 5,
+     "mcp-remote": 8,
+     "mcp-stdio": 3,
+     "api": 5
+    }
+   },
+   {
+    "date": "2026-09-08",
+    "events": 25,
+    "active_users": 6,
+    "channels": {
+     "web": 13,
+     "chat": 2,
+     "mcp-remote": 7,
+     "mcp-stdio": 2,
+     "api": 1
+    }
+   },
+   {
+    "date": "2026-09-09",
+    "events": 26,
+    "active_users": 5,
+    "channels": {
+     "web": 9,
+     "chat": 5,
+     "mcp-remote": 8,
+     "mcp-stdio": 4,
+     "api": 0
+    }
+   },
+   {
+    "date": "2026-09-10",
+    "events": 36,
+    "active_users": 6,
+    "channels": {
+     "web": 12,
+     "chat": 4,
+     "mcp-remote": 10,
+     "mcp-stdio": 5,
+     "api": 5
+    }
+   },
+   {
+    "date": "2026-09-11",
+    "events": 29,
+    "active_users": 6,
+    "channels": {
+     "web": 12,
+     "chat": 7,
+     "mcp-remote": 4,
+     "mcp-stdio": 1,
+     "api": 5
+    }
+   },
+   {
+    "date": "2026-09-12",
+    "events": 29,
+    "active_users": 6,
+    "channels": {
+     "web": 13,
+     "chat": 3,
+     "mcp-remote": 5,
+     "mcp-stdio": 3,
+     "api": 5
+    }
+   },
+   {
+    "date": "2026-09-13",
+    "events": 21,
+    "active_users": 6,
+    "channels": {
+     "web": 6,
+     "chat": 2,
+     "mcp-remote": 4,
+     "mcp-stdio": 6,
+     "api": 3
+    }
+   },
+   {
+    "date": "2026-09-14",
+    "events": 23,
+    "active_users": 6,
+    "channels": {
+     "web": 9,
+     "chat": 3,
+     "mcp-remote": 4,
+     "mcp-stdio": 4,
+     "api": 3
+    }
+   },
+   {
+    "date": "2026-09-15",
+    "events": 33,
+    "active_users": 6,
+    "channels": {
+     "web": 13,
+     "chat": 2,
+     "mcp-remote": 11,
+     "mcp-stdio": 4,
+     "api": 3
+    }
+   },
+   {
+    "date": "2026-09-16",
+    "events": 38,
+    "active_users": 6,
+    "channels": {
+     "web": 12,
+     "chat": 7,
+     "mcp-remote": 7,
+     "mcp-stdio": 4,
+     "api": 8
+    }
+   },
+   {
+    "date": "2026-09-17",
+    "events": 22,
+    "active_users": 6,
+    "channels": {
+     "web": 6,
+     "chat": 4,
+     "mcp-remote": 2,
+     "mcp-stdio": 2,
+     "api": 8
+    }
+   },
+   {
+    "date": "2026-09-18",
+    "events": 35,
+    "active_users": 6,
+    "channels": {
+     "web": 14,
+     "chat": 2,
+     "mcp-remote": 7,
+     "mcp-stdio": 6,
+     "api": 6
+    }
+   },
+   {
+    "date": "2026-09-19",
+    "events": 32,
+    "active_users": 6,
+    "channels": {
+     "web": 12,
+     "chat": 7,
+     "mcp-remote": 7,
+     "mcp-stdio": 2,
+     "api": 4
+    }
+   },
+   {
+    "date": "2026-09-20",
+    "events": 24,
+    "active_users": 6,
+    "channels": {
+     "web": 9,
+     "chat": 3,
+     "mcp-remote": 1,
+     "mcp-stdio": 2,
+     "api": 9
+    }
+   },
+   {
+    "date": "2026-09-21",
+    "events": 27,
+    "active_users": 6,
+    "channels": {
+     "web": 8,
+     "chat": 2,
+     "mcp-remote": 6,
+     "mcp-stdio": 3,
+     "api": 8
+    }
+   },
+   {
+    "date": "2026-09-22",
+    "events": 38,
+    "active_users": 6,
+    "channels": {
+     "web": 14,
+     "chat": 5,
+     "mcp-remote": 13,
+     "mcp-stdio": 2,
+     "api": 4
+    }
+   },
+   {
+    "date": "2026-09-23",
+    "events": 30,
+    "active_users": 6,
+    "channels": {
+     "web": 7,
+     "chat": 8,
+     "mcp-remote": 9,
+     "mcp-stdio": 3,
+     "api": 3
+    }
+   },
+   {
+    "date": "2026-09-24",
+    "events": 28,
+    "active_users": 6,
+    "channels": {
+     "web": 12,
+     "chat": 2,
+     "mcp-remote": 7,
+     "mcp-stdio": 1,
+     "api": 6
+    }
+   },
+   {
+    "date": "2026-09-25",
+    "events": 28,
+    "active_users": 6,
+    "channels": {
+     "web": 11,
+     "chat": 4,
+     "mcp-remote": 6,
+     "mcp-stdio": 3,
+     "api": 4
+    }
+   },
+   {
+    "date": "2026-09-26",
+    "events": 34,
+    "active_users": 6,
+    "channels": {
+     "web": 10,
+     "chat": 4,
+     "mcp-remote": 8,
+     "mcp-stdio": 5,
+     "api": 7
+    }
+   },
+   {
+    "date": "2026-09-27",
+    "events": 30,
+    "active_users": 6,
+    "channels": {
+     "web": 13,
+     "chat": 6,
+     "mcp-remote": 7,
+     "mcp-stdio": 2,
+     "api": 2
+    }
+   },
+   {
+    "date": "2026-09-28",
+    "events": 30,
+    "active_users": 6,
+    "channels": {
+     "web": 13,
+     "chat": 4,
+     "mcp-remote": 6,
+     "mcp-stdio": 2,
+     "api": 5
+    }
+   },
+   {
+    "date": "2026-09-29",
+    "events": 20,
+    "active_users": 6,
+    "channels": {
+     "web": 7,
+     "chat": 5,
+     "mcp-remote": 6,
+     "mcp-stdio": 1,
+     "api": 1
+    }
+   }
+  ],
+  "by_channel": [
+   {
+    "channel": "web",
+    "label": "Web UI",
+    "events": 307,
+    "users": 4,
+    "errors": 16
+   },
+   {
+    "channel": "mcp-remote",
+    "label": "MCP (remote /mcp)",
+    "events": 206,
+    "users": 2,
+    "errors": 6
+   },
+   {
+    "channel": "api",
+    "label": "API token (script)",
+    "events": 141,
+    "users": 1,
+    "errors": 4
+   },
+   {
+    "channel": "chat",
+    "label": "In-app AI chat",
+    "events": 123,
+    "users": 2,
+    "errors": 4
+   },
+   {
+    "channel": "mcp-stdio",
+    "label": "MCP (local stdio)",
+    "events": 87,
+    "users": 1,
+    "errors": 8
+   }
+  ],
+  "by_category": [
+   {
+    "category": "Knowledgebase",
+    "count": 446,
+    "users": 6
+   },
+   {
+    "category": "Incidents",
+    "count": 235,
+    "users": 6
+   },
+   {
+    "category": "Navigation",
+    "count": 200,
+    "users": 4
+   },
+   {
+    "category": "Logs",
+    "count": 111,
+    "users": 6
+   },
+   {
+    "category": "Orgs",
+    "count": 71,
+    "users": 5
+   },
+   {
+    "category": "MCP",
+    "count": 1,
+    "users": 1
+   }
+  ],
+  "features": [
+   {
+    "action": "kb.search",
+    "label": "Knowledgebase search",
+    "category": "Knowledgebase",
+    "kind": "action",
+    "count": 126,
+    "users": 6,
+    "errors": 6,
+    "p50_ms": 879,
+    "p95_ms": 1684,
+    "channels": {
+     "web": 49,
+     "api": 20,
+     "mcp-remote": 33,
+     "mcp-stdio": 8,
+     "chat": 16
+    }
+   },
+   {
+    "action": "incident.resolve",
+    "label": "Recorded a resolution",
+    "category": "Incidents",
+    "kind": "action",
+    "count": 125,
+    "users": 6,
+    "errors": 4,
+    "p50_ms": 769,
+    "p95_ms": 1662,
+    "channels": {
+     "mcp-remote": 32,
+     "mcp-stdio": 7,
+     "api": 23,
+     "web": 42,
+     "chat": 21
+    }
+   },
+   {
+    "action": "kb.component",
+    "label": "Opened a component",
+    "category": "Knowledgebase",
+    "kind": "action",
+    "count": 118,
+    "users": 6,
+    "errors": 5,
+    "p50_ms": 738,
+    "p95_ms": 1698,
+    "channels": {
+     "api": 16,
+     "web": 56,
+     "mcp-stdio": 6,
+     "chat": 13,
+     "mcp-remote": 27
+    }
+   },
+   {
+    "action": "log.parse",
+    "label": "Parsed a debug log",
+    "category": "Logs",
+    "kind": "action",
+    "count": 111,
+    "users": 6,
+    "errors": 5,
+    "p50_ms": 947,
+    "p95_ms": 1713,
+    "channels": {
+     "api": 16,
+     "mcp-stdio": 13,
+     "chat": 14,
+     "web": 41,
+     "mcp-remote": 27
+    }
+   },
+   {
+    "action": "incident.file",
+    "label": "Filed an incident",
+    "category": "Incidents",
+    "kind": "action",
+    "count": 110,
+    "users": 6,
+    "errors": 7,
+    "p50_ms": 849,
+    "p95_ms": 1728,
+    "channels": {
+     "web": 40,
+     "mcp-remote": 19,
+     "chat": 17,
+     "api": 17,
+     "mcp-stdio": 17
+    }
+   },
+   {
+    "action": "kb.field_writers",
+    "label": "Field writers",
+    "category": "Knowledgebase",
+    "kind": "action",
+    "count": 108,
+    "users": 6,
+    "errors": 2,
+    "p50_ms": 1011,
+    "p95_ms": 1705,
+    "channels": {
+     "web": 49,
+     "mcp-remote": 22,
+     "mcp-stdio": 5,
+     "chat": 17,
+     "api": 15
+    }
+   },
+   {
+    "action": "kb.entry_points",
+    "label": "Entry points",
+    "category": "Knowledgebase",
+    "kind": "action",
+    "count": 94,
+    "users": 6,
+    "errors": 5,
+    "p50_ms": 777,
+    "p95_ms": 1699,
+    "channels": {
+     "api": 14,
+     "mcp-stdio": 15,
+     "chat": 15,
+     "web": 30,
+     "mcp-remote": 20
+    }
+   },
+   {
+    "action": "org.list",
+    "label": "Listed orgs",
+    "category": "Orgs",
+    "kind": "action",
+    "count": 71,
+    "users": 5,
+    "errors": 4,
+    "p50_ms": 872,
+    "p95_ms": 1662,
+    "channels": {
+     "mcp-remote": 25,
+     "chat": 10,
+     "api": 20,
+     "mcp-stdio": 16
+    }
+   },
+   {
+    "action": "ui.copy",
+    "label": "Copied to clipboard",
+    "category": "Navigation",
+    "kind": "ui",
+    "count": 56,
+    "users": 4,
+    "errors": 0,
+    "p50_ms": null,
+    "p95_ms": null,
+    "channels": {
+     "web": 56
+    }
+   },
+   {
+    "action": "ui.palette_run",
+    "label": "Ran a palette command",
+    "category": "Navigation",
+    "kind": "ui",
+    "count": 53,
+    "users": 4,
+    "errors": 0,
+    "p50_ms": null,
+    "p95_ms": null,
+    "channels": {
+     "web": 53
+    }
+   },
+   {
+    "action": "ui.help_open",
+    "label": "Opened the help drawer",
+    "category": "Navigation",
+    "kind": "ui",
+    "count": 47,
+    "users": 4,
+    "errors": 0,
+    "p50_ms": null,
+    "p95_ms": null,
+    "channels": {
+     "web": 47
+    }
+   },
+   {
+    "action": "ui.view",
+    "label": "Opened a tab",
+    "category": "Navigation",
+    "kind": "ui",
+    "count": 44,
+    "users": 4,
+    "errors": 0,
+    "p50_ms": null,
+    "p95_ms": null,
+    "channels": {
+     "web": 44
+    }
+   },
+   {
+    "action": "mcp.connect",
+    "label": "MCP client connected",
+    "category": "MCP",
+    "kind": "action",
+    "count": 1,
+    "users": 1,
+    "errors": 0,
+    "p50_ms": null,
+    "p95_ms": null,
+    "channels": {
+     "mcp-remote": 1
+    }
+   }
+  ],
+  "tools": [
+   {
+    "tool": "record_resolution",
+    "calls": 60,
+    "users": 4,
+    "errors": 2,
+    "p50_ms": 915,
+    "p95_ms": 1651,
+    "channels": {
+     "mcp-remote": 32,
+     "mcp-stdio": 7,
+     "chat": 21
+    }
+   },
+   {
+    "tool": "search_knowledgebase",
+    "calls": 57,
+    "users": 4,
+    "errors": 1,
+    "p50_ms": 1081,
+    "p95_ms": 1677,
+    "channels": {
+     "mcp-remote": 33,
+     "mcp-stdio": 8,
+     "chat": 16
+    }
+   },
+   {
+    "tool": "normalize_log",
+    "calls": 54,
+    "users": 4,
+    "errors": 3,
+    "p50_ms": 1080,
+    "p95_ms": 1713,
+    "channels": {
+     "mcp-stdio": 13,
+     "chat": 14,
+     "mcp-remote": 27
+    }
+   },
+   {
+    "tool": "file_incident",
+    "calls": 53,
+    "users": 4,
+    "errors": 4,
+    "p50_ms": 752,
+    "p95_ms": 1597,
+    "channels": {
+     "mcp-remote": 19,
+     "chat": 17,
+     "mcp-stdio": 17
+    }
+   },
+   {
+    "tool": "list_orgs",
+    "calls": 51,
+    "users": 4,
+    "errors": 3,
+    "p50_ms": 1017,
+    "p95_ms": 1739,
+    "channels": {
+     "mcp-remote": 25,
+     "chat": 10,
+     "mcp-stdio": 16
+    }
+   },
+   {
+    "tool": "get_entry_points",
+    "calls": 50,
+    "users": 4,
+    "errors": 2,
+    "p50_ms": 851,
+    "p95_ms": 1565,
+    "channels": {
+     "mcp-stdio": 15,
+     "chat": 15,
+     "mcp-remote": 20
+    }
+   },
+   {
+    "tool": "get_component",
+    "calls": 46,
+    "users": 4,
+    "errors": 2,
+    "p50_ms": 854,
+    "p95_ms": 1705,
+    "channels": {
+     "mcp-stdio": 6,
+     "chat": 13,
+     "mcp-remote": 27
+    }
+   },
+   {
+    "tool": "find_field_writers",
+    "calls": 44,
+    "users": 4,
+    "errors": 1,
+    "p50_ms": 981,
+    "p95_ms": 1632,
+    "channels": {
+     "mcp-remote": 22,
+     "mcp-stdio": 5,
+     "chat": 17
+    }
+   }
+  ],
+  "mcp_clients": [
+   {
+    "client": "Claude Code 2.1",
+    "calls": 111,
+    "connects": 0,
+    "users": 2,
+    "channels": [
+     "mcp-remote"
+    ],
+    "last_seen": "2026-09-29T12:16:09Z"
+   },
+   {
+    "client": "claude-ai 0.1.0",
+    "calls": 94,
+    "connects": 0,
+    "users": 2,
+    "channels": [
+     "mcp-remote"
+    ],
+    "last_seen": "2026-09-29T07:16:41Z"
+   },
+   {
+    "client": "claude-desktop 1.4",
+    "calls": 87,
+    "connects": 0,
+    "users": 1,
+    "channels": [
+     "mcp-stdio"
+    ],
+    "last_seen": "2026-09-29T04:08:20Z"
+   },
+   {
+    "client": "claude-ai",
+    "calls": 0,
+    "connects": 1,
+    "users": 1,
+    "channels": [
+     "mcp-remote"
+    ],
+    "last_seen": "2026-09-29T15:47:13Z"
+   }
+  ],
+  "log_parser": {
+   "parses": 111,
+   "failed": 5,
+   "users": 6,
+   "stored": 49,
+   "via_incident": 0,
+   "total_mb": 192.38,
+   "avg_kb": 1858.5,
+   "max_kb": 3973.7,
+   "p50_parse_ms": 1297,
+   "p95_parse_ms": 2406,
+   "exceptions_found": 76,
+   "logs_with_exceptions": 52,
+   "by_channel": {
+    "api": 16,
+    "mcp-stdio": 13,
+    "chat": 14,
+    "web": 41,
+    "mcp-remote": 27
+   }
+  },
+  "by_user": [
+   {
+    "username": "dana",
+    "role": "user",
+    "events": 152,
+    "ui_events": 43,
+    "active_days": 30,
+    "channels": [
+     "chat",
+     "web"
+    ],
+    "segment": "In-app AI chat",
+    "llm_turns": 20,
+    "llm_tokens": 240000,
+    "mcp_calls": 0,
+    "chat_tool_calls": 79,
+    "kb_lookups": 86,
+    "logs_parsed": 18,
+    "incidents_filed": 17,
+    "resolutions": 25,
+    "errors": 7,
+    "top_action": "kb.field_writers",
+    "top_action_label": "Field writers",
+    "clients": [],
+    "orgs": 2,
+    "first_seen": "2026-08-31T15:15:24Z",
+    "last_seen": "2026-09-29T09:10:14Z"
+   },
+   {
+    "username": "sam",
+    "role": "user",
+    "events": 164,
+    "ui_events": 0,
+    "active_days": 30,
+    "channels": [
+     "mcp-remote"
+    ],
+    "segment": "MCP only (no in-app LLM)",
+    "llm_turns": 0,
+    "llm_tokens": 0,
+    "mcp_calls": 163,
+    "chat_tool_calls": 0,
+    "kb_lookups": 76,
+    "logs_parsed": 23,
+    "incidents_filed": 16,
+    "resolutions": 30,
+    "errors": 5,
+    "top_action": "incident.resolve",
+    "top_action_label": "Recorded a resolution",
+    "clients": [
+     "Claude Code 2.1",
+     "claude-ai",
+     "claude-ai 0.1.0"
+    ],
+    "orgs": 2,
+    "first_seen": "2026-08-31T16:51:47Z",
+    "last_seen": "2026-09-29T15:47:13Z"
+   },
+   {
+    "username": "admin",
+    "role": "admin",
+    "events": 125,
+    "ui_events": 59,
+    "active_days": 30,
+    "channels": [
+     "chat",
+     "mcp-remote",
+     "web"
+    ],
+    "segment": "AI chat + MCP",
+    "llm_turns": 20,
+    "llm_tokens": 160000,
+    "mcp_calls": 42,
+    "chat_tool_calls": 44,
+    "kb_lookups": 77,
+    "logs_parsed": 9,
+    "incidents_filed": 16,
+    "resolutions": 12,
+    "errors": 5,
+    "top_action": "kb.search",
+    "top_action_label": "Knowledgebase search",
+    "clients": [
+     "Claude Code 2.1",
+     "claude-ai 0.1.0"
+    ],
+    "orgs": 2,
+    "first_seen": "2026-08-31T21:58:16Z",
+    "last_seen": "2026-09-29T14:07:57Z"
+   },
+   {
+    "username": "rita",
+    "role": "reader",
+    "events": 144,
+    "ui_events": 57,
+    "active_days": 29,
+    "channels": [
+     "web"
+    ],
+    "segment": "Web UI only (no AI)",
+    "llm_turns": 0,
+    "llm_tokens": 0,
+    "mcp_calls": 0,
+    "chat_tool_calls": 0,
+    "kb_lookups": 79,
+    "logs_parsed": 21,
+    "incidents_filed": 21,
+    "resolutions": 23,
+    "errors": 4,
+    "top_action": "incident.resolve",
+    "top_action_label": "Recorded a resolution",
+    "clients": [],
+    "orgs": 2,
+    "first_seen": "2026-09-01T00:12:56Z",
+    "last_seen": "2026-09-29T12:56:58Z"
+   },
+   {
+    "username": "lee",
+    "role": "user",
+    "events": 141,
+    "ui_events": 0,
+    "active_days": 29,
+    "channels": [
+     "api"
+    ],
+    "segment": "API scripts",
+    "llm_turns": 0,
+    "llm_tokens": 0,
+    "mcp_calls": 0,
+    "chat_tool_calls": 0,
+    "kb_lookups": 65,
+    "logs_parsed": 16,
+    "incidents_filed": 17,
+    "resolutions": 23,
+    "errors": 4,
+    "top_action": "incident.resolve",
+    "top_action_label": "Recorded a resolution",
+    "clients": [],
+    "orgs": 2,
+    "first_seen": "2026-08-31T14:37:39Z",
+    "last_seen": "2026-09-29T10:24:22Z"
+   },
+   {
+    "username": "priya",
+    "role": "user",
+    "events": 138,
+    "ui_events": 41,
+    "active_days": 29,
+    "channels": [
+     "mcp-stdio",
+     "web"
+    ],
+    "segment": "MCP only (no in-app LLM)",
+    "llm_turns": 0,
+    "llm_tokens": 0,
+    "mcp_calls": 87,
+    "chat_tool_calls": 0,
+    "kb_lookups": 63,
+    "logs_parsed": 24,
+    "incidents_filed": 23,
+    "resolutions": 12,
+    "errors": 13,
+    "top_action": "log.parse",
+    "top_action_label": "Parsed a debug log",
+    "clients": [
+     "claude-desktop 1.4"
+    ],
+    "orgs": 2,
+    "first_seen": "2026-08-31T15:39:47Z",
+    "last_seen": "2026-09-29T04:08:20Z"
+   }
+  ],
+  "segments": [
+   {
+    "segment": "MCP only (no in-app LLM)",
+    "users": 2,
+    "events": 302
+   },
+   {
+    "segment": "In-app AI chat",
+    "users": 1,
+    "events": 152
+   },
+   {
+    "segment": "AI chat + MCP",
+    "users": 1,
+    "events": 125
+   },
+   {
+    "segment": "Web UI only (no AI)",
+    "users": 1,
+    "events": 144
+   },
+   {
+    "segment": "API scripts",
+    "users": 1,
+    "events": 141
+   }
+  ],
+  "ladder": [
+   {
+    "step": "active",
+    "label": "Active",
+    "users": 6
+   },
+   {
+    "step": "kb",
+    "label": "Looked up org metadata",
+    "users": 6
+   },
+   {
+    "step": "log",
+    "label": "Parsed a debug log",
+    "users": 6
+   },
+   {
+    "step": "incident",
+    "label": "Filed an incident",
+    "users": 6
+   },
+   {
+    "step": "resolve",
+    "label": "Recorded a resolution",
+    "users": 6
+   }
+  ],
+  "by_org": [
+   {
+    "org_id": "acmeprod",
+    "org_name": "Acme Prod",
+    "account": "Acme Corp",
+    "events": 461,
+    "users": 6,
+    "channels": {
+     "mcp-remote": 100,
+     "web": 187,
+     "api": 71,
+     "mcp-stdio": 35,
+     "chat": 68
+    },
+    "top_action": "incident.resolve",
+    "top_action_label": "Recorded a resolution",
+    "incidents": 110,
+    "last_seen": "2026-09-29T12:56:58Z"
+   },
+   {
+    "org_id": "globex",
+    "org_name": "Globex",
+    "account": "Globex",
+    "events": 220,
+    "users": 6,
+    "channels": {
+     "api": 34,
+     "web": 79,
+     "mcp-stdio": 23,
+     "chat": 31,
+     "mcp-remote": 53
+    },
+    "top_action": "kb.search",
+    "top_action_label": "Knowledgebase search",
+    "incidents": 0,
+    "last_seen": "2026-09-29T12:10:23Z"
+   }
+  ],
+  "by_account": [
+   {
+    "account": "Acme Corp",
+    "events": 461,
+    "orgs": 1,
+    "incidents": 110
+   },
+   {
+    "account": "Globex",
+    "events": 220,
+    "orgs": 1,
+    "incidents": 0
+   }
+  ],
+  "by_hour": [
+   26,
+   39,
+   45,
+   45,
+   35,
+   38,
+   43,
+   35,
+   42,
+   23,
+   32,
+   37,
+   37,
+   28,
+   35,
+   36,
+   30,
+   36,
+   39,
+   26,
+   37,
+   43,
+   43,
+   34
+  ],
+  "errors": [
+   {
+    "action": "incident.file",
+    "label": "Filed an incident",
+    "status": 500,
+    "count": 5,
+    "users": 4,
+    "channels": {
+     "mcp-stdio": 2,
+     "web": 2,
+     "api": 1
+    }
+   },
+   {
+    "action": "log.parse",
+    "label": "Parsed a debug log",
+    "status": 500,
+    "count": 4,
+    "users": 3,
+    "channels": {
+     "chat": 1,
+     "web": 2,
+     "mcp-stdio": 1
+    }
+   },
+   {
+    "action": "kb.search",
+    "label": "Knowledgebase search",
+    "status": 404,
+    "count": 4,
+    "users": 3,
+    "channels": {
+     "web": 3,
+     "api": 1
+    }
+   },
+   {
+    "action": "kb.entry_points",
+    "label": "Entry points",
+    "status": 404,
+    "count": 4,
+    "users": 2,
+    "channels": {
+     "mcp-stdio": 2,
+     "api": 1,
+     "web": 1
+    }
+   },
+   {
+    "action": "kb.component",
+    "label": "Opened a component",
+    "status": 404,
+    "count": 3,
+    "users": 2,
+    "channels": {
+     "web": 1,
+     "mcp-remote": 2
+    }
+   },
+   {
+    "action": "kb.component",
+    "label": "Opened a component",
+    "status": 500,
+    "count": 2,
+    "users": 1,
+    "channels": {
+     "web": 2
+    }
+   },
+   {
+    "action": "kb.field_writers",
+    "label": "Field writers",
+    "status": 404,
+    "count": 2,
+    "users": 1,
+    "channels": {
+     "chat": 1,
+     "web": 1
+    }
+   },
+   {
+    "action": "incident.resolve",
+    "label": "Recorded a resolution",
+    "status": 500,
+    "count": 2,
+    "users": 2,
+    "channels": {
+     "mcp-remote": 1,
+     "web": 1
+    }
+   },
+   {
+    "action": "kb.search",
+    "label": "Knowledgebase search",
+    "status": 500,
+    "count": 2,
+    "users": 2,
+    "channels": {
+     "web": 1,
+     "mcp-remote": 1
+    }
+   },
+   {
+    "action": "org.list",
+    "label": "Listed orgs",
+    "status": 500,
+    "count": 2,
+    "users": 2,
+    "channels": {
+     "mcp-stdio": 1,
+     "mcp-remote": 1
+    }
+   },
+   {
+    "action": "incident.resolve",
+    "label": "Recorded a resolution",
+    "status": 404,
+    "count": 2,
+    "users": 2,
+    "channels": {
+     "chat": 1,
+     "web": 1
+    }
+   },
+   {
+    "action": "incident.file",
+    "label": "Filed an incident",
+    "status": 404,
+    "count": 2,
+    "users": 2,
+    "channels": {
+     "mcp-stdio": 1,
+     "mcp-remote": 1
+    }
+   },
+   {
+    "action": "org.list",
+    "label": "Listed orgs",
+    "status": 404,
+    "count": 2,
+    "users": 2,
+    "channels": {
+     "mcp-stdio": 1,
+     "api": 1
+    }
+   },
+   {
+    "action": "kb.entry_points",
+    "label": "Entry points",
+    "status": 500,
+    "count": 1,
+    "users": 1,
+    "channels": {
+     "web": 1
+    }
+   },
+   {
+    "action": "log.parse",
+    "label": "Parsed a debug log",
+    "status": 404,
+    "count": 1,
+    "users": 1,
+    "channels": {
+     "chat": 1
+    }
+   }
+  ],
+  "recent": [
+   {
+    "at": "2026-09-29T15:47:13Z",
+    "username": "sam",
+    "channel": "mcp-remote",
+    "action": "mcp.connect",
+    "label": "MCP client connected",
+    "category": "MCP",
+    "org_id": null,
+    "tool": null,
+    "client": "claude-ai",
+    "ok": true,
+    "status": 200,
+    "ms": null,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-29T14:07:57Z",
+    "username": "admin",
+    "channel": "web",
+    "action": "ui.help_open",
+    "label": "Opened the help drawer",
+    "category": "Navigation",
+    "org_id": null,
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": null,
+    "ms": null,
+    "kind": "ui"
+   },
+   {
+    "at": "2026-09-29T12:56:58Z",
+    "username": "rita",
+    "channel": "web",
+    "action": "kb.component",
+    "label": "Opened a component",
+    "category": "Knowledgebase",
+    "org_id": "acmeprod",
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 273,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-29T12:16:09Z",
+    "username": "sam",
+    "channel": "mcp-remote",
+    "action": "incident.resolve",
+    "label": "Recorded a resolution",
+    "category": "Incidents",
+    "org_id": "acmeprod",
+    "tool": "record_resolution",
+    "client": "Claude Code 2.1",
+    "ok": true,
+    "status": 200,
+    "ms": 1647,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-29T12:10:23Z",
+    "username": "sam",
+    "channel": "mcp-remote",
+    "action": "kb.entry_points",
+    "label": "Entry points",
+    "category": "Knowledgebase",
+    "org_id": "globex",
+    "tool": "get_entry_points",
+    "client": "Claude Code 2.1",
+    "ok": true,
+    "status": 200,
+    "ms": 520,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-29T11:13:11Z",
+    "username": "admin",
+    "channel": "mcp-remote",
+    "action": "org.list",
+    "label": "Listed orgs",
+    "category": "Orgs",
+    "org_id": null,
+    "tool": "list_orgs",
+    "client": "Claude Code 2.1",
+    "ok": true,
+    "status": 200,
+    "ms": 1752,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-29T10:43:44Z",
+    "username": "admin",
+    "channel": "chat",
+    "action": "log.parse",
+    "label": "Parsed a debug log",
+    "category": "Logs",
+    "org_id": null,
+    "tool": "normalize_log",
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 1438,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-29T10:24:22Z",
+    "username": "lee",
+    "channel": "api",
+    "action": "incident.resolve",
+    "label": "Recorded a resolution",
+    "category": "Incidents",
+    "org_id": "acmeprod",
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 641,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-29T09:52:54Z",
+    "username": "rita",
+    "channel": "web",
+    "action": "incident.resolve",
+    "label": "Recorded a resolution",
+    "category": "Incidents",
+    "org_id": "acmeprod",
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 62,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-29T09:33:06Z",
+    "username": "rita",
+    "channel": "web",
+    "action": "ui.help_open",
+    "label": "Opened the help drawer",
+    "category": "Navigation",
+    "org_id": null,
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": null,
+    "ms": null,
+    "kind": "ui"
+   },
+   {
+    "at": "2026-09-29T09:10:14Z",
+    "username": "dana",
+    "channel": "web",
+    "action": "ui.help_open",
+    "label": "Opened the help drawer",
+    "category": "Navigation",
+    "org_id": null,
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": null,
+    "ms": null,
+    "kind": "ui"
+   },
+   {
+    "at": "2026-09-29T08:53:47Z",
+    "username": "admin",
+    "channel": "web",
+    "action": "incident.resolve",
+    "label": "Recorded a resolution",
+    "category": "Incidents",
+    "org_id": "acmeprod",
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 876,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-29T08:22:34Z",
+    "username": "rita",
+    "channel": "web",
+    "action": "ui.palette_run",
+    "label": "Ran a palette command",
+    "category": "Navigation",
+    "org_id": null,
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": null,
+    "ms": null,
+    "kind": "ui"
+   },
+   {
+    "at": "2026-09-29T07:17:13Z",
+    "username": "dana",
+    "channel": "chat",
+    "action": "kb.field_writers",
+    "label": "Field writers",
+    "category": "Knowledgebase",
+    "org_id": "acmeprod",
+    "tool": "find_field_writers",
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 1778,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-29T07:16:41Z",
+    "username": "sam",
+    "channel": "mcp-remote",
+    "action": "org.list",
+    "label": "Listed orgs",
+    "category": "Orgs",
+    "org_id": null,
+    "tool": "list_orgs",
+    "client": "claude-ai 0.1.0",
+    "ok": true,
+    "status": 200,
+    "ms": 1562,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-29T06:21:12Z",
+    "username": "admin",
+    "channel": "web",
+    "action": "ui.copy",
+    "label": "Copied to clipboard",
+    "category": "Navigation",
+    "org_id": null,
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": null,
+    "ms": null,
+    "kind": "ui"
+   },
+   {
+    "at": "2026-09-29T06:11:00Z",
+    "username": "rita",
+    "channel": "web",
+    "action": "kb.search",
+    "label": "Knowledgebase search",
+    "category": "Knowledgebase",
+    "org_id": "globex",
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 796,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-29T05:54:51Z",
+    "username": "admin",
+    "channel": "chat",
+    "action": "incident.resolve",
+    "label": "Recorded a resolution",
+    "category": "Incidents",
+    "org_id": "acmeprod",
+    "tool": "record_resolution",
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 1291,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-29T04:47:40Z",
+    "username": "rita",
+    "channel": "web",
+    "action": "ui.help_open",
+    "label": "Opened the help drawer",
+    "category": "Navigation",
+    "org_id": null,
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": null,
+    "ms": null,
+    "kind": "ui"
+   },
+   {
+    "at": "2026-09-29T04:09:53Z",
+    "username": "rita",
+    "channel": "web",
+    "action": "kb.search",
+    "label": "Knowledgebase search",
+    "category": "Knowledgebase",
+    "org_id": "globex",
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 997,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-29T04:08:20Z",
+    "username": "priya",
+    "channel": "mcp-stdio",
+    "action": "org.list",
+    "label": "Listed orgs",
+    "category": "Orgs",
+    "org_id": null,
+    "tool": "list_orgs",
+    "client": "claude-desktop 1.4",
+    "ok": true,
+    "status": 200,
+    "ms": 1162,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-29T03:26:42Z",
+    "username": "dana",
+    "channel": "chat",
+    "action": "kb.field_writers",
+    "label": "Field writers",
+    "category": "Knowledgebase",
+    "org_id": "acmeprod",
+    "tool": "find_field_writers",
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 634,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-29T02:56:13Z",
+    "username": "dana",
+    "channel": "web",
+    "action": "ui.copy",
+    "label": "Copied to clipboard",
+    "category": "Navigation",
+    "org_id": null,
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": null,
+    "ms": null,
+    "kind": "ui"
+   },
+   {
+    "at": "2026-09-29T02:49:07Z",
+    "username": "priya",
+    "channel": "web",
+    "action": "incident.file",
+    "label": "Filed an incident",
+    "category": "Incidents",
+    "org_id": "acmeprod",
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 138,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-29T01:56:01Z",
+    "username": "dana",
+    "channel": "chat",
+    "action": "kb.field_writers",
+    "label": "Field writers",
+    "category": "Knowledgebase",
+    "org_id": "acmeprod",
+    "tool": "find_field_writers",
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 196,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-29T01:53:07Z",
+    "username": "admin",
+    "channel": "web",
+    "action": "ui.help_open",
+    "label": "Opened the help drawer",
+    "category": "Navigation",
+    "org_id": null,
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": null,
+    "ms": null,
+    "kind": "ui"
+   },
+   {
+    "at": "2026-09-29T01:43:25Z",
+    "username": "admin",
+    "channel": "mcp-remote",
+    "action": "incident.file",
+    "label": "Filed an incident",
+    "category": "Incidents",
+    "org_id": "acmeprod",
+    "tool": "file_incident",
+    "client": "claude-ai 0.1.0",
+    "ok": true,
+    "status": 200,
+    "ms": 584,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-29T01:37:33Z",
+    "username": "rita",
+    "channel": "web",
+    "action": "kb.search",
+    "label": "Knowledgebase search",
+    "category": "Knowledgebase",
+    "org_id": "globex",
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 251,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-29T00:10:13Z",
+    "username": "admin",
+    "channel": "web",
+    "action": "ui.copy",
+    "label": "Copied to clipboard",
+    "category": "Navigation",
+    "org_id": null,
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": null,
+    "ms": null,
+    "kind": "ui"
+   },
+   {
+    "at": "2026-09-28T23:53:03Z",
+    "username": "dana",
+    "channel": "web",
+    "action": "ui.copy",
+    "label": "Copied to clipboard",
+    "category": "Navigation",
+    "org_id": null,
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": null,
+    "ms": null,
+    "kind": "ui"
+   },
+   {
+    "at": "2026-09-28T23:09:49Z",
+    "username": "admin",
+    "channel": "web",
+    "action": "ui.copy",
+    "label": "Copied to clipboard",
+    "category": "Navigation",
+    "org_id": null,
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": null,
+    "ms": null,
+    "kind": "ui"
+   },
+   {
+    "at": "2026-09-28T22:29:48Z",
+    "username": "priya",
+    "channel": "mcp-stdio",
+    "action": "kb.search",
+    "label": "Knowledgebase search",
+    "category": "Knowledgebase",
+    "org_id": "globex",
+    "tool": "search_knowledgebase",
+    "client": "claude-desktop 1.4",
+    "ok": true,
+    "status": 200,
+    "ms": 1098,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-28T22:29:09Z",
+    "username": "admin",
+    "channel": "web",
+    "action": "kb.search",
+    "label": "Knowledgebase search",
+    "category": "Knowledgebase",
+    "org_id": "globex",
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 393,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-28T21:55:20Z",
+    "username": "rita",
+    "channel": "web",
+    "action": "ui.view",
+    "label": "Opened a tab",
+    "category": "Navigation",
+    "org_id": null,
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": null,
+    "ms": null,
+    "kind": "ui"
+   },
+   {
+    "at": "2026-09-28T21:35:30Z",
+    "username": "dana",
+    "channel": "chat",
+    "action": "kb.search",
+    "label": "Knowledgebase search",
+    "category": "Knowledgebase",
+    "org_id": "globex",
+    "tool": "search_knowledgebase",
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 1438,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-28T20:32:38Z",
+    "username": "lee",
+    "channel": "api",
+    "action": "log.parse",
+    "label": "Parsed a debug log",
+    "category": "Logs",
+    "org_id": null,
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 957,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-28T20:06:21Z",
+    "username": "dana",
+    "channel": "web",
+    "action": "incident.file",
+    "label": "Filed an incident",
+    "category": "Incidents",
+    "org_id": "acmeprod",
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 387,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-28T19:34:19Z",
+    "username": "priya",
+    "channel": "web",
+    "action": "kb.field_writers",
+    "label": "Field writers",
+    "category": "Knowledgebase",
+    "org_id": "acmeprod",
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 1011,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-28T19:21:03Z",
+    "username": "admin",
+    "channel": "mcp-remote",
+    "action": "kb.component",
+    "label": "Opened a component",
+    "category": "Knowledgebase",
+    "org_id": "acmeprod",
+    "tool": "get_component",
+    "client": "Claude Code 2.1",
+    "ok": true,
+    "status": 200,
+    "ms": 1705,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-28T19:06:41Z",
+    "username": "sam",
+    "channel": "mcp-remote",
+    "action": "kb.field_writers",
+    "label": "Field writers",
+    "category": "Knowledgebase",
+    "org_id": "acmeprod",
+    "tool": "find_field_writers",
+    "client": "Claude Code 2.1",
+    "ok": true,
+    "status": 200,
+    "ms": 1403,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-28T18:26:04Z",
+    "username": "rita",
+    "channel": "web",
+    "action": "ui.copy",
+    "label": "Copied to clipboard",
+    "category": "Navigation",
+    "org_id": null,
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": null,
+    "ms": null,
+    "kind": "ui"
+   },
+   {
+    "at": "2026-09-28T18:21:10Z",
+    "username": "rita",
+    "channel": "web",
+    "action": "log.parse",
+    "label": "Parsed a debug log",
+    "category": "Logs",
+    "org_id": null,
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 515,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-28T17:42:00Z",
+    "username": "dana",
+    "channel": "web",
+    "action": "kb.component",
+    "label": "Opened a component",
+    "category": "Knowledgebase",
+    "org_id": "acmeprod",
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 234,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-28T16:24:05Z",
+    "username": "rita",
+    "channel": "web",
+    "action": "ui.palette_run",
+    "label": "Ran a palette command",
+    "category": "Navigation",
+    "org_id": null,
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": null,
+    "ms": null,
+    "kind": "ui"
+   },
+   {
+    "at": "2026-09-28T16:06:15Z",
+    "username": "admin",
+    "channel": "chat",
+    "action": "kb.field_writers",
+    "label": "Field writers",
+    "category": "Knowledgebase",
+    "org_id": "acmeprod",
+    "tool": "find_field_writers",
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 615,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-28T15:56:07Z",
+    "username": "priya",
+    "channel": "web",
+    "action": "log.parse",
+    "label": "Parsed a debug log",
+    "category": "Logs",
+    "org_id": null,
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 1771,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-28T15:40:04Z",
+    "username": "lee",
+    "channel": "api",
+    "action": "kb.field_writers",
+    "label": "Field writers",
+    "category": "Knowledgebase",
+    "org_id": "acmeprod",
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 1067,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-28T14:27:01Z",
+    "username": "dana",
+    "channel": "web",
+    "action": "kb.field_writers",
+    "label": "Field writers",
+    "category": "Knowledgebase",
+    "org_id": "acmeprod",
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 1017,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-28T13:43:26Z",
+    "username": "lee",
+    "channel": "api",
+    "action": "incident.resolve",
+    "label": "Recorded a resolution",
+    "category": "Incidents",
+    "org_id": "acmeprod",
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 888,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-28T12:36:22Z",
+    "username": "dana",
+    "channel": "web",
+    "action": "kb.component",
+    "label": "Opened a component",
+    "category": "Knowledgebase",
+    "org_id": "acmeprod",
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 710,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-28T12:28:29Z",
+    "username": "dana",
+    "channel": "chat",
+    "action": "kb.component",
+    "label": "Opened a component",
+    "category": "Knowledgebase",
+    "org_id": "acmeprod",
+    "tool": "get_component",
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 1342,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-28T12:26:48Z",
+    "username": "lee",
+    "channel": "api",
+    "action": "kb.component",
+    "label": "Opened a component",
+    "category": "Knowledgebase",
+    "org_id": "acmeprod",
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 153,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-28T12:07:54Z",
+    "username": "lee",
+    "channel": "api",
+    "action": "kb.search",
+    "label": "Knowledgebase search",
+    "category": "Knowledgebase",
+    "org_id": "globex",
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 1152,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-28T11:46:43Z",
+    "username": "dana",
+    "channel": "web",
+    "action": "ui.copy",
+    "label": "Copied to clipboard",
+    "category": "Navigation",
+    "org_id": null,
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": null,
+    "ms": null,
+    "kind": "ui"
+   },
+   {
+    "at": "2026-09-28T10:48:51Z",
+    "username": "sam",
+    "channel": "mcp-remote",
+    "action": "incident.resolve",
+    "label": "Recorded a resolution",
+    "category": "Incidents",
+    "org_id": "acmeprod",
+    "tool": "record_resolution",
+    "client": "claude-ai 0.1.0",
+    "ok": true,
+    "status": 200,
+    "ms": 1249,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-28T10:28:46Z",
+    "username": "rita",
+    "channel": "web",
+    "action": "kb.field_writers",
+    "label": "Field writers",
+    "category": "Knowledgebase",
+    "org_id": "acmeprod",
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 1446,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-28T10:20:20Z",
+    "username": "sam",
+    "channel": "mcp-remote",
+    "action": "org.list",
+    "label": "Listed orgs",
+    "category": "Orgs",
+    "org_id": null,
+    "tool": "list_orgs",
+    "client": "claude-ai 0.1.0",
+    "ok": true,
+    "status": 200,
+    "ms": 302,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-28T09:53:48Z",
+    "username": "dana",
+    "channel": "chat",
+    "action": "incident.file",
+    "label": "Filed an incident",
+    "category": "Incidents",
+    "org_id": "acmeprod",
+    "tool": "file_incident",
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 285,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-28T08:22:24Z",
+    "username": "rita",
+    "channel": "web",
+    "action": "ui.copy",
+    "label": "Copied to clipboard",
+    "category": "Navigation",
+    "org_id": null,
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": null,
+    "ms": null,
+    "kind": "ui"
+   },
+   {
+    "at": "2026-09-28T07:47:08Z",
+    "username": "priya",
+    "channel": "web",
+    "action": "ui.copy",
+    "label": "Copied to clipboard",
+    "category": "Navigation",
+    "org_id": null,
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": null,
+    "ms": null,
+    "kind": "ui"
+   },
+   {
+    "at": "2026-09-28T07:16:11Z",
+    "username": "sam",
+    "channel": "mcp-remote",
+    "action": "log.parse",
+    "label": "Parsed a debug log",
+    "category": "Logs",
+    "org_id": null,
+    "tool": "normalize_log",
+    "client": "Claude Code 2.1",
+    "ok": true,
+    "status": 200,
+    "ms": 377,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-28T07:01:20Z",
+    "username": "dana",
+    "channel": "web",
+    "action": "ui.palette_run",
+    "label": "Ran a palette command",
+    "category": "Navigation",
+    "org_id": null,
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": null,
+    "ms": null,
+    "kind": "ui"
+   },
+   {
+    "at": "2026-09-28T06:02:51Z",
+    "username": "priya",
+    "channel": "web",
+    "action": "kb.search",
+    "label": "Knowledgebase search",
+    "category": "Knowledgebase",
+    "org_id": "globex",
+    "tool": null,
+    "client": null,
+    "ok": false,
+    "status": 404,
+    "ms": 1688,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-28T04:36:34Z",
+    "username": "admin",
+    "channel": "mcp-remote",
+    "action": "org.list",
+    "label": "Listed orgs",
+    "category": "Orgs",
+    "org_id": null,
+    "tool": "list_orgs",
+    "client": "claude-ai 0.1.0",
+    "ok": true,
+    "status": 200,
+    "ms": 613,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-28T04:05:21Z",
+    "username": "priya",
+    "channel": "mcp-stdio",
+    "action": "incident.file",
+    "label": "Filed an incident",
+    "category": "Incidents",
+    "org_id": "acmeprod",
+    "tool": "file_incident",
+    "client": "claude-desktop 1.4",
+    "ok": true,
+    "status": 200,
+    "ms": 965,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-28T02:35:56Z",
+    "username": "rita",
+    "channel": "web",
+    "action": "kb.field_writers",
+    "label": "Field writers",
+    "category": "Knowledgebase",
+    "org_id": "acmeprod",
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 500,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-28T02:28:04Z",
+    "username": "dana",
+    "channel": "web",
+    "action": "kb.component",
+    "label": "Opened a component",
+    "category": "Knowledgebase",
+    "org_id": "acmeprod",
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 635,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-28T01:04:53Z",
+    "username": "admin",
+    "channel": "web",
+    "action": "kb.entry_points",
+    "label": "Entry points",
+    "category": "Knowledgebase",
+    "org_id": "globex",
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 346,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-27T23:46:13Z",
+    "username": "admin",
+    "channel": "mcp-remote",
+    "action": "kb.entry_points",
+    "label": "Entry points",
+    "category": "Knowledgebase",
+    "org_id": "globex",
+    "tool": "get_entry_points",
+    "client": "claude-ai 0.1.0",
+    "ok": true,
+    "status": 200,
+    "ms": 1552,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-27T23:38:31Z",
+    "username": "sam",
+    "channel": "mcp-remote",
+    "action": "kb.component",
+    "label": "Opened a component",
+    "category": "Knowledgebase",
+    "org_id": "acmeprod",
+    "tool": "get_component",
+    "client": "claude-ai 0.1.0",
+    "ok": true,
+    "status": 200,
+    "ms": 803,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-27T20:48:00Z",
+    "username": "sam",
+    "channel": "mcp-remote",
+    "action": "kb.component",
+    "label": "Opened a component",
+    "category": "Knowledgebase",
+    "org_id": "acmeprod",
+    "tool": "get_component",
+    "client": "claude-ai 0.1.0",
+    "ok": true,
+    "status": 200,
+    "ms": 1065,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-27T19:26:46Z",
+    "username": "dana",
+    "channel": "chat",
+    "action": "kb.entry_points",
+    "label": "Entry points",
+    "category": "Knowledgebase",
+    "org_id": "globex",
+    "tool": "get_entry_points",
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 1146,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-27T18:59:36Z",
+    "username": "dana",
+    "channel": "web",
+    "action": "kb.field_writers",
+    "label": "Field writers",
+    "category": "Knowledgebase",
+    "org_id": "acmeprod",
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 1286,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-27T18:38:32Z",
+    "username": "dana",
+    "channel": "web",
+    "action": "kb.field_writers",
+    "label": "Field writers",
+    "category": "Knowledgebase",
+    "org_id": "acmeprod",
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 286,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-27T17:11:47Z",
+    "username": "priya",
+    "channel": "web",
+    "action": "ui.palette_run",
+    "label": "Ran a palette command",
+    "category": "Navigation",
+    "org_id": null,
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": null,
+    "ms": null,
+    "kind": "ui"
+   },
+   {
+    "at": "2026-09-27T16:02:27Z",
+    "username": "rita",
+    "channel": "web",
+    "action": "ui.help_open",
+    "label": "Opened the help drawer",
+    "category": "Navigation",
+    "org_id": null,
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": null,
+    "ms": null,
+    "kind": "ui"
+   },
+   {
+    "at": "2026-09-27T15:48:05Z",
+    "username": "rita",
+    "channel": "web",
+    "action": "ui.copy",
+    "label": "Copied to clipboard",
+    "category": "Navigation",
+    "org_id": null,
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": null,
+    "ms": null,
+    "kind": "ui"
+   },
+   {
+    "at": "2026-09-27T15:32:28Z",
+    "username": "lee",
+    "channel": "api",
+    "action": "incident.resolve",
+    "label": "Recorded a resolution",
+    "category": "Incidents",
+    "org_id": "acmeprod",
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 479,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-27T15:26:29Z",
+    "username": "dana",
+    "channel": "web",
+    "action": "log.parse",
+    "label": "Parsed a debug log",
+    "category": "Logs",
+    "org_id": null,
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 713,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-27T15:01:02Z",
+    "username": "admin",
+    "channel": "chat",
+    "action": "kb.field_writers",
+    "label": "Field writers",
+    "category": "Knowledgebase",
+    "org_id": "acmeprod",
+    "tool": "find_field_writers",
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 1445,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-27T14:24:32Z",
+    "username": "dana",
+    "channel": "web",
+    "action": "incident.resolve",
+    "label": "Recorded a resolution",
+    "category": "Incidents",
+    "org_id": "acmeprod",
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 426,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-27T13:30:47Z",
+    "username": "rita",
+    "channel": "web",
+    "action": "incident.file",
+    "label": "Filed an incident",
+    "category": "Incidents",
+    "org_id": "acmeprod",
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 713,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-27T13:29:23Z",
+    "username": "dana",
+    "channel": "chat",
+    "action": "kb.field_writers",
+    "label": "Field writers",
+    "category": "Knowledgebase",
+    "org_id": "acmeprod",
+    "tool": "find_field_writers",
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 195,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-27T12:26:35Z",
+    "username": "lee",
+    "channel": "api",
+    "action": "kb.field_writers",
+    "label": "Field writers",
+    "category": "Knowledgebase",
+    "org_id": "acmeprod",
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 1499,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-27T12:03:35Z",
+    "username": "priya",
+    "channel": "web",
+    "action": "incident.resolve",
+    "label": "Recorded a resolution",
+    "category": "Incidents",
+    "org_id": "acmeprod",
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 1217,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-27T11:40:42Z",
+    "username": "dana",
+    "channel": "chat",
+    "action": "kb.component",
+    "label": "Opened a component",
+    "category": "Knowledgebase",
+    "org_id": "acmeprod",
+    "tool": "get_component",
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 613,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-27T11:35:08Z",
+    "username": "rita",
+    "channel": "web",
+    "action": "log.parse",
+    "label": "Parsed a debug log",
+    "category": "Logs",
+    "org_id": null,
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 556,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-27T10:05:32Z",
+    "username": "rita",
+    "channel": "web",
+    "action": "kb.field_writers",
+    "label": "Field writers",
+    "category": "Knowledgebase",
+    "org_id": "acmeprod",
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 1101,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-27T09:57:59Z",
+    "username": "dana",
+    "channel": "web",
+    "action": "kb.search",
+    "label": "Knowledgebase search",
+    "category": "Knowledgebase",
+    "org_id": "globex",
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 1147,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-27T08:32:44Z",
+    "username": "sam",
+    "channel": "mcp-remote",
+    "action": "incident.resolve",
+    "label": "Recorded a resolution",
+    "category": "Incidents",
+    "org_id": "acmeprod",
+    "tool": "record_resolution",
+    "client": "Claude Code 2.1",
+    "ok": true,
+    "status": 200,
+    "ms": 367,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-27T08:11:00Z",
+    "username": "priya",
+    "channel": "mcp-stdio",
+    "action": "org.list",
+    "label": "Listed orgs",
+    "category": "Orgs",
+    "org_id": null,
+    "tool": "list_orgs",
+    "client": "claude-desktop 1.4",
+    "ok": true,
+    "status": 200,
+    "ms": 1780,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-27T06:39:48Z",
+    "username": "sam",
+    "channel": "mcp-remote",
+    "action": "org.list",
+    "label": "Listed orgs",
+    "category": "Orgs",
+    "org_id": null,
+    "tool": "list_orgs",
+    "client": "Claude Code 2.1",
+    "ok": true,
+    "status": 200,
+    "ms": 484,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-27T06:09:36Z",
+    "username": "dana",
+    "channel": "web",
+    "action": "kb.field_writers",
+    "label": "Field writers",
+    "category": "Knowledgebase",
+    "org_id": "acmeprod",
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 718,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-27T05:10:03Z",
+    "username": "priya",
+    "channel": "mcp-stdio",
+    "action": "kb.component",
+    "label": "Opened a component",
+    "category": "Knowledgebase",
+    "org_id": "acmeprod",
+    "tool": "get_component",
+    "client": "claude-desktop 1.4",
+    "ok": true,
+    "status": 200,
+    "ms": 1627,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-27T04:16:08Z",
+    "username": "dana",
+    "channel": "web",
+    "action": "ui.copy",
+    "label": "Copied to clipboard",
+    "category": "Navigation",
+    "org_id": null,
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": null,
+    "ms": null,
+    "kind": "ui"
+   },
+   {
+    "at": "2026-09-27T03:42:17Z",
+    "username": "rita",
+    "channel": "web",
+    "action": "incident.file",
+    "label": "Filed an incident",
+    "category": "Incidents",
+    "org_id": "acmeprod",
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 562,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-27T03:11:28Z",
+    "username": "dana",
+    "channel": "chat",
+    "action": "kb.entry_points",
+    "label": "Entry points",
+    "category": "Knowledgebase",
+    "org_id": "globex",
+    "tool": "get_entry_points",
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 1174,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-27T02:42:47Z",
+    "username": "dana",
+    "channel": "web",
+    "action": "kb.field_writers",
+    "label": "Field writers",
+    "category": "Knowledgebase",
+    "org_id": "acmeprod",
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 1148,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-27T01:55:56Z",
+    "username": "dana",
+    "channel": "chat",
+    "action": "kb.component",
+    "label": "Opened a component",
+    "category": "Knowledgebase",
+    "org_id": "acmeprod",
+    "tool": "get_component",
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 227,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-27T01:35:21Z",
+    "username": "admin",
+    "channel": "mcp-remote",
+    "action": "org.list",
+    "label": "Listed orgs",
+    "category": "Orgs",
+    "org_id": null,
+    "tool": "list_orgs",
+    "client": "claude-ai 0.1.0",
+    "ok": true,
+    "status": 200,
+    "ms": 1331,
+    "kind": "action"
+   }
+  ]
+ },
+ "me": {
+  "days": 30,
+  "from": "2026-08-31",
+  "to": "2026-09-29",
+  "scope": "dana",
+  "channel_labels": {
+   "web": "Web UI",
+   "chat": "In-app AI chat",
+   "mcp-remote": "MCP (remote /mcp)",
+   "mcp-stdio": "MCP (local stdio)",
+   "api": "API token (script)"
+  },
+  "totals": {
+   "actions": 152,
+   "ui_events": 43,
+   "active_users": 1,
+   "active_days": 30,
+   "errors": 7,
+   "mcp_calls": 0,
+   "chat_tool_calls": 79,
+   "llm_turns": 20,
+   "logs_parsed": 18,
+   "incidents_filed": 16,
+   "resolutions": 23,
+   "kb_lookups": 86,
+   "non_llm_users": 0
+  },
+  "by_day": [
+   {
+    "date": "2026-08-31",
+    "events": 2,
+    "active_users": 1,
+    "channels": {
+     "web": 1,
+     "chat": 1,
+     "mcp-remote": 0,
+     "mcp-stdio": 0,
+     "api": 0
+    }
+   },
+   {
+    "date": "2026-09-01",
+    "events": 3,
+    "active_users": 1,
+    "channels": {
+     "web": 2,
+     "chat": 1,
+     "mcp-remote": 0,
+     "mcp-stdio": 0,
+     "api": 0
+    }
+   },
+   {
+    "date": "2026-09-02",
+    "events": 2,
+    "active_users": 1,
+    "channels": {
+     "web": 2,
+     "chat": 0,
+     "mcp-remote": 0,
+     "mcp-stdio": 0,
+     "api": 0
+    }
+   },
+   {
+    "date": "2026-09-03",
+    "events": 4,
+    "active_users": 1,
+    "channels": {
+     "web": 1,
+     "chat": 3,
+     "mcp-remote": 0,
+     "mcp-stdio": 0,
+     "api": 0
+    }
+   },
+   {
+    "date": "2026-09-04",
+    "events": 7,
+    "active_users": 1,
+    "channels": {
+     "web": 2,
+     "chat": 5,
+     "mcp-remote": 0,
+     "mcp-stdio": 0,
+     "api": 0
+    }
+   },
+   {
+    "date": "2026-09-05",
+    "events": 2,
+    "active_users": 1,
+    "channels": {
+     "web": 2,
+     "chat": 0,
+     "mcp-remote": 0,
+     "mcp-stdio": 0,
+     "api": 0
+    }
+   },
+   {
+    "date": "2026-09-06",
+    "events": 6,
+    "active_users": 1,
+    "channels": {
+     "web": 3,
+     "chat": 3,
+     "mcp-remote": 0,
+     "mcp-stdio": 0,
+     "api": 0
+    }
+   },
+   {
+    "date": "2026-09-07",
+    "events": 4,
+    "active_users": 1,
+    "channels": {
+     "web": 2,
+     "chat": 2,
+     "mcp-remote": 0,
+     "mcp-stdio": 0,
+     "api": 0
+    }
+   },
+   {
+    "date": "2026-09-08",
+    "events": 4,
+    "active_users": 1,
+    "channels": {
+     "web": 2,
+     "chat": 2,
+     "mcp-remote": 0,
+     "mcp-stdio": 0,
+     "api": 0
+    }
+   },
+   {
+    "date": "2026-09-09",
+    "events": 6,
+    "active_users": 1,
+    "channels": {
+     "web": 2,
+     "chat": 4,
+     "mcp-remote": 0,
+     "mcp-stdio": 0,
+     "api": 0
+    }
+   },
+   {
+    "date": "2026-09-10",
+    "events": 5,
+    "active_users": 1,
+    "channels": {
+     "web": 3,
+     "chat": 2,
+     "mcp-remote": 0,
+     "mcp-stdio": 0,
+     "api": 0
+    }
+   },
+   {
+    "date": "2026-09-11",
+    "events": 9,
+    "active_users": 1,
+    "channels": {
+     "web": 3,
+     "chat": 6,
+     "mcp-remote": 0,
+     "mcp-stdio": 0,
+     "api": 0
+    }
+   },
+   {
+    "date": "2026-09-12",
+    "events": 3,
+    "active_users": 1,
+    "channels": {
+     "web": 2,
+     "chat": 1,
+     "mcp-remote": 0,
+     "mcp-stdio": 0,
+     "api": 0
+    }
+   },
+   {
+    "date": "2026-09-13",
+    "events": 5,
+    "active_users": 1,
+    "channels": {
+     "web": 3,
+     "chat": 2,
+     "mcp-remote": 0,
+     "mcp-stdio": 0,
+     "api": 0
+    }
+   },
+   {
+    "date": "2026-09-14",
+    "events": 2,
+    "active_users": 1,
+    "channels": {
+     "web": 0,
+     "chat": 2,
+     "mcp-remote": 0,
+     "mcp-stdio": 0,
+     "api": 0
+    }
+   },
+   {
+    "date": "2026-09-15",
+    "events": 3,
+    "active_users": 1,
+    "channels": {
+     "web": 3,
+     "chat": 0,
+     "mcp-remote": 0,
+     "mcp-stdio": 0,
+     "api": 0
+    }
+   },
+   {
+    "date": "2026-09-16",
+    "events": 7,
+    "active_users": 1,
+    "channels": {
+     "web": 3,
+     "chat": 4,
+     "mcp-remote": 0,
+     "mcp-stdio": 0,
+     "api": 0
+    }
+   },
+   {
+    "date": "2026-09-17",
+    "events": 6,
+    "active_users": 1,
+    "channels": {
+     "web": 3,
+     "chat": 3,
+     "mcp-remote": 0,
+     "mcp-stdio": 0,
+     "api": 0
+    }
+   },
+   {
+    "date": "2026-09-18",
+    "events": 4,
+    "active_users": 1,
+    "channels": {
+     "web": 2,
+     "chat": 2,
+     "mcp-remote": 0,
+     "mcp-stdio": 0,
+     "api": 0
+    }
+   },
+   {
+    "date": "2026-09-19",
+    "events": 12,
+    "active_users": 1,
+    "channels": {
+     "web": 6,
+     "chat": 6,
+     "mcp-remote": 0,
+     "mcp-stdio": 0,
+     "api": 0
+    }
+   },
+   {
+    "date": "2026-09-20",
+    "events": 6,
+    "active_users": 1,
+    "channels": {
+     "web": 3,
+     "chat": 3,
+     "mcp-remote": 0,
+     "mcp-stdio": 0,
+     "api": 0
+    }
+   },
+   {
+    "date": "2026-09-21",
+    "events": 3,
+    "active_users": 1,
+    "channels": {
+     "web": 1,
+     "chat": 2,
+     "mcp-remote": 0,
+     "mcp-stdio": 0,
+     "api": 0
+    }
+   },
+   {
+    "date": "2026-09-22",
+    "events": 3,
+    "active_users": 1,
+    "channels": {
+     "web": 1,
+     "chat": 2,
+     "mcp-remote": 0,
+     "mcp-stdio": 0,
+     "api": 0
+    }
+   },
+   {
+    "date": "2026-09-23",
+    "events": 7,
+    "active_users": 1,
+    "channels": {
+     "web": 2,
+     "chat": 5,
+     "mcp-remote": 0,
+     "mcp-stdio": 0,
+     "api": 0
+    }
+   },
+   {
+    "date": "2026-09-24",
+    "events": 4,
+    "active_users": 1,
+    "channels": {
+     "web": 2,
+     "chat": 2,
+     "mcp-remote": 0,
+     "mcp-stdio": 0,
+     "api": 0
+    }
+   },
+   {
+    "date": "2026-09-25",
+    "events": 4,
+    "active_users": 1,
+    "channels": {
+     "web": 1,
+     "chat": 3,
+     "mcp-remote": 0,
+     "mcp-stdio": 0,
+     "api": 0
+    }
+   },
+   {
+    "date": "2026-09-26",
+    "events": 6,
+    "active_users": 1,
+    "channels": {
+     "web": 4,
+     "chat": 2,
+     "mcp-remote": 0,
+     "mcp-stdio": 0,
+     "api": 0
+    }
+   },
+   {
+    "date": "2026-09-27",
+    "events": 12,
+    "active_users": 1,
+    "channels": {
+     "web": 7,
+     "chat": 5,
+     "mcp-remote": 0,
+     "mcp-stdio": 0,
+     "api": 0
+    }
+   },
+   {
+    "date": "2026-09-28",
+    "events": 8,
+    "active_users": 1,
+    "channels": {
+     "web": 5,
+     "chat": 3,
+     "mcp-remote": 0,
+     "mcp-stdio": 0,
+     "api": 0
+    }
+   },
+   {
+    "date": "2026-09-29",
+    "events": 3,
+    "active_users": 1,
+    "channels": {
+     "web": 0,
+     "chat": 3,
+     "mcp-remote": 0,
+     "mcp-stdio": 0,
+     "api": 0
+    }
+   }
+  ],
+  "by_channel": [
+   {
+    "channel": "chat",
+    "label": "In-app AI chat",
+    "events": 79,
+    "users": 1,
+    "errors": 3
+   },
+   {
+    "channel": "web",
+    "label": "Web UI",
+    "events": 73,
+    "users": 1,
+    "errors": 4
+   }
+  ],
+  "by_category": [
+   {
+    "category": "Knowledgebase",
+    "count": 86,
+    "users": 1
+   },
+   {
+    "category": "Navigation",
+    "count": 43,
+    "users": 1
+   },
+   {
+    "category": "Incidents",
+    "count": 42,
+    "users": 1
+   },
+   {
+    "category": "Logs",
+    "count": 18,
+    "users": 1
+   },
+   {
+    "category": "Orgs",
+    "count": 6,
+    "users": 1
+   }
+  ],
+  "features": [
+   {
+    "action": "kb.field_writers",
+    "label": "Field writers",
+    "category": "Knowledgebase",
+    "kind": "action",
+    "count": 26,
+    "users": 1,
+    "errors": 0,
+    "p50_ms": 634,
+    "p95_ms": 1662,
+    "channels": {
+     "web": 13,
+     "chat": 13
+    }
+   },
+   {
+    "action": "kb.component",
+    "label": "Opened a component",
+    "category": "Knowledgebase",
+    "kind": "action",
+    "count": 26,
+    "users": 1,
+    "errors": 1,
+    "p50_ms": 885,
+    "p95_ms": 1680,
+    "channels": {
+     "chat": 7,
+     "web": 19
+    }
+   },
+   {
+    "action": "incident.resolve",
+    "label": "Recorded a resolution",
+    "category": "Incidents",
+    "kind": "action",
+    "count": 25,
+    "users": 1,
+    "errors": 2,
+    "p50_ms": 769,
+    "p95_ms": 1662,
+    "channels": {
+     "chat": 15,
+     "web": 10
+    }
+   },
+   {
+    "action": "kb.search",
+    "label": "Knowledgebase search",
+    "category": "Knowledgebase",
+    "kind": "action",
+    "count": 19,
+    "users": 1,
+    "errors": 1,
+    "p50_ms": 1366,
+    "p95_ms": 1671,
+    "channels": {
+     "web": 12,
+     "chat": 7
+    }
+   },
+   {
+    "action": "log.parse",
+    "label": "Parsed a debug log",
+    "category": "Logs",
+    "kind": "action",
+    "count": 18,
+    "users": 1,
+    "errors": 2,
+    "p50_ms": 947,
+    "p95_ms": 1738,
+    "channels": {
+     "chat": 11,
+     "web": 7
+    }
+   },
+   {
+    "action": "incident.file",
+    "label": "Filed an incident",
+    "category": "Incidents",
+    "kind": "action",
+    "count": 17,
+    "users": 1,
+    "errors": 1,
+    "p50_ms": 913,
+    "p95_ms": 1729,
+    "channels": {
+     "web": 7,
+     "chat": 10
+    }
+   },
+   {
+    "action": "kb.entry_points",
+    "label": "Entry points",
+    "category": "Knowledgebase",
+    "kind": "action",
+    "count": 15,
+    "users": 1,
+    "errors": 0,
+    "p50_ms": 939,
+    "p95_ms": 1351,
+    "channels": {
+     "chat": 10,
+     "web": 5
+    }
+   },
+   {
+    "action": "ui.view",
+    "label": "Opened a tab",
+    "category": "Navigation",
+    "kind": "ui",
+    "count": 12,
+    "users": 1,
+    "errors": 0,
+    "p50_ms": null,
+    "p95_ms": null,
+    "channels": {
+     "web": 12
+    }
+   },
+   {
+    "action": "ui.palette_run",
+    "label": "Ran a palette command",
+    "category": "Navigation",
+    "kind": "ui",
+    "count": 11,
+    "users": 1,
+    "errors": 0,
+    "p50_ms": null,
+    "p95_ms": null,
+    "channels": {
+     "web": 11
+    }
+   },
+   {
+    "action": "ui.help_open",
+    "label": "Opened the help drawer",
+    "category": "Navigation",
+    "kind": "ui",
+    "count": 10,
+    "users": 1,
+    "errors": 0,
+    "p50_ms": null,
+    "p95_ms": null,
+    "channels": {
+     "web": 10
+    }
+   },
+   {
+    "action": "ui.copy",
+    "label": "Copied to clipboard",
+    "category": "Navigation",
+    "kind": "ui",
+    "count": 10,
+    "users": 1,
+    "errors": 0,
+    "p50_ms": null,
+    "p95_ms": null,
+    "channels": {
+     "web": 10
+    }
+   },
+   {
+    "action": "org.list",
+    "label": "Listed orgs",
+    "category": "Orgs",
+    "kind": "action",
+    "count": 6,
+    "users": 1,
+    "errors": 0,
+    "p50_ms": 436,
+    "p95_ms": 1429,
+    "channels": {
+     "chat": 6
+    }
+   }
+  ],
+  "tools": [
+   {
+    "tool": "record_resolution",
+    "calls": 15,
+    "users": 1,
+    "errors": 1,
+    "p50_ms": 815,
+    "p95_ms": 1450,
+    "channels": {
+     "chat": 15
+    }
+   },
+   {
+    "tool": "find_field_writers",
+    "calls": 13,
+    "users": 1,
+    "errors": 0,
+    "p50_ms": 520,
+    "p95_ms": 1607,
+    "channels": {
+     "chat": 13
+    }
+   },
+   {
+    "tool": "normalize_log",
+    "calls": 11,
+    "users": 1,
+    "errors": 2,
+    "p50_ms": 1083,
+    "p95_ms": 1767,
+    "channels": {
+     "chat": 11
+    }
+   },
+   {
+    "tool": "get_entry_points",
+    "calls": 10,
+    "users": 1,
+    "errors": 0,
+    "p50_ms": 866,
+    "p95_ms": 1174,
+    "channels": {
+     "chat": 10
+    }
+   },
+   {
+    "tool": "file_incident",
+    "calls": 10,
+    "users": 1,
+    "errors": 0,
+    "p50_ms": 752,
+    "p95_ms": 1767,
+    "channels": {
+     "chat": 10
+    }
+   },
+   {
+    "tool": "get_component",
+    "calls": 7,
+    "users": 1,
+    "errors": 0,
+    "p50_ms": 613,
+    "p95_ms": 1553,
+    "channels": {
+     "chat": 7
+    }
+   },
+   {
+    "tool": "search_knowledgebase",
+    "calls": 7,
+    "users": 1,
+    "errors": 0,
+    "p50_ms": 1424,
+    "p95_ms": 1671,
+    "channels": {
+     "chat": 7
+    }
+   },
+   {
+    "tool": "list_orgs",
+    "calls": 6,
+    "users": 1,
+    "errors": 0,
+    "p50_ms": 436,
+    "p95_ms": 1429,
+    "channels": {
+     "chat": 6
+    }
+   }
+  ],
+  "mcp_clients": [],
+  "log_parser": {
+   "parses": 18,
+   "failed": 2,
+   "users": 1,
+   "stored": 7,
+   "via_incident": 0,
+   "total_mb": 27.14,
+   "avg_kb": 1737.1,
+   "max_kb": 3973.7,
+   "p50_parse_ms": 1077,
+   "p95_parse_ms": 2116,
+   "exceptions_found": 10,
+   "logs_with_exceptions": 7,
+   "by_channel": {
+    "chat": 11,
+    "web": 7
+   }
+  },
+  "by_org": [
+   {
+    "org_id": "acmeprod",
+    "org_name": "Acme Prod",
+    "account": "Acme Corp",
+    "events": 94,
+    "users": 1,
+    "channels": {
+     "web": 49,
+     "chat": 45
+    },
+    "top_action": "kb.field_writers",
+    "top_action_label": "Field writers",
+    "incidents": 17,
+    "last_seen": "2026-09-29T07:17:13Z"
+   },
+   {
+    "org_id": "globex",
+    "org_name": "Globex",
+    "account": "Globex",
+    "events": 34,
+    "users": 1,
+    "channels": {
+     "web": 17,
+     "chat": 17
+    },
+    "top_action": "kb.search",
+    "top_action_label": "Knowledgebase search",
+    "incidents": 0,
+    "last_seen": "2026-09-28T21:35:30Z"
+   }
+  ],
+  "errors": [
+   {
+    "action": "log.parse",
+    "label": "Parsed a debug log",
+    "status": 500,
+    "count": 1,
+    "users": 1,
+    "channels": {
+     "chat": 1
+    }
+   },
+   {
+    "action": "kb.component",
+    "label": "Opened a component",
+    "status": 404,
+    "count": 1,
+    "users": 1,
+    "channels": {
+     "web": 1
+    }
+   },
+   {
+    "action": "kb.search",
+    "label": "Knowledgebase search",
+    "status": 500,
+    "count": 1,
+    "users": 1,
+    "channels": {
+     "web": 1
+    }
+   },
+   {
+    "action": "incident.resolve",
+    "label": "Recorded a resolution",
+    "status": 404,
+    "count": 1,
+    "users": 1,
+    "channels": {
+     "chat": 1
+    }
+   },
+   {
+    "action": "incident.file",
+    "label": "Filed an incident",
+    "status": 500,
+    "count": 1,
+    "users": 1,
+    "channels": {
+     "web": 1
+    }
+   },
+   {
+    "action": "incident.resolve",
+    "label": "Recorded a resolution",
+    "status": 500,
+    "count": 1,
+    "users": 1,
+    "channels": {
+     "web": 1
+    }
+   },
+   {
+    "action": "log.parse",
+    "label": "Parsed a debug log",
+    "status": 404,
+    "count": 1,
+    "users": 1,
+    "channels": {
+     "chat": 1
+    }
+   }
+  ],
+  "recent": [
+   {
+    "at": "2026-09-29T09:10:14Z",
+    "username": "dana",
+    "channel": "web",
+    "action": "ui.help_open",
+    "label": "Opened the help drawer",
+    "category": "Navigation",
+    "org_id": null,
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": null,
+    "ms": null,
+    "kind": "ui"
+   },
+   {
+    "at": "2026-09-29T07:17:13Z",
+    "username": "dana",
+    "channel": "chat",
+    "action": "kb.field_writers",
+    "label": "Field writers",
+    "category": "Knowledgebase",
+    "org_id": "acmeprod",
+    "tool": "find_field_writers",
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 1778,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-29T03:26:42Z",
+    "username": "dana",
+    "channel": "chat",
+    "action": "kb.field_writers",
+    "label": "Field writers",
+    "category": "Knowledgebase",
+    "org_id": "acmeprod",
+    "tool": "find_field_writers",
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 634,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-29T02:56:13Z",
+    "username": "dana",
+    "channel": "web",
+    "action": "ui.copy",
+    "label": "Copied to clipboard",
+    "category": "Navigation",
+    "org_id": null,
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": null,
+    "ms": null,
+    "kind": "ui"
+   },
+   {
+    "at": "2026-09-29T01:56:01Z",
+    "username": "dana",
+    "channel": "chat",
+    "action": "kb.field_writers",
+    "label": "Field writers",
+    "category": "Knowledgebase",
+    "org_id": "acmeprod",
+    "tool": "find_field_writers",
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 196,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-28T23:53:03Z",
+    "username": "dana",
+    "channel": "web",
+    "action": "ui.copy",
+    "label": "Copied to clipboard",
+    "category": "Navigation",
+    "org_id": null,
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": null,
+    "ms": null,
+    "kind": "ui"
+   },
+   {
+    "at": "2026-09-28T21:35:30Z",
+    "username": "dana",
+    "channel": "chat",
+    "action": "kb.search",
+    "label": "Knowledgebase search",
+    "category": "Knowledgebase",
+    "org_id": "globex",
+    "tool": "search_knowledgebase",
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 1438,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-28T20:06:21Z",
+    "username": "dana",
+    "channel": "web",
+    "action": "incident.file",
+    "label": "Filed an incident",
+    "category": "Incidents",
+    "org_id": "acmeprod",
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 387,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-28T17:42:00Z",
+    "username": "dana",
+    "channel": "web",
+    "action": "kb.component",
+    "label": "Opened a component",
+    "category": "Knowledgebase",
+    "org_id": "acmeprod",
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 234,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-28T14:27:01Z",
+    "username": "dana",
+    "channel": "web",
+    "action": "kb.field_writers",
+    "label": "Field writers",
+    "category": "Knowledgebase",
+    "org_id": "acmeprod",
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 1017,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-28T12:36:22Z",
+    "username": "dana",
+    "channel": "web",
+    "action": "kb.component",
+    "label": "Opened a component",
+    "category": "Knowledgebase",
+    "org_id": "acmeprod",
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 710,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-28T12:28:29Z",
+    "username": "dana",
+    "channel": "chat",
+    "action": "kb.component",
+    "label": "Opened a component",
+    "category": "Knowledgebase",
+    "org_id": "acmeprod",
+    "tool": "get_component",
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 1342,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-28T11:46:43Z",
+    "username": "dana",
+    "channel": "web",
+    "action": "ui.copy",
+    "label": "Copied to clipboard",
+    "category": "Navigation",
+    "org_id": null,
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": null,
+    "ms": null,
+    "kind": "ui"
+   },
+   {
+    "at": "2026-09-28T09:53:48Z",
+    "username": "dana",
+    "channel": "chat",
+    "action": "incident.file",
+    "label": "Filed an incident",
+    "category": "Incidents",
+    "org_id": "acmeprod",
+    "tool": "file_incident",
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 285,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-28T07:01:20Z",
+    "username": "dana",
+    "channel": "web",
+    "action": "ui.palette_run",
+    "label": "Ran a palette command",
+    "category": "Navigation",
+    "org_id": null,
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": null,
+    "ms": null,
+    "kind": "ui"
+   },
+   {
+    "at": "2026-09-28T02:28:04Z",
+    "username": "dana",
+    "channel": "web",
+    "action": "kb.component",
+    "label": "Opened a component",
+    "category": "Knowledgebase",
+    "org_id": "acmeprod",
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 635,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-27T19:26:46Z",
+    "username": "dana",
+    "channel": "chat",
+    "action": "kb.entry_points",
+    "label": "Entry points",
+    "category": "Knowledgebase",
+    "org_id": "globex",
+    "tool": "get_entry_points",
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 1146,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-27T18:59:36Z",
+    "username": "dana",
+    "channel": "web",
+    "action": "kb.field_writers",
+    "label": "Field writers",
+    "category": "Knowledgebase",
+    "org_id": "acmeprod",
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 1286,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-27T18:38:32Z",
+    "username": "dana",
+    "channel": "web",
+    "action": "kb.field_writers",
+    "label": "Field writers",
+    "category": "Knowledgebase",
+    "org_id": "acmeprod",
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 286,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-27T15:26:29Z",
+    "username": "dana",
+    "channel": "web",
+    "action": "log.parse",
+    "label": "Parsed a debug log",
+    "category": "Logs",
+    "org_id": null,
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 713,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-27T14:24:32Z",
+    "username": "dana",
+    "channel": "web",
+    "action": "incident.resolve",
+    "label": "Recorded a resolution",
+    "category": "Incidents",
+    "org_id": "acmeprod",
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 426,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-27T13:29:23Z",
+    "username": "dana",
+    "channel": "chat",
+    "action": "kb.field_writers",
+    "label": "Field writers",
+    "category": "Knowledgebase",
+    "org_id": "acmeprod",
+    "tool": "find_field_writers",
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 195,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-27T11:40:42Z",
+    "username": "dana",
+    "channel": "chat",
+    "action": "kb.component",
+    "label": "Opened a component",
+    "category": "Knowledgebase",
+    "org_id": "acmeprod",
+    "tool": "get_component",
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 613,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-27T09:57:59Z",
+    "username": "dana",
+    "channel": "web",
+    "action": "kb.search",
+    "label": "Knowledgebase search",
+    "category": "Knowledgebase",
+    "org_id": "globex",
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 1147,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-27T06:09:36Z",
+    "username": "dana",
+    "channel": "web",
+    "action": "kb.field_writers",
+    "label": "Field writers",
+    "category": "Knowledgebase",
+    "org_id": "acmeprod",
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 718,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-27T04:16:08Z",
+    "username": "dana",
+    "channel": "web",
+    "action": "ui.copy",
+    "label": "Copied to clipboard",
+    "category": "Navigation",
+    "org_id": null,
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": null,
+    "ms": null,
+    "kind": "ui"
+   },
+   {
+    "at": "2026-09-27T03:11:28Z",
+    "username": "dana",
+    "channel": "chat",
+    "action": "kb.entry_points",
+    "label": "Entry points",
+    "category": "Knowledgebase",
+    "org_id": "globex",
+    "tool": "get_entry_points",
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 1174,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-27T02:42:47Z",
+    "username": "dana",
+    "channel": "web",
+    "action": "kb.field_writers",
+    "label": "Field writers",
+    "category": "Knowledgebase",
+    "org_id": "acmeprod",
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 1148,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-27T01:55:56Z",
+    "username": "dana",
+    "channel": "chat",
+    "action": "kb.component",
+    "label": "Opened a component",
+    "category": "Knowledgebase",
+    "org_id": "acmeprod",
+    "tool": "get_component",
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 227,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-26T23:21:01Z",
+    "username": "dana",
+    "channel": "web",
+    "action": "ui.help_open",
+    "label": "Opened the help drawer",
+    "category": "Navigation",
+    "org_id": null,
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": null,
+    "ms": null,
+    "kind": "ui"
+   },
+   {
+    "at": "2026-09-26T21:20:01Z",
+    "username": "dana",
+    "channel": "chat",
+    "action": "org.list",
+    "label": "Listed orgs",
+    "category": "Orgs",
+    "org_id": null,
+    "tool": "list_orgs",
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 352,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-26T17:15:20Z",
+    "username": "dana",
+    "channel": "web",
+    "action": "kb.entry_points",
+    "label": "Entry points",
+    "category": "Knowledgebase",
+    "org_id": "globex",
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 1355,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-26T15:20:20Z",
+    "username": "dana",
+    "channel": "chat",
+    "action": "org.list",
+    "label": "Listed orgs",
+    "category": "Orgs",
+    "org_id": null,
+    "tool": "list_orgs",
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 1039,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-26T14:50:43Z",
+    "username": "dana",
+    "channel": "web",
+    "action": "kb.search",
+    "label": "Knowledgebase search",
+    "category": "Knowledgebase",
+    "org_id": "globex",
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 1365,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-26T05:53:07Z",
+    "username": "dana",
+    "channel": "web",
+    "action": "kb.field_writers",
+    "label": "Field writers",
+    "category": "Knowledgebase",
+    "org_id": "acmeprod",
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 1024,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-26T03:02:08Z",
+    "username": "dana",
+    "channel": "web",
+    "action": "incident.resolve",
+    "label": "Recorded a resolution",
+    "category": "Incidents",
+    "org_id": "acmeprod",
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 763,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-25T22:00:57Z",
+    "username": "dana",
+    "channel": "web",
+    "action": "ui.help_open",
+    "label": "Opened the help drawer",
+    "category": "Navigation",
+    "org_id": null,
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": null,
+    "ms": null,
+    "kind": "ui"
+   },
+   {
+    "at": "2026-09-25T21:58:17Z",
+    "username": "dana",
+    "channel": "web",
+    "action": "kb.component",
+    "label": "Opened a component",
+    "category": "Knowledgebase",
+    "org_id": "acmeprod",
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 516,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-25T17:01:34Z",
+    "username": "dana",
+    "channel": "chat",
+    "action": "kb.entry_points",
+    "label": "Entry points",
+    "category": "Knowledgebase",
+    "org_id": "globex",
+    "tool": "get_entry_points",
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 1173,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-25T14:01:33Z",
+    "username": "dana",
+    "channel": "chat",
+    "action": "incident.resolve",
+    "label": "Recorded a resolution",
+    "category": "Incidents",
+    "org_id": "acmeprod",
+    "tool": "record_resolution",
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 350,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-25T11:59:32Z",
+    "username": "dana",
+    "channel": "chat",
+    "action": "kb.search",
+    "label": "Knowledgebase search",
+    "category": "Knowledgebase",
+    "org_id": "globex",
+    "tool": "search_knowledgebase",
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 1424,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-24T22:26:27Z",
+    "username": "dana",
+    "channel": "web",
+    "action": "incident.file",
+    "label": "Filed an incident",
+    "category": "Incidents",
+    "org_id": "acmeprod",
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 1446,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-24T21:29:42Z",
+    "username": "dana",
+    "channel": "chat",
+    "action": "log.parse",
+    "label": "Parsed a debug log",
+    "category": "Logs",
+    "org_id": null,
+    "tool": "normalize_log",
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 1083,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-24T21:16:00Z",
+    "username": "dana",
+    "channel": "chat",
+    "action": "log.parse",
+    "label": "Parsed a debug log",
+    "category": "Logs",
+    "org_id": null,
+    "tool": "normalize_log",
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 947,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-24T06:27:42Z",
+    "username": "dana",
+    "channel": "web",
+    "action": "kb.component",
+    "label": "Opened a component",
+    "category": "Knowledgebase",
+    "org_id": "acmeprod",
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 823,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-24T03:14:11Z",
+    "username": "dana",
+    "channel": "web",
+    "action": "ui.copy",
+    "label": "Copied to clipboard",
+    "category": "Navigation",
+    "org_id": null,
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": null,
+    "ms": null,
+    "kind": "ui"
+   },
+   {
+    "at": "2026-09-24T01:55:40Z",
+    "username": "dana",
+    "channel": "web",
+    "action": "ui.palette_run",
+    "label": "Ran a palette command",
+    "category": "Navigation",
+    "org_id": null,
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": null,
+    "ms": null,
+    "kind": "ui"
+   },
+   {
+    "at": "2026-09-23T23:25:30Z",
+    "username": "dana",
+    "channel": "chat",
+    "action": "incident.file",
+    "label": "Filed an incident",
+    "category": "Incidents",
+    "org_id": "acmeprod",
+    "tool": "file_incident",
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 610,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-23T21:56:39Z",
+    "username": "dana",
+    "channel": "web",
+    "action": "kb.entry_points",
+    "label": "Entry points",
+    "category": "Knowledgebase",
+    "org_id": "globex",
+    "tool": null,
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 682,
+    "kind": "action"
+   },
+   {
+    "at": "2026-09-23T20:29:29Z",
+    "username": "dana",
+    "channel": "chat",
+    "action": "incident.file",
+    "label": "Filed an incident",
+    "category": "Incidents",
+    "org_id": "acmeprod",
+    "tool": "file_incident",
+    "client": null,
+    "ok": true,
+    "status": 200,
+    "ms": 251,
+    "kind": "action"
+   }
+  ],
+  "me": {
+   "username": "dana",
+   "role": "user",
+   "events": 152,
+   "ui_events": 43,
+   "active_days": 30,
+   "channels": [
+    "chat",
+    "web"
+   ],
+   "segment": "In-app AI chat",
+   "llm_turns": 20,
+   "llm_tokens": 240000,
+   "mcp_calls": 0,
+   "chat_tool_calls": 79,
+   "kb_lookups": 86,
+   "logs_parsed": 18,
+   "incidents_filed": 17,
+   "resolutions": 25,
+   "errors": 7,
+   "top_action": "kb.field_writers",
+   "top_action_label": "Field writers",
+   "clients": [],
+   "orgs": 2,
+   "first_seen": "2026-08-31T15:15:24Z",
+   "last_seen": "2026-09-29T09:10:14Z"
+  }
+ }
+}

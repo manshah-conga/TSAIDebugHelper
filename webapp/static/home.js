@@ -1174,7 +1174,7 @@ function paletteStaticItems() {
     ["known", "Known Issues", "fixes resolutions signatures"],
     ["logs", "Log Normalizer", "debug log normalize"],
     ["tokens", "API Tokens", "mcp claude desktop token"],
-    ["usage", "Usage", "quota tokens llm"],
+    ["usage", "Usage", "quota tokens llm activity analytics mcp adoption"],
   ];
   if (role === "admin") views.push(["admin", "Admin", "users quota verify signups"]);
   const items = views.map(([v, label, kw]) => ({ group: "Go to", label, keywords: kw, run: () => showView(v) }));
