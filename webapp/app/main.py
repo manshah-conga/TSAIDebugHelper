@@ -11,6 +11,7 @@ Run with:  python -m uvicorn app.main:app --reload --port 8000
            (from inside webapp/ -- see README section 1; add --host 0.0.0.0
             to make it reachable from other machines)
 """
+import copy
 import os
 import time
 from contextlib import asynccontextmanager
@@ -38,7 +39,7 @@ from . import usage as usage_ledger
 from . import activity
 from . import guide as guide_mod
 from .onboarding import run_onboarding, JOBS, progress_payload, job_in_flight
-from .log_normalizer import parse_log_text
+from .log_normalizer import parse_log_text, involved_components
 from .rca import assemble_context, lookup_field_writers
 from .incidents import file_incident
 from .common_now import iso_now
@@ -248,7 +249,7 @@ def change_own_password(req: ChangePasswordRequest, ident=Depends(auth.require_r
 # after an update a browser can be running new UI against an old server that
 # silently ignores the new fields (log tags were dropped exactly this way).
 # The page compares the two and tells the person to restart the server.
-APP_BUILD = 27
+APP_BUILD = 28
 
 
 @app.get("/api/build")
@@ -798,6 +799,47 @@ def get_entry_points(org_id: str, object_name: str):
 
 # ---------- incidents ----------
 
+EMPTY_NORMALIZED = {
+    "header": None, "execution_units": [], "exceptions": [], "soql_summary": [],
+    "dml_summary": [], "callouts": [], "user_debug": [], "validation_failures": [],
+    "flow_events": [], "limits_final": {}, "involved_components": [],
+}
+
+
+def _incident_id_ok(incident_id):
+    """Incident ids are directory names. New ones are always slugs (see
+    create_incident); older ones may hold dots or dashes from a free-text
+    label, so this refuses only what could step outside the org's folder."""
+    return bool(incident_id) and not incident_id.startswith(".") and "/" not in incident_id \
+        and "\\" not in incident_id and ".." not in incident_id
+
+
+def _unique_incident_id(org_id, base_id):
+    """Two filings with the same label in the same second used to mint the
+    same id, and the second silently overwrote the first incident on disk
+    while its recurrence bump still counted -- a ghost occurrence."""
+    incident_id, n = base_id, 2
+    while storage.load_incident(org_id, incident_id) is not None:
+        incident_id = f"{base_id}_{n}"
+        n += 1
+    return incident_id
+
+
+def _note_incident_on_log(log_id, org_id, incident_id, username):
+    """Back-link a library log to the incident filed from it, so the library
+    can say "already filed in <org>" and nobody files the same log twice --
+    which would count one occurrence as two in Known Issues."""
+    def _apply(meta):
+        links = [l for l in (meta.get("incidents") or []) if isinstance(l, dict)]
+        links.append({"org_id": org_id, "incident_id": incident_id,
+                      "timestamp": iso_now(), "by": username})
+        meta["incidents"] = links[-50:]
+    try:
+        storage.mutate_log_meta(log_id, _apply)
+    except Exception:  # noqa: BLE001 -- a missing back-link must not fail the filing
+        pass
+
+
 @app.post("/api/orgs/{org_id}/incidents", dependencies=Dep_org_write)
 async def create_incident(
     request: Request,
@@ -805,31 +847,68 @@ async def create_incident(
     label: Optional[str] = Form(None),
     field: Optional[str] = Form(None),
     log_file: Optional[UploadFile] = File(None),
+    log_id: Optional[str] = Form(None),
+    save_log: bool = Form(False),
+    ident=Depends(auth.require_user),
 ):
+    """File an incident from a debug log and/or a suspect field.
+
+    The log comes from exactly one of:
+    * `log_file` -- a raw debug log, parsed in memory against this org's
+      index and discarded. With `save_log=true` its normalized JSON (never
+      the raw log) is also kept in the log library, tagged to this org, so it
+      can be reopened or filed again elsewhere.
+    * `log_id` -- a log already in the normalized-log library (one you can
+      see). Its component matches are recomputed against this org's index,
+      so the report is the same as if the raw log had been uploaded here."""
     kb = storage.load_kb(org_id)
     if not kb["org_index"]:
         raise HTTPException(404, f"No knowledgebase for org '{org_id}' yet -- create the org connection first.")
-    if not field and not log_file:
-        raise HTTPException(400, "Provide a log file, a suspect field name, or both.")
+    field = (field or "").strip() or None
+    log_id = (log_id or "").strip() or None
+    if log_file is not None and not log_file.filename:
+        log_file = None  # an empty file part from a form with no file chosen
+    if log_file is not None and log_id:
+        raise HTTPException(400, "Use either an uploaded log file or a log from the library, not both.")
+    if not field and log_file is None and not log_id:
+        raise HTTPException(400, "Provide a log file, a log from the library, a suspect field name, or a combination.")
 
+    index_ids = set(kb["org_index"].keys())
     log_filename = None
+    source_log_id = None
+    warnings = []
     if log_file is not None:
         raw_bytes = await log_file.read()  # held in memory only; never written to disk
         raw_text = raw_bytes.decode("utf-8", errors="replace")
         log_filename = log_file.filename
         size_bytes, line_count = len(raw_bytes), raw_text.count("\n") + 1
         t0 = time.perf_counter()
-        normalized = parse_log_text(raw_text, index_ids=set(kb["org_index"].keys()))
+        normalized = parse_log_text(raw_text, index_ids=index_ids)
         parse_ms = int((time.perf_counter() - t0) * 1000)
         del raw_bytes, raw_text  # explicit: the raw log does not outlive this request
         activity.note(request, has_log=True,
                       **_log_parse_facts(normalized, size_bytes, line_count, parse_ms))
+    elif log_id:
+        stored = log_library.get_log(log_id, ident)  # 404 unless you can see it
+        lmeta = stored.get("meta") or {}
+        normalized = copy.deepcopy(stored.get("normalized_log") or EMPTY_NORMALIZED)
+        # Library logs were matched with no org; match them against this one.
+        normalized["involved_components"] = involved_components(
+            normalized.get("execution_units"), normalized.get("exceptions"), index_ids)
+        source_log_id = log_id
+        log_filename = lmeta.get("source_log") or lmeta.get("label") or log_id
+        if lmeta.get("org_id") and lmeta["org_id"] != org_id:
+            warnings.append(f"This log is tagged to org '{lmeta['org_id']}', not '{org_id}'. "
+                            "Component matches come from this org's knowledgebase.")
+        prior_links = [l for l in (lmeta.get("incidents") or [])
+                       if isinstance(l, dict) and l.get("org_id") == org_id]
+        if prior_links:
+            warnings.append(f"This log was already filed in '{org_id}' as {prior_links[-1].get('incident_id')}; "
+                            "filing it again counts as another occurrence.")
+        # Not a parse -- the activity ledger counts parses from `has_log`.
+        activity.note(request, from_library=True)
     else:
-        normalized = {
-            "header": None, "execution_units": [], "exceptions": [], "soql_summary": [],
-            "dml_summary": [], "callouts": [], "user_debug": [], "validation_failures": [],
-            "flow_events": [], "limits_final": {}, "involved_components": [],
-        }
+        normalized = copy.deepcopy(EMPTY_NORMALIZED)
 
     context_pack = assemble_context(normalized, kb["org_index"], kb["call_graph"],
                                      kb["object_touch_map"], kb["file_hashes"])
@@ -842,11 +921,21 @@ async def create_incident(
         for w in field_result["writers"]:
             if w["component"] in kb["org_index"]:
                 context_pack["primary_components"][w["component"]] = kb["org_index"][w["component"]]
+        if field_result["writers"] and all(w.get("is_test_class") for w in field_result["writers"]):
+            warnings.append(f"Only test classes write '{field}' in this org -- none of them can change a real "
+                            "record, so look at managed packages, integrations or manual edits.")
+        if not field_result["writers"]:
+            warnings.append(f"No automation in this org's knowledgebase writes '{field}' -- check the API name "
+                            "(including any namespace prefix), or the value may come from a managed package, "
+                            "an integration user, or a manual edit.")
 
     now = iso_now()
     timestamp_slug = now.replace(":", "").replace("-", "")
     default_label = (os.path.splitext(log_filename)[0] if log_filename else field) or "incident"
-    incident_id = f"{timestamp_slug}_{label or default_label}"
+    # The label becomes a directory name: slug it, so "Quote NPE" works and
+    # "../x" cannot climb out of the org's incidents folder.
+    slug = _slugify(label or default_label, fallback="incident")[:80]
+    incident_id = _unique_incident_id(org_id, f"{timestamp_slug}_{slug}")
 
     # Signature matching and the recurrence bump have to happen inside one
     # lock. Two engineers filing against the same org read the same index,
@@ -866,19 +955,50 @@ async def create_incident(
     prior = outcome["prior"]
     sig_source = outcome["sig_source"]
 
+    # Keep the uploaded log in the library too, tagged to this org.
+    if log_file is not None and save_log:
+        tag_org, tag_account = log_library.resolve_tags(org_id, None, ident)
+        try:
+            lib_label = log_library.normalize_label(label)
+        except ValueError:
+            lib_label = None
+        base = lib_label or (os.path.splitext(log_filename)[0] if log_filename else "log")
+        source_log_id = _unique_log_id(f"{timestamp_slug}_{_slugify(base)[:80]}")
+        lib_normalized = dict(normalized)
+        n_exc = len(normalized.get("exceptions", []))
+        lib_meta = {
+            "log_id": source_log_id, "label": lib_label, "source_log": log_filename,
+            "timestamp": now, "owner": ident["username"], "exception_count": n_exc,
+            "top_exception": (normalized["exceptions"][0]["type"] if n_exc else None),
+            "execution_unit_count": len(normalized.get("execution_units", [])),
+            "involved_components": normalized.get("involved_components", []),
+            "org_id": tag_org,
+        }
+        if tag_account:
+            lib_meta["account"] = tag_account
+        storage.save_normalized_log(source_log_id, lib_normalized, lib_meta)
+        activity.note(request, stored=True)
+
     meta = {
         "incident_id": incident_id, "org_id": org_id, "timestamp": now,
-        "source_log": log_filename, "suspect_field": field, "signature": signature,
+        "filed_by": ident.get("username"),
+        "label": label.strip() if label and label.strip() else None,
+        "source_log": log_filename, "source_log_id": source_log_id,
+        "suspect_field": field, "signature": signature,
         "signature_source": sig_source, "recurrence": recurrence,
         "prior_occurrences": prior["occurrences"] if prior else 0,
         "prior_incident_ids": prior["incident_ids"] if prior else [],
         "prior_resolution": prior.get("resolution") if prior else None,
+        "top_exception": (normalized["exceptions"][0].get("type") if normalized.get("exceptions") else None),
     }
     storage.save_incident(org_id, incident_id, normalized, context_pack, meta)
+    if source_log_id:
+        _note_incident_on_log(source_log_id, org_id, incident_id, ident.get("username"))
     activity.note(request, has_field=bool(field), recurrence=bool(prior),
                   signature_source=sig_source if isinstance(sig_source, str) else None)
 
-    return {"meta": meta, "field_writers": field_result["writers"] if field_result else None}
+    return {"meta": meta, "field_writers": field_result["writers"] if field_result else None,
+            "warnings": warnings}
 
 
 @app.get("/api/orgs/{org_id}/incidents", dependencies=Dep_org_view)
@@ -888,6 +1008,8 @@ def get_incidents(org_id: str):
 
 @app.get("/api/orgs/{org_id}/incidents/{incident_id}", dependencies=Dep_org_view)
 def get_incident(org_id: str, incident_id: str):
+    if not _incident_id_ok(incident_id):
+        raise HTTPException(404, f"No incident '{incident_id}' for org '{org_id}'.")
     result = storage.load_incident(org_id, incident_id)
     if not result:
         raise HTTPException(404, f"No incident '{incident_id}' for org '{org_id}'.")

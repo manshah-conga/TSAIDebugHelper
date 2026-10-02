@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>TS Intelligent Debug Helper</title>
-<link rel="stylesheet" href="/static/style.css?v=27">
+<link rel="stylesheet" href="/static/style.css?v=28">
 </head>
 <body>
 
@@ -246,14 +246,74 @@
 
   <section id="view-incidents" class="view">
     <div class="card" data-requires="user" data-tour="incidents">
-      <h2>File a new incident</h2>
-      <label>Label (optional, no spaces)</label>
-      <input id="incLabel" placeholder="pcbtest1_wrong_value">
-      <label>Debug log file (optional)</label>
-      <input id="incLogFile" type="file">
-      <label>Suspect field API name (optional -- for a "wrong value, no exception" report)</label>
-      <input id="incField" placeholder="Increment_Adjustment__c">
-      <button class="primary" onclick="fileIncident()">File incident</button>
+      <h2>File a new incident <span id="incOrgChip" class="inc-org-chip"></span></h2>
+      <p class="muted">A debug log, a suspect field, or both, checked against this org&rsquo;s knowledgebase. The report
+        ranks the likely culprits and tells you if the same failure has been filed before.</p>
+
+      <label id="incSourceLabel">Debug log</label>
+      <div class="seg inc-source" id="incSourceSeg" role="tablist" aria-labelledby="incSourceLabel">
+        <button type="button" role="tab" id="incSrcUpload" onclick="setIncSource('upload')">Upload a file</button>
+        <button type="button" role="tab" id="incSrcLibrary" onclick="setIncSource('library')">From the log library <span id="incLibCount" class="chip-n"></span></button>
+        <button type="button" role="tab" id="incSrcNone" onclick="setIncSource('none')">No log</button>
+      </div>
+
+      <div id="incPaneUpload" class="inc-pane">
+        <div id="incLogDrop" class="log-drop" tabindex="0" role="button" aria-label="Choose or drop a debug log file">
+          <input id="incLogFile" type="file" accept=".log,.txt,text/plain" hidden>
+          <div id="incDropEmpty" class="log-drop-empty">
+            <div class="log-drop-icon" aria-hidden="true">&#8682;</div>
+            <div><b>Drop a debug log here</b> or <span class="link-btn inline">choose a file</span></div>
+            <div class="muted">.log or .txt &middot; parsed in memory, never stored raw</div>
+          </div>
+          <div id="incDropFile" class="log-drop-file" style="display:none;">
+            <span class="log-file-icon" aria-hidden="true">&#128196;</span>
+            <span class="log-file-name" id="incFileName"></span>
+            <span class="muted" id="incFileSize"></span>
+            <button type="button" class="link-btn" onclick="event.stopPropagation(); setIncFile(null)">Remove</button>
+          </div>
+        </div>
+        <label class="inline-check"><input type="checkbox" id="incSaveLog">Also keep the normalized log in the library, tagged to this org</label>
+      </div>
+
+      <div id="incPaneLibrary" class="inc-pane" style="display:none;">
+        <div class="log-toolbar">
+          <div class="log-search-wrap">
+            <span class="log-search-icon" aria-hidden="true">&#9906;</span>
+            <input id="incLibSearch" type="search" autocomplete="off" placeholder="Search label, exception, component, owner..."
+              oninput="renderIncLibrary()" aria-label="Search the log library">
+          </div>
+          <div class="seg" role="group" aria-label="Which logs">
+            <button type="button" id="incLibScopeOrg" onclick="setIncLibScope('org')">This org</button>
+            <button type="button" id="incLibScopeAccount" onclick="setIncLibScope('account')">This account</button>
+            <button type="button" id="incLibScopeAll" onclick="setIncLibScope('all')">All I can see</button>
+          </div>
+        </div>
+        <div id="incLibList" class="inc-lib-list" role="listbox" aria-label="Stored logs"></div>
+      </div>
+
+      <div id="incPaneNone" class="inc-pane field-hint" style="display:none;">
+        No log &mdash; for a &ldquo;field has the wrong value, nothing threw&rdquo; report. Enter the suspect field below.
+      </div>
+
+      <div class="log-form-grid inc-form-grid">
+        <div>
+          <label for="incField">Suspect field API name <span class="optional">optional</span></label>
+          <input id="incField" placeholder="Increment_Adjustment__c" autocomplete="off" oninput="incFormChanged()"
+            onkeydown="if(event.key==='Enter') fileIncident()">
+          <div class="field-hint">For a &ldquo;wrong value, no exception&rdquo; report, or to add a field&rsquo;s writers to the suspects.</div>
+        </div>
+        <div>
+          <label for="incLabel">Label <span class="optional">optional</span></label>
+          <input id="incLabel" placeholder="e.g. Quote discount wrong after renewal" oninput="incFormChanged()"
+            onkeydown="if(event.key==='Enter') fileIncident()">
+          <div class="field-hint">Defaults to the log or field name.</div>
+        </div>
+      </div>
+
+      <div class="log-submit-row">
+        <button class="primary" id="incFileBtn" onclick="fileIncident()" disabled>File incident</button>
+        <span id="incSummary" class="muted small"></span>
+      </div>
       <div id="incidentStatus" class="status-line"></div>
     </div>
     <div class="card">
@@ -706,13 +766,13 @@
 </aside>
 
 </div>
-<script src="/static/app.js?v=27"></script>
-<script src="/static/chat.js?v=27"></script>
-<script src="/static/activity.js?v=27"></script>
+<script src="/static/app.js?v=28"></script>
+<script src="/static/chat.js?v=28"></script>
+<script src="/static/activity.js?v=28"></script>
 <!-- Home page + command palette, then onboarding/help. Both are optional
      layers over app.js: every call into them from app.js is guarded, so a
      cached page that loads without them still works. -->
-<script src="/static/home.js?v=27"></script>
-<script src="/static/guide.js?v=27"></script>
+<script src="/static/home.js?v=28"></script>
+<script src="/static/guide.js?v=28"></script>
 </body>
 </html>

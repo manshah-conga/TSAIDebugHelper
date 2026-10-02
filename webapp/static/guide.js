@@ -409,8 +409,8 @@ const TOURS = {
       body: "Each writer shows a risk level, how recently it changed, and one sample of what it assigns. A reference rather than a literal means the real value is set upstream in that component." },
   ] },
   incidents: { title: "Filing an incident", steps: [
-    { el: "#incLogFile", view: "incidents", title: "The debug log",
-      body: "Optional, but it is what names the components that actually ran." },
+    { el: "#incSourceSeg", view: "incidents", title: "The debug log",
+      body: "Upload one, or pick one already in the log library -- no need to find the raw file again. Optional, but it is what names the components that actually ran." },
     { el: "#incField", view: "incidents", title: "...and/or the suspect field",
       body: "For \"wrong value, no exception\" reports, or to add a field's writers to the suspects." },
     { el: "#incidentsTable", view: "incidents", title: "The report",

@@ -529,26 +529,43 @@ async def file_incident(
     label: Optional[str] = None,
     suspect_field: Optional[str] = None,
     log_text: Optional[str] = None,
+    log_id: Optional[str] = None,
+    save_log: bool = False,
 ) -> dict:
     """File a new incident against an org's knowledgebase and get back an
     RCA context pack (relevant components, object/field touch info,
     recently-changed components, and -- if suspect_field is given --
     ranked field writers) plus whether this matches a previously-seen
     signature (recurrence) and any resolution already on file for it.
-    Provide log_text (the raw contents of a Salesforce debug log) and/or
-    suspect_field (a custom field API name reported as wrong with no
-    exception). Only the normalized/derived form of the log is ever
-    stored -- log_text itself is not persisted to disk."""
-    if not suspect_field and not log_text:
-        return {"error": "Provide log_text, suspect_field, or both."}
+
+    Give the log ONE way, plus suspect_field if there is one:
+    * log_id -- a log already in the normalized-log library (from
+      list_normalized_logs / normalize_log with store=true). Prefer this when
+      the log is already stored: no need to paste it again, and its
+      component matches are recomputed against this org.
+    * log_text -- the raw contents of a Salesforce debug log. Only the
+      normalized/derived form is ever stored; log_text itself is not
+      persisted. save_log=true also keeps the normalized log in the library,
+      tagged to this org.
+    suspect_field -- a custom field API name reported as wrong with no
+    exception. The result's `warnings` flag a log tagged to another org, a
+    log already filed in this org, or a field nothing in the org writes."""
+    if log_text and log_id:
+        return {"error": "Pass log_text or log_id, not both."}
+    if not suspect_field and not log_text and not log_id:
+        return {"error": "Provide log_text, log_id, suspect_field, or a combination."}
     data = {}
     if label:
         data["label"] = label
     if suspect_field:
         data["field"] = suspect_field
+    if log_id:
+        data["log_id"] = log_id
     files = None
     if log_text:
         files = {"log_file": ("incident.log", log_text.encode("utf-8"), "text/plain")}
+        if save_log:
+            data["save_log"] = "true"
     return await _post_form(f"/api/orgs/{org_id}/incidents", data, files)
 
 

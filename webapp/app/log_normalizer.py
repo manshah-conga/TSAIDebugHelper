@@ -105,6 +105,34 @@ def parse_debug_level_header(raw_header):
     return {"api_version": api_version, "log_levels": levels}
 
 
+_NAME_PAT = re.compile(r"\b([A-Za-z][A-Za-z0-9_]{2,})\b")
+
+
+def involved_components(execution_units, exceptions, index_ids=None):
+    """Component names the log mentions, from execution-unit labels and
+    exception messages/stacks. With `index_ids` (an org's component ids) only
+    names in that org count; without one, a prefix heuristic stands in.
+
+    Kept separate from parse_log_text because everything it reads survives
+    normalization: a log normalized with no org (the library) can be
+    re-matched against an org's index later, when it is filed as an incident
+    there, and get exactly what parsing the raw log against that org would
+    have produced."""
+    involved = set()
+    text_blob = " ".join(
+        [u.get("label") or "" for u in execution_units or []]
+        + [e.get("message") or "" for e in exceptions or []]
+        + [" ".join(e.get("stack") or []) for e in exceptions or []]
+    )
+    for m in _NAME_PAT.finditer(text_blob):
+        tok = m.group(1)
+        if index_ids and tok in index_ids:
+            involved.add(tok)
+        elif not index_ids and (tok.startswith("ibmc") or tok.startswith("itcc") or tok.startswith("APTS")):
+            involved.add(tok)
+    return sorted(involved)
+
+
 def parse_log_text(text, index_ids=None):
     lines = text.splitlines()
     header = parse_debug_level_header(lines[0] if lines else "")
@@ -229,18 +257,7 @@ def parse_log_text(text, index_ids=None):
         for (op, obj), v in dml_summary_map.items()
     ]
 
-    involved = set()
-    name_pat = re.compile(r"\b([A-Za-z][A-Za-z0-9_]{2,})\b")
-    text_blob = " ".join(
-        [u["label"] for u in execution_units] + [e["message"] for e in exceptions]
-        + [" ".join(e.get("stack", [])) for e in exceptions]
-    )
-    for m in name_pat.finditer(text_blob):
-        tok = m.group(1)
-        if index_ids and tok in index_ids:
-            involved.add(tok)
-        elif not index_ids and (tok.startswith("ibmc") or tok.startswith("itcc") or tok.startswith("APTS")):
-            involved.add(tok)
+    involved = involved_components(execution_units, exceptions, index_ids)
 
     return {
         "header": header,
@@ -250,5 +267,5 @@ def parse_log_text(text, index_ids=None):
         "dml_summary": sorted(dml_summary, key=lambda x: -x["occurrences"]),
         "callouts": callouts, "user_debug": user_debug, "validation_failures": validation_failures,
         "flow_events": flow_events, "limits_final": limits_final,
-        "limits_by_namespace": limits_by_namespace, "involved_components": sorted(involved),
+        "limits_by_namespace": limits_by_namespace, "involved_components": involved,
     }

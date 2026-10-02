@@ -165,6 +165,11 @@ def decorate(meta, ident, registry):
     org = registry.get(meta.get("org_id") or "")
     out["org_name"] = org.get("name") if org else None
     out["org_environment"] = accounts_mod.environment(org.get("instance_url")) if org else None
+    # Incidents filed from this log -- only those in orgs the caller can see,
+    # so a private org's id never leaks through a shared log.
+    out["incidents"] = [l for l in (meta.get("incidents") or [])
+                        if isinstance(l, dict) and l.get("org_id") in registry
+                        and org_access.can_view(registry[l["org_id"]], ident)]
     return out
 
 

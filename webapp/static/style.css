@@ -1759,3 +1759,40 @@ button.secondary.danger-outline:hover { background: var(--conga-color-status-err
 @media (max-width: 900px) {
   .grid2.act-grid { grid-template-columns: 1fr; }
 }
+
+/* ---------- File an incident: log source switch + library picker (app.js "incidents") ---------- */
+.inc-org-chip { font-size: var(--conga-font-size-md); font-weight: var(--conga-font-weight-regular, 400); color: var(--conga-color-text-muted); margin-left: 6px; }
+.inc-org-chip .env-badge { margin: 0 4px; vertical-align: 1px; }
+.inc-source { margin: var(--conga-space-2) 0 0; }
+.inc-source button { padding: 6px 14px; font-size: var(--conga-font-size-md); }
+.inc-source button.on .chip-n { opacity: 0.85; }
+.inc-pane { margin-bottom: var(--conga-space-4); }
+#incPaneNone { margin-top: var(--conga-space-4); }
+.inc-pane .inline-check { margin-top: var(--conga-space-2); }
+#incPaneLibrary .log-toolbar { margin-top: var(--conga-space-5); }
+.inc-lib-list {
+  max-height: 320px; overflow-y: auto; border: 1px solid var(--conga-color-border-strong);
+  border-radius: var(--conga-radius-md); background: var(--conga-color-surface);
+}
+.inc-lib-list:empty { display: none; }
+.inc-lib-list .empty-state, .inc-lib-list > .loading { margin: var(--conga-space-5); }
+.inc-lib-item {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: var(--conga-space-4); align-items: center;
+  padding: 9px var(--conga-space-5); cursor: pointer; border-bottom: 1px solid var(--conga-color-border, #e6e6ea);
+}
+.inc-lib-item:last-child { border-bottom: none; }
+.inc-lib-item:hover { background: var(--conga-color-surface-hover); }
+.inc-lib-item:focus-visible { outline: 2px solid var(--conga-color-brand-accent); outline-offset: -2px; }
+.inc-lib-item.selected { background: var(--conga-color-surface-brand-subtle); box-shadow: inset 3px 0 0 var(--conga-color-brand-accent); }
+.inc-lib-item input[type=radio] { width: auto; margin: 0; pointer-events: none; }
+.inc-lib-exc { text-align: right; white-space: nowrap; }
+.inc-lib-exc .badge { margin-top: 3px; }
+.inc-lib-empty, .inc-lib-more { margin: var(--conga-space-4) var(--conga-space-5); }
+.inc-form-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); margin-top: var(--conga-space-2); }
+.log-submit-row #incSummary { flex: 1 1 auto; }
+@media (max-width: 900px) {
+  .inc-form-grid { grid-template-columns: minmax(0, 1fr); }
+  .inc-lib-item { grid-template-columns: auto minmax(0, 1fr); }
+  .inc-lib-exc { grid-column: 2; text-align: left; }
+  .inc-source { display: flex; flex-wrap: wrap; }
+}

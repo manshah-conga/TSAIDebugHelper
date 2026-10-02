@@ -729,7 +729,27 @@ On the **Org Dashboard** tab:
   derives from other data.)
 
 On the **Incidents** tab, file a new incident with a debug log, a suspect field, or
-both. You get back immediately:
+both. The card says which org it files into. The log comes from one of three places:
+
+- **Upload a file** -- parsed in memory against this org and discarded. Tick *Also keep
+  the normalized log in the library* to store the derived JSON, tagged to this org, so
+  it can be reopened or filed again later.
+- **From the log library** -- pick a log someone already normalized and stored, no need
+  to find the raw file again. The picker starts on logs tagged to this org (then this
+  account, then everything you can see), is searchable by label, exception, component
+  or owner, and badges logs already **Filed here**. The server re-matches the stored
+  log's components against this org's index, so the report is identical to uploading
+  the raw log. The log library also has **File incident** on every row and in the log
+  detail (it switches to the log's org when that org is connected), and a log's detail
+  lists the incidents filed from it.
+- **No log** -- a suspect-field-only "wrong value, nothing threw" report.
+
+Labels are free text (they are slugged for the incident id). You are warned when the
+log is tagged to a different org, was already filed in this org (filing again counts
+another occurrence), or the suspect field has no writers / only test-class writers.
+The same options exist on the MCP `file_incident` tool (`log_id`, `save_log`).
+
+You get back immediately:
 - Whether this matches a previously-seen signature (**recurrence**) and, if so, how
   many times it's happened and any resolution already on file.
 - An **RCA context pack**: the components most likely involved (from the log's

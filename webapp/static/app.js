@@ -264,6 +264,7 @@ function renderOrgPicker() {
  *  the previous org's data. */
 function setActiveOrg(id) {
   CURRENT_ORG = id;
+  if (typeof INC !== "undefined") INC.scope = null;   // "This org" means the new org now
   document.getElementById("incidentDetailCard").style.display = "none";
   document.getElementById("searchResults").innerHTML = "";
   document.getElementById("fieldWriterResults").innerHTML = "";
@@ -1191,40 +1192,327 @@ async function findFieldWriters() {
 }
 
 // ---------- incidents ----------
+//
+// The filing form takes its log from one of three places: a file uploaded
+// now, a log already in the normalized-log library, or none at all (a
+// suspect-field-only "wrong value" report). The library option is what makes
+// a log normalized last week -- or by a colleague -- fileable without hunting
+// for the raw file again; the server re-matches its components against this
+// org's index, so the report is the same as an upload.
+
+const INC = {
+  source: "upload",      // upload | library | none
+  file: null,
+  logId: null,
+  logs: [],              // active library logs the viewer can see
+  logsLoaded: false,
+  scope: null,           // org | account | all (null = pick a sensible default)
+  busy: false,
+};
+
+function wireIncDrop() {
+  const zone = document.getElementById("incLogDrop");
+  const input = document.getElementById("incLogFile");
+  if (!zone || !input || zone.dataset.wired) return;
+  zone.dataset.wired = "1";
+  zone.addEventListener("click", () => input.click());
+  zone.addEventListener("keydown", e => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); input.click(); }
+  });
+  zone.addEventListener("dragover", e => { e.preventDefault(); zone.classList.add("drag"); });
+  zone.addEventListener("dragleave", e => { if (!zone.contains(e.relatedTarget)) zone.classList.remove("drag"); });
+  zone.addEventListener("drop", e => {
+    e.preventDefault(); zone.classList.remove("drag");
+    const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    if (f) { setIncSource("upload"); setIncFile(f); }
+  });
+  input.addEventListener("change", () => { if (input.files.length) setIncFile(input.files[0]); });
+}
+
+function setIncFile(file) {
+  INC.file = file || null;
+  document.getElementById("incDropEmpty").style.display = file ? "none" : "";
+  document.getElementById("incDropFile").style.display = file ? "" : "none";
+  document.getElementById("incLogDrop").classList.toggle("has-file", !!file);
+  if (file) {
+    document.getElementById("incFileName").textContent = file.name;
+    document.getElementById("incFileSize").textContent = fmtBytes(file.size);
+  } else {
+    document.getElementById("incLogFile").value = "";
+  }
+  incFormChanged();
+}
+
+function setIncSource(source) {
+  INC.source = source;
+  const on = (id, cond) => {
+    const el = document.getElementById(id);
+    if (el) { el.classList.toggle("on", cond); el.setAttribute("aria-selected", cond ? "true" : "false"); }
+  };
+  on("incSrcUpload", source === "upload"); on("incSrcLibrary", source === "library"); on("incSrcNone", source === "none");
+  document.getElementById("incPaneUpload").style.display = source === "upload" ? "" : "none";
+  document.getElementById("incPaneLibrary").style.display = source === "library" ? "" : "none";
+  document.getElementById("incPaneNone").style.display = source === "none" ? "" : "none";
+  if (source === "library") loadIncLibrary();
+  incFormChanged();
+}
+
+async function loadIncLibrary({ force = false } = {}) {
+  if (INC.logsLoaded && !force) { renderIncLibrary(); return; }
+  const host = document.getElementById("incLibList");
+  if (host && !INC.logs.length) host.innerHTML = `<p class="muted loading">Loading the library...</p>`;
+  const logs = await apiJson("/api/logs", {}, null);   // active only; archived logs are not offered
+  INC.logs = Array.isArray(logs) ? logs : [];
+  INC.logsLoaded = true;
+  renderIncLibrary();
+}
+
+function incOrgAccountKey() {
+  const o = ORGS[CURRENT_ORG];
+  return o && o.account ? accountKey(o.account) : null;
+}
+
+function incLogInScope(m, scope) {
+  if (scope === "org") return m.org_id === CURRENT_ORG;
+  if (scope === "account") {
+    const k = incOrgAccountKey();
+    return m.org_id === CURRENT_ORG || (k !== null && accountKey(m.account) === k);
+  }
+  return true;
+}
+
+/** Narrowest scope that has something in it, so the first thing shown is the
+ *  logs most likely to belong to this incident. */
+function incDefaultScope() {
+  if (INC.logs.some(m => incLogInScope(m, "org"))) return "org";
+  if (incOrgAccountKey() && INC.logs.some(m => incLogInScope(m, "account"))) return "account";
+  return "all";
+}
+
+function setIncLibScope(scope) { INC.scope = scope; renderIncLibrary(); }
+
+function incFiledHere(m) {
+  return (m.incidents || []).filter(l => l.org_id === CURRENT_ORG);
+}
+
+const INC_LIB_MAX = 40;
+
+function renderIncLibrary() {
+  const host = document.getElementById("incLibList");
+  if (!host) return;
+  const count = document.getElementById("incLibCount");
+  if (count) count.textContent = INC.logsLoaded && INC.logs.length ? String(INC.logs.length) : "";
+  if (!INC.logsLoaded) return;
+
+  // A preselected log must be visible, whatever the default scope says.
+  const picked = INC.logId && INC.logs.find(m => m.log_id === INC.logId);
+  if (!INC.scope) INC.scope = picked && !incLogInScope(picked, incDefaultScope()) ? "all" : incDefaultScope();
+  const acctKey = incOrgAccountKey();
+  const on = (id, cond) => { const el = document.getElementById(id); if (el) el.classList.toggle("on", cond); };
+  on("incLibScopeOrg", INC.scope === "org"); on("incLibScopeAccount", INC.scope === "account"); on("incLibScopeAll", INC.scope === "all");
+  const acctBtn = document.getElementById("incLibScopeAccount");
+  if (acctBtn) acctBtn.style.display = acctKey ? "" : "none";
+
+  if (!INC.logs.length) {
+    host.innerHTML = emptyStateHtml({
+      title: "The log library is empty",
+      body: "Logs land here when someone normalizes one with <b>Store in the library</b> ticked, or files an incident "
+          + "with <b>Also keep the normalized log</b>. Upload this one instead &mdash; and tick that box to reuse it later.",
+      actions: [{ label: "Upload a file", onclick: "setIncSource('upload')", primary: true }],
+    });
+    return;
+  }
+  const terms = (document.getElementById("incLibSearch").value || "").toLowerCase().split(/\s+/).filter(Boolean);
+  const rows = INC.logs.filter(m => incLogInScope(m, INC.scope)
+    && terms.every(t => logHaystack(m).includes(t)));
+  if (!rows.length) {
+    const wider = INC.scope !== "all" && INC.logs.some(m => terms.every(t => logHaystack(m).includes(t)));
+    host.innerHTML = `<p class="muted inc-lib-empty">${terms.length ? "No logs match that search" : "No logs tagged to this "
+      + (INC.scope === "org" ? "org" : "account")} here.${wider
+        ? ` <button type="button" class="link-btn inline" onclick="setIncLibScope('all')">Search all logs you can see</button>` : ""}</p>`;
+    return;
+  }
+  // Keep the picked log on screen even past the cap.
+  let shown = rows.slice(0, INC_LIB_MAX);
+  if (picked && rows.includes(picked) && !shown.includes(picked)) shown = [picked, ...shown.slice(0, INC_LIB_MAX - 1)];
+  host.innerHTML = shown.map(incLibItemHtml).join("")
+    + (rows.length > shown.length ? `<p class="muted small inc-lib-more">${rows.length - shown.length} more &mdash; search to narrow it down.</p>` : "");
+}
+
+function incLibItemHtml(m) {
+  const title = m.label || m.source_log || m.log_id;
+  const sel = INC.logId === m.log_id;
+  const filed = incFiledHere(m);
+  const where = [m.org_id ? `<span class="mono">${escapeHtml(m.org_id)}</span>` : null,
+                 m.account ? escapeHtml(m.account) : (m.org_id ? null : `<span class="muted">Unassigned</span>`)]
+    .filter(Boolean).join(" &middot; ");
+  const other = m.org_id && m.org_id !== CURRENT_ORG;
+  return `<div class="inc-lib-item${sel ? " selected" : ""}" role="option" aria-selected="${sel}" tabindex="0"
+      data-log-id="${escapeHtml(m.log_id)}" onclick="pickIncLog(${jsStr(m.log_id)})"
+      onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();pickIncLog(${jsStr(m.log_id)})}">
+    <input type="radio" name="incLibPick" tabindex="-1" ${sel ? "checked" : ""} aria-hidden="true">
+    <div class="inc-lib-main">
+      <div class="log-title">${escapeHtml(title)}</div>
+      <div class="log-sub">${fmtWhen(m.timestamp)} &middot; ${where} &middot; ${m.owner === currentUsername() ? "you" : escapeHtml(m.owner || "unknown")}
+        ${other ? ` <span class="warn-text" title="Tagged to another org -- components will be matched against ${escapeHtml(CURRENT_ORG)}">other org</span>` : ""}</div>
+    </div>
+    <div class="inc-lib-exc">${m.top_exception
+      ? `<span class="exc-name">${escapeHtml(m.top_exception)}</span>${m.exception_count > 1 ? ` <span class="badge high">${m.exception_count}</span>` : ""}`
+      : `<span class="muted">no exception</span>`}
+      ${filed.length ? `<div><span class="badge recurrence" title="${escapeHtml(filed.map(l => l.incident_id).join(", "))}">Filed here${filed.length > 1 ? ` &times;${filed.length}` : ""}</span></div>` : ""}</div>
+  </div>`;
+}
+
+function pickIncLog(logId) {
+  INC.logId = INC.logId === logId ? null : logId;
+  renderIncLibrary();
+  incFormChanged();
+}
+
+function incSelectedLog() {
+  return INC.logId ? INC.logs.find(m => m.log_id === INC.logId) || null : null;
+}
+
+/** Keeps the button, the default label and the one-line summary honest
+ *  about what will actually be filed. */
+function incFormChanged() {
+  const btn = document.getElementById("incFileBtn");
+  if (!btn) return;
+  const field = document.getElementById("incField").value.trim();
+  const lib = INC.source === "library" ? incSelectedLog() : null;
+  const file = INC.source === "upload" ? INC.file : null;
+  const logName = file ? file.name : lib ? (lib.label || lib.source_log || lib.log_id) : null;
+  const labelEl = document.getElementById("incLabel");
+  labelEl.placeholder = logName ? String(logName).replace(/\.(log|txt)$/i, "")
+    : field || "e.g. Quote discount wrong after renewal";
+
+  const parts = [];
+  if (logName) parts.push(`<b>${escapeHtml(logName)}</b>`);
+  if (field) parts.push(`writers of <b>${escapeHtml(field)}</b>`);
+  let summary = "";
+  if (!CURRENT_ORG) summary = `<span class="warn-text">Pick an org first.</span>`;
+  else if (parts.length) {
+    summary = `Checks ${parts.join(" + ")} against <b>${escapeHtml(CURRENT_ORG)}</b>.`;
+    const filed = lib ? incFiledHere(lib) : [];
+    if (filed.length) summary += ` <span class="warn-text">Already filed here as ${escapeHtml(filed[filed.length - 1].incident_id)} &mdash; filing again counts another occurrence.</span>`;
+    else if (lib && lib.org_id && lib.org_id !== CURRENT_ORG) summary += ` <span class="warn-text">This log is tagged to ${escapeHtml(lib.org_id)}.</span>`;
+  } else if (INC.source === "library") summary = "Pick a log above, or enter a suspect field.";
+  else if (INC.source === "upload") summary = "Choose a log file, enter a suspect field, or both.";
+  else summary = "Enter the suspect field.";
+  document.getElementById("incSummary").innerHTML = summary;
+  btn.disabled = INC.busy || !CURRENT_ORG || !parts.length;
+}
+
+function renderIncOrgChip() {
+  const el = document.getElementById("incOrgChip");
+  if (!el) return;
+  const o = ORGS[CURRENT_ORG];
+  el.innerHTML = o ? `in ${envBadge(o)}<span class="mono">${escapeHtml(CURRENT_ORG)}</span>` : "";
+}
+
+function resetIncidentForm() {
+  setIncFile(null);
+  INC.logId = null;
+  document.getElementById("incField").value = "";
+  document.getElementById("incLabel").value = "";
+  document.getElementById("incSaveLog").checked = false;
+  renderIncLibrary();
+  incFormChanged();
+}
 
 async function fileIncident() {
+  if (INC.busy) return;   // a double click used to file twice -- and count a phantom recurrence
   if (!CURRENT_ORG) { toast("Pick an org first.", "error"); return; }
   const statusEl = document.getElementById("incidentStatus");
   const label = document.getElementById("incLabel").value.trim();
   const field = document.getElementById("incField").value.trim();
-  const fileInput = document.getElementById("incLogFile");
-  if (!field && !fileInput.files.length) {
-    statusEl.textContent = "Provide a log file, a field name, or both."; statusEl.className = "status-line error"; return;
+  const file = INC.source === "upload" ? INC.file : null;
+  const logId = INC.source === "library" ? INC.logId : null;
+  if (!field && !file && !logId) {
+    statusEl.textContent = INC.source === "library" ? "Pick a log from the library, enter a field name, or both."
+      : "Provide a log file, a field name, or both.";
+    statusEl.className = "status-line error"; return;
   }
   const form = new FormData();
   if (label) form.append("label", label);
   if (field) form.append("field", field);
-  if (fileInput.files.length) form.append("log_file", fileInput.files[0]);
+  if (file) {
+    form.append("log_file", file);
+    if (document.getElementById("incSaveLog").checked) form.append("save_log", "true");
+  }
+  if (logId) form.append("log_id", logId);
 
-  statusEl.textContent = "Filing..."; statusEl.className = "status-line";
-  const res = await api(`/api/orgs/${encodeURIComponent(CURRENT_ORG)}/incidents`, { method: "POST", body: form });
-  if (!res.ok) {
-    statusEl.textContent = "Failed: " + await errorText(res); statusEl.className = "status-line error"; return;
+  INC.busy = true;
+  const btn = document.getElementById("incFileBtn");
+  btn.textContent = "Filing...";
+  incFormChanged();
+  statusEl.textContent = file ? "Parsing the log and filing..." : "Filing..."; statusEl.className = "status-line";
+  let res;
+  try {
+    res = await api(`/api/orgs/${encodeURIComponent(CURRENT_ORG)}/incidents`, { method: "POST", body: form });
+  } finally {
+    INC.busy = false;
+    btn.textContent = "File incident";
+  }
+  if (!res || !res.ok) {
+    statusEl.textContent = "Failed: " + (res ? await errorText(res) : "no response"); statusEl.className = "status-line error";
+    incFormChanged();
+    return;
   }
   const data = await res.json();
   const m = data.meta;
   track("incident");
-  statusEl.textContent = m.recurrence
+  const verdict = m.recurrence
     ? `RECURRENCE -- seen ${m.prior_occurrences} time(s) before.`
     : (m.signature ? "NEW ISSUE filed." : "Filed (no signature -- no exception and no field given).");
-  statusEl.className = "status-line ok";
+  const warnings = data.warnings || [];
+  statusEl.innerHTML = `<span class="ok-text">${escapeHtml(verdict)}</span>`
+    + (m.source_log_id && file ? ` <span class="muted">Normalized log kept in the library.</span>` : "")
+    + warnings.map(w => `<div class="warn-text small">${escapeHtml(w)}</div>`).join("");
+  statusEl.className = "status-line";
   if (m.recurrence && m.prior_resolution) toast("This one has a resolution on file -- see the report below.", "ok", 8000);
+  // Library back-links changed; the next pick should show "Filed here".
+  if (m.source_log_id) INC.logsLoaded = false;
+  resetIncidentForm();
+  if (INC.source === "library") loadIncLibrary({ force: true });
   await loadIncidents();
   showIncidentDetail(m.incident_id);   // go straight to the report
 }
 
+/** "File as incident" from the log library: open the form with that log
+ *  picked, in the org it is tagged to when that org is connected. */
+async function fileIncidentFromLog(logId) {
+  const m = LOGLIB.logs.find(x => x.log_id === logId) || INC.logs.find(x => x.log_id === logId)
+    || ((await apiJson(`/api/logs/${encodeURIComponent(logId)}`, {}, null)) || {}).meta;
+  if (!m) { toast("Could not load that log -- it may have been deleted.", "error"); return; }
+  if (m.org_id && ORGS[m.org_id] && m.org_id !== CURRENT_ORG) setActiveOrg(m.org_id);
+  if (!CURRENT_ORG) { toast("Connect an org first -- an incident is filed against an org's knowledgebase.", "error"); return; }
+  showView("incidents");
+  INC.logId = logId;
+  INC.scope = null;
+  INC.logsLoaded = false;
+  setIncSource("library");
+  await loadIncLibrary({ force: true });
+  if (!INC.logs.some(x => x.log_id === logId)) {
+    // Archived logs are not in the picker; bring this one in since it was asked for by name.
+    INC.logs.unshift(m); INC.scope = "all"; renderIncLibrary();
+  }
+  incFormChanged();
+  const card = document.querySelector('[data-tour="incidents"]');
+  if (card) card.scrollIntoView({ behavior: "smooth" });
+  document.getElementById("incField").focus();
+  if (m.org_id && !ORGS[m.org_id]) toast(`This log is tagged to ${m.org_id}, which isn't connected -- filing in ${CURRENT_ORG}.`, "info", 7000);
+}
+
 async function loadIncidents() {
+  wireIncDrop();
+  renderIncOrgChip();
+  if (!document.querySelector("#incSourceSeg button.on")) setIncSource(INC.source);
+  else incFormChanged();
   if (!CURRENT_ORG) return;
+  // The library count on the tab label, and "Filed here" badges, follow the org.
+  if (INC.source === "library") loadIncLibrary({ force: true });
+  else if (!INC.logsLoaded) loadIncLibrary();
   const tbody = document.getElementById("incidentsTable");
   const incidents = await apiJson(`/api/orgs/${encodeURIComponent(CURRENT_ORG)}/incidents`, {}, []) || [];
   fillTable(tbody, incidents, 4, {
@@ -1238,7 +1526,14 @@ async function loadIncidents() {
     const tr = document.createElement("tr");
     tr.onclick = () => showIncidentDetail(m.incident_id);
     const badge = m.recurrence ? `<span class="badge recurrence">RECURRENCE</span>` : `<span class="badge new">NEW</span>`;
-    tr.innerHTML = `<td>${fmtWhen(m.timestamp)}</td><td>${escapeHtml(m.incident_id)}</td>
+    const title = m.label || m.incident_id;
+    const sub = [m.top_exception ? `<span class="exc-name">${escapeHtml(m.top_exception)}</span>` : null,
+                 m.source_log ? escapeHtml(m.source_log) : null,
+                 m.source_log_id ? `<span title="From the log library">library</span>` : null,
+                 m.filed_by ? `by ${escapeHtml(m.filed_by === currentUsername() ? "you" : m.filed_by)}` : null].filter(Boolean);
+    tr.innerHTML = `<td class="nowrap">${fmtWhen(m.timestamp)}</td>
+      <td title="${escapeHtml(m.incident_id)}"><div class="log-title">${escapeHtml(title)}</div>
+        ${sub.length ? `<div class="log-sub">${sub.join(" &middot; ")}</div>` : ""}</td>
       <td>${badge}</td><td>${escapeHtml(m.suspect_field || "")}</td>`;
     return tr;
   });
@@ -1292,7 +1587,10 @@ async function showIncidentDetail(incidentId) {
   }
 
   parts.push(`<div class="meta-line muted">${escapeHtml(m.incident_id)} &middot; filed ${fmtWhen(m.timestamp)}
+    ${m.filed_by ? `by ${escapeHtml(m.filed_by)}` : ""}
     ${m.source_log ? `&middot; from ${escapeHtml(m.source_log)}` : ""}
+    ${m.source_log_id ? `(<button type="button" class="link-btn inline" onclick="showView('logs'); showLogDetail(${jsStr(m.source_log_id)})"
+        title="Open the normalized log in the library">open in library</button>)` : ""}
     ${m.signature ? `&middot; signature <span class="mono">${escapeHtml(m.signature)}</span>
       (${escapeHtml(m.signature_source || "")})` : ""}</div>`);
 
@@ -1898,6 +2196,8 @@ function logRow(m) {
     <td>${m.top_exception ? `<span class="exc-name">${escapeHtml(m.top_exception)}</span>` : `<span class="muted">none</span>`}</td>
     <td class="num">${m.exception_count ? `<span class="badge high">${m.exception_count}</span>` : `<span class="muted">0</span>`}</td>
     <td class="row-actions" onclick="event.stopPropagation()">
+      ${canWriteRole() ? `<button type="button" class="link-btn" onclick="fileIncidentFromLog(${idArg})"
+        title="File an incident from this log${m.org_id && ORGS[m.org_id] ? ` in ${escapeHtml(m.org_id)}` : ""}">File incident</button>` : ""}
       <button type="button" class="link-btn" onclick="downloadStoredLog(${idArg})">Download</button>
       ${m.can_manage ? `
         <button type="button" class="link-btn" onclick="editLogTags(${idArg})">Edit</button>
@@ -2088,12 +2388,20 @@ async function showLogDetail(logId, { scroll = true } = {}) {
     ["Stored", escapeHtml(fmtWhen(m.timestamp))],
     ["Source file", m.source_log ? `<span class="mono">${escapeHtml(m.source_log)}</span>` : `<span class="muted">-</span>`],
   ];
+  const links = (m.incidents || []).slice(-5).reverse();
+  if (links.length) facts.push(["Incidents", links.map(l => ORGS[l.org_id]
+    ? `<button type="button" class="link-btn plain mono" onclick="openIncident(${jsStr(l.org_id)}, ${jsStr(l.incident_id)})"
+        title="Filed ${escapeHtml(fmtWhen(l.timestamp))}${l.by ? ` by ${escapeHtml(l.by)}` : ""}">${escapeHtml(l.org_id)} / ${escapeHtml(l.incident_id)}</button>`
+    : `<span class="mono">${escapeHtml(l.org_id)} / ${escapeHtml(l.incident_id)}</span>`).join("<br>")
+    + ((m.incidents || []).length > links.length ? `<div class="muted small">+${m.incidents.length - links.length} earlier</div>` : "")]);
   if (m.archived) facts.push(["Archived", `${escapeHtml(fmtWhen(m.archived_at))}${m.archived_by ? ` by ${escapeHtml(m.archived_by)}` : ""}`]);
   document.getElementById("logDetailMeta").innerHTML = `<span class="mono muted">${escapeHtml(logId)}</span>`
     + `<dl class="log-facts">${facts.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join("")}</dl>`;
   const idArg = jsStr(logId);
   const q = `Analyze stored normalized log ${logId} (use get_normalized_log) and give me the most likely root cause and a suggested fix.`;
   document.getElementById("logDetailActions").innerHTML = `
+    ${canWriteRole() && Object.keys(ORGS).length ? `<button type="button" class="primary" onclick="fileIncidentFromLog(${idArg})">File as incident${
+      m.org_id && ORGS[m.org_id] ? ` in ${escapeHtml(m.org_id)}` : CURRENT_ORG ? ` in ${escapeHtml(CURRENT_ORG)}` : ""}</button>` : ""}
     <button type="button" class="secondary" onclick="downloadBlob(window._logDetail, ${jsStr(logId + ".normalized.json")})">Download normalized JSON</button>
     ${typeof askAbout === "function" ? `<button type="button" class="secondary" onclick="askAbout(${jsStr(q)})">Ask the assistant</button>` : ""}
     ${m.can_manage ? `
@@ -2245,7 +2553,7 @@ function applyRole() {
 }
 
 // Must match APP_BUILD in app/main.py and the ?v= on index.html's assets.
-const CLIENT_BUILD = 27;
+const CLIENT_BUILD = 28;
 let SERVER_BUILD = null;   // null = not checked yet, 0 = a server too old to report one
 
 /** Static files are served fresh, but the server's Python is only loaded at
@@ -2528,6 +2836,17 @@ function renderUsageModels(rows) {
  *  therefore invisible to the render tests' sandbox. Reading it through a
  *  declared function makes the dependency substitutable, and saves every
  *  caller from repeating the null guard. */
+function canWriteRole() {
+  return !!CURRENT_USER && (CURRENT_USER.role === "user" || CURRENT_USER.role === "admin");
+}
+
+/** Jump to one incident's report, switching org first if needed. */
+function openIncident(orgId, incidentId) {
+  if (orgId !== CURRENT_ORG && ORGS[orgId]) setActiveOrg(orgId);
+  showView("incidents");
+  showIncidentDetail(incidentId);
+}
+
 function currentUsername() {
   return CURRENT_USER ? CURRENT_USER.username : null;
 }
