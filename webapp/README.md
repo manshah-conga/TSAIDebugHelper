@@ -1052,21 +1052,44 @@ so a typo fails immediately rather than at the first question.
 **OpenRouter** — one key, a catalogue of models, free tiers for testing.
 
 **Azure OpenAI** — your own deployment, so the data stays in your Azure tenant.
-Paste the **full chat completions URL** from the portal, not the resource root:
+Paste the **full chat completions URL** from the portal, not the resource root.
+Two URL styles are accepted:
 
 ```
+# v1 (OpenAI-compatible) -- no api-version; the deployment name is sent as `model`
+https://<resource>.openai.azure.com/openai/v1/chat/completions      + model name, e.g. gpt-6-luna
+
+# deployment-scoped (legacy) -- the deployment is in the path; api-version required
 https://<resource>.openai.azure.com/openai/deployments/<deployment>/chat/completions?api-version=2024-08-01-preview
 ```
 
-The deployment in that path *is* the model, so there is nothing to pick in the
-model list — to change model, point the endpoint at a different deployment. The
-URL shape is validated before any call (the two usual mistakes are pasting the
-resource root, and omitting `?api-version=`), then a one-token test call
-confirms the deployment name and api-version are actually right.
+On a **v1** URL a model / deployment name is required: enter it in the "Model /
+deployment name" field (personal key) or set `TS_LLM_DEFAULT_MODEL` (shared
+connection). A v1 base URL ending `/openai/v1/` is completed to
+`/openai/v1/chat/completions` automatically. On a **deployment** URL the path
+*is* the model and any model name is ignored.
+
+Either way there is one entry in the model list — to change model, point the
+connection at a different deployment. The URL shape is validated before any
+call (the usual mistakes are pasting the resource root, omitting
+`?api-version=` on a deployment URL, and omitting the model on a v1 URL), then a
+one-token test call confirms the deployment and api-version are actually right.
+Newer reasoning-class deployments that reject `max_tokens` or a non-default
+`temperature` are retried once with `max_completion_tokens` / no temperature.
+
+Some deployments (e.g. `gpt-6-luna`) refuse function tools on chat completions
+while reasoning *and* refuse `reasoning_effort: "none"`. On a v1 endpoint the
+app detects this from Azure's 400 and drives that deployment through the
+**Responses API** (`/openai/v1/responses`) instead — same URL base, same key,
+nothing to configure. Messages, tools (`strict: false`), tool calls/results,
+reasoning summaries and usage are translated at the edge in `app/llm.py`, so
+the agent loop is unchanged. The switch is learned during the save-time test
+and kept in memory; after a restart the first request re-learns it.
 
 Azure differs from OpenRouter in four ways, all handled in `app/llm.py`:
 authentication is an `api-key` header rather than `Authorization: Bearer`; the
-`model` field is meaningless and is stripped; streaming usage needs
+`model` field is stripped on a deployment URL (and set to the configured
+deployment on a v1 URL); streaming usage needs
 `stream_options` instead of OpenRouter's `usage` extension; and **no per-call
 cost is reported**, because Azure bills your subscription — token counts still
 appear under each answer, the dollar figure does not.

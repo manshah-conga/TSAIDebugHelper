@@ -2711,8 +2711,8 @@ async function renderLlmStatusPanel() {
       <summary>How to change the connection</summary>
       <pre>${escapeHtml(env.provider || "TS_LLM_PROVIDER")}=azure | openrouter
 ${escapeHtml(env.api_key || "TS_LLM_API_KEY")}=&lt;the key&gt;
-${escapeHtml(env.endpoint || "TS_LLM_ENDPOINT")}=&lt;full Azure chat-completions URL, Azure only&gt;
-${escapeHtml(env.default_model || "TS_LLM_DEFAULT_MODEL")}=&lt;optional&gt;
+${escapeHtml(env.endpoint || "TS_LLM_ENDPOINT")}=&lt;full Azure chat-completions URL, Azure only (v1 or deployments/...)&gt;
+${escapeHtml(env.default_model || "TS_LLM_DEFAULT_MODEL")}=&lt;optional; REQUIRED with an Azure v1 URL = deployment name&gt;
 ${escapeHtml(env.lock_model || "TS_LLM_LOCK_MODEL")}=1   # optional: users cannot change model</pre>
       <p class="muted">Put these in the service's EnvironmentFile (mode 0600, so the key is not
         world-readable via <code>systemctl show</code>) and restart. The startup log line reports

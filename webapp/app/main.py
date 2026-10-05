@@ -38,6 +38,7 @@ from . import llm_config
 from . import usage as usage_ledger
 from . import activity
 from . import guide as guide_mod
+from . import kb_lookup
 from .onboarding import run_onboarding, JOBS, progress_payload, job_in_flight
 from .log_normalizer import parse_log_text, involved_components
 from .rca import assemble_context, lookup_field_writers
@@ -735,11 +736,42 @@ def get_stats(org_id: str):
 
 
 @app.get("/api/orgs/{org_id}/components/{component_id}", dependencies=Dep_org_view)
-def get_component(org_id: str, component_id: str):
+def get_component(org_id: str, component_id: str, sections: Optional[str] = None,
+                  method: Optional[str] = None, max_chars: Optional[int] = None):
+    """One knowledgebase card. With no query parameters this is the full card,
+    exactly as stored (the UI relies on that). The optional parameters are for
+    AI callers with a context budget -- see app/kb_lookup.py:
+
+      sections   comma-separated top-level keys to return (identity always kept)
+      method     keep only list entries in / calling this method
+      max_chars  fit the JSON into this many characters by trimming bulky
+                 sections whole-item, with a `_truncated` note saying what
+    """
     kb = storage.load_kb(org_id)
-    card = kb["org_index"].get(component_id)
-    if not card:
-        raise HTTPException(404, f"No component '{component_id}' in org '{org_id}'.")
+    cid, implied_method, note = kb_lookup.resolve(kb["org_index"], component_id)
+    if not cid:
+        raise HTTPException(404, f"No component '{component_id}' in org '{org_id}'. Use "
+                                 f"search_knowledgebase to find the exact id.")
+    card = kb["org_index"][cid]
+    # When the source last changed, from the fetch's hash manifest. Without it
+    # a model comparing two answers across a Refresh cannot tell "the code
+    # changed" from "the tool is wrong" -- which is exactly what happened when
+    # a QA org commented out two CPQ API calls between extracts.
+    hashes = kb.get("file_hashes") or {}
+    h = next((hashes[k] for k in (f"classes/{cid}.cls", f"triggers/{cid}.trigger", f"lwc/{cid}")
+              if k in hashes), None)
+    if h:
+        card = dict(card, source_first_seen=h.get("first_seen"),
+                    source_last_changed=h.get("last_changed"))
+    method = method or implied_method
+    if method:
+        card = kb_lookup.filter_method(card, method)
+    if sections:
+        card = kb_lookup.select_sections(card, sections.split(","))
+    if max_chars:
+        card = kb_lookup.shape(card, max(2000, min(int(max_chars), 200000)))
+    if note:
+        card = dict(card, _resolved=note)
     return card
 
 
@@ -785,7 +817,42 @@ def get_inbound(org_id: str, component_id: str):
     """Reverse-call index (§7.1): everything that invokes this component --
     flows via actionCall, classes via method call, flows via subflow."""
     kb = storage.load_kb(org_id)
-    return kb["inbound_index"].get(component_id, {"called_by": []})
+    inbound = kb["inbound_index"]
+    # Resolve against the inbound index's own keys first (a target need not
+    # have a card -- e.g. an unextracted managed class), then the card ids.
+    cid, method, note = kb_lookup.resolve(inbound, component_id, cards=kb["org_index"])
+    if not cid:
+        cid, method, note = kb_lookup.resolve(kb["org_index"], component_id)
+    result = {"called_by": []}
+    if cid:
+        variants = kb_lookup.case_variants(inbound, cid)
+        for key in variants:
+            result["called_by"].extend(inbound[key].get("called_by", []))
+        if len(variants) > 1:
+            note = ((note + "; ") if note else "") + (
+                "merged case variants " + ", ".join(sorted(variants)) +
+                " (Apex names are case-insensitive)")
+    if method:
+        m = method.lower()
+        rows = []
+        for row in result.get("called_by", []):
+            sites = [s for s in row.get("call_sites", []) or []
+                     if (s.get("method_called") or "").lower() == m]
+            called = [x.lower() for x in row.get("methods_called", []) or []]
+            if sites or m in called:
+                rows.append(dict(row, call_sites=sites) if sites or "call_sites" in row else row)
+        result["called_by"] = rows
+    if note:
+        result["_resolved"] = note
+    if cid and cid in kb["org_index"]:
+        result["target_namespace"] = kb["org_index"][cid].get("namespace")
+    apex_rows = [r for r in result.get("called_by", [])
+                 if r.get("type") in ("ApexClass", "ApexTrigger")
+                 and "method_call" in (r.get("via") or "")]
+    if apex_rows and not any("call_sites" in r for r in apex_rows):
+        result["_note"] = ("These rows have no call_sites (method/line/conditions) because the org "
+                           "was extracted before extractor 3.3.0. Refresh the org to get them.")
+    return result
 
 
 @app.get("/api/orgs/{org_id}/entry-points/{object_name}", dependencies=Dep_org_view)
@@ -1234,10 +1301,12 @@ class StoreKeyRequest(BaseModel):
     api_key: str
     password: str
     provider: Optional[str] = None
-    # Azure only: the full chat-completions URL including ?api-version=...
-    # The deployment in its path is what selects the model, so there is no
-    # separate model name to send.
+    # Azure only: the full chat-completions URL. Either the deployment form
+    # (.../deployments/<dep>/chat/completions?api-version=...), where the path
+    # selects the model, or the v1 form (.../openai/v1/chat/completions), where
+    # `model` below is the deployment name and is required.
     endpoint: Optional[str] = None
+    model: Optional[str] = None
 
 
 class UnlockRequest(BaseModel):
@@ -1294,19 +1363,22 @@ async def store_key(req: StoreKeyRequest, ident=Depends(auth.require_admin)):
 
     provider = (req.provider or secrets_store.DEFAULT_PROVIDER).strip().lower()
     endpoint = (req.endpoint or "").strip()
+    model = None
     if provider == llm.PROVIDER_AZURE:
-        # Validate the URL shape before spending a call on it: the two usual
-        # mistakes (resource root instead of the deployment path, missing
-        # api-version) are recognisable without touching the network.
+        # Validate the URL shape before spending a call on it: the usual
+        # mistakes (resource root instead of a chat-completions path, missing
+        # api-version on a deployment URL, no model name on a v1 URL) are
+        # recognisable without touching the network.
         try:
             endpoint = llm.validate_azure_endpoint(endpoint)
+            model = llm.validate_azure_model(endpoint, req.model)
         except ValueError as e:
             raise HTTPException(400, str(e))
 
     # A live call, not just a format check -- on Azure this is also the only
     # way to prove the deployment name and api-version are right.
     try:
-        await llm.verify_creds(llm.creds(provider, api_key, endpoint))
+        await llm.verify_creds(llm.creds(provider, api_key, endpoint, model=model))
     except llm.LLMError as e:
         raise HTTPException(400, f"That did not work: {e}")
     except ValueError as e:
@@ -1315,14 +1387,14 @@ async def store_key(req: StoreKeyRequest, ident=Depends(auth.require_admin)):
     try:
         secrets_store.store_key(ident["username"], req.password, api_key,
                                 provider=provider, token_id=ident.get("token_id"),
-                                endpoint=endpoint or None)
+                                endpoint=endpoint or None, model=model)
     except ValueError as e:
         raise HTTPException(400, str(e))
 
     # On Azure the deployment IS the model, so there is nothing for the user to
     # pick -- set it for them rather than leaving the picker empty.
     if provider == llm.PROVIDER_AZURE:
-        secrets_store.set_default_model(ident["username"], llm.azure_deployment(endpoint))
+        secrets_store.set_default_model(ident["username"], llm.azure_model(endpoint, model))
     secrets_store.mark_verified(ident["username"])
     return secrets_store.effective_state(ident)
 

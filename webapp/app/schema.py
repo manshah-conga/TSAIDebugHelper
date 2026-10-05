@@ -12,7 +12,7 @@ stays per-file and independent).
 # EXTRACTOR_VERSION on any parser behaviour change. Consumers should refuse
 # to reason about a card whose schema_version exceeds what they understand.
 SCHEMA_VERSION = 3
-EXTRACTOR_VERSION = "3.2.0"
+EXTRACTOR_VERSION = "3.3.0"   # 3.3.0: Apex call_sites + namespace on calls_to
 
 # $-prefixed references that are global values rather than the triggering record.
 _GLOBAL_PREFIXES = ("$User", "$Organization", "$Profile", "$System", "$Api",

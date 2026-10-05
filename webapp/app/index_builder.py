@@ -74,6 +74,28 @@ def _resolve_action_calls(flows, org_index):
 # ---------- inbound / entry-point indexes (§7) ----------
 
 _ASYNC_MECHANISMS = {"System.enqueueJob", "Database.executeBatch", "System.schedule", "System.scheduleBatch"}
+MAX_INBOUND_SITES = 30
+
+
+def _mark_managed_targets(apex, org_index):
+    """calls_to `kind` from the extractor only knows "is a class name in this
+    org", and managed stubs are class names too -- so a call into
+    Apttus_CPQApi.CPQWebService looked identical to a call into the
+    customer's own code. Refine it here, where the target's card is known."""
+    by_lower = {k.lower(): v for k, v in org_index.items()}
+    for card in apex.values():
+        for c in card.get("calls_to", []) or []:
+            if not isinstance(c, dict):
+                continue
+            tgt = by_lower.get((c.get("target") or "").lower())
+            if tgt and tgt.get("is_managed"):
+                c["kind"] = "managed_package_class"
+                c.setdefault("namespace", tgt.get("namespace"))
+        for s in card.get("call_sites", []) or []:
+            tgt = by_lower.get((s.get("target") or "").lower())
+            if tgt and tgt.get("is_managed") and s.get("kind") in ("org_class", "namespaced_class"):
+                s["kind"] = "managed_package_class"
+                s.setdefault("namespace", tgt.get("namespace"))
 
 
 def _build_inbound(apex, flows, lwc=None):
@@ -110,6 +132,20 @@ def _build_inbound(apex, flows, lwc=None):
             entry = {"id": cid, "type": card["type"], "via": vias[0] if len(vias) == 1 else ",".join(vias)}
             if c.get("methods_called"):
                 entry["methods_called"] = c["methods_called"]
+            if c.get("namespace"):
+                entry["namespace"] = c["namespace"]
+            # Where, exactly: the caller's method, line and enclosing
+            # conditions for each call into this target (extractor >= 3.3.0).
+            # This is what "under what conditions is X called" needs.
+            sites = [{k: s[k] for k in ("method_called", "caller_method", "line", "in_loop",
+                                         "conditions", "kind") if s.get(k) not in (None, [])}
+                     for s in (card.get("call_sites") or [])
+                     if (s.get("target") or "").lower() == tgt.lower()
+                     and s.get("kind") != "same_class"]
+            if sites:
+                entry["call_sites"] = sites[:MAX_INBOUND_SITES]
+                if len(sites) > MAX_INBOUND_SITES:
+                    entry["call_sites_truncated"] = len(sites)
             inbound[tgt]["called_by"].append(entry)
     for cid, card in (lwc or {}).items():
         by_class = defaultdict(list)
@@ -339,6 +375,7 @@ def build_index(apex, flows, lwc, workflow=None, coverage=None):
             entry["used_in_entry_criteria_of"] = sorted(entry_crit[field])
         field_touch_out[field] = entry
 
+    _mark_managed_targets(apex, org_index)
     inbound_index = _build_inbound(apex, flows, lwc)
     entry_points_index = _build_entry_points(apex, flows, workflow)
 

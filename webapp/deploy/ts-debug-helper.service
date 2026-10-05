@@ -62,7 +62,11 @@ ExecStart=/opt/ts-debug-helper/venv/bin/python -m uvicorn app.main:app \
 ;
 ;   TS_LLM_PROVIDER=azure
 ;   TS_LLM_API_KEY=<your Azure OpenAI key>
-;   TS_LLM_ENDPOINT=https://<resource>.openai.azure.com/openai/deployments/<deployment>/chat/completions?api-version=2024-08-01-preview
+;   TS_LLM_ENDPOINT=https://<resource>.openai.azure.com/openai/v1/chat/completions
+;   TS_LLM_DEFAULT_MODEL=<deployment name>     # required with a v1 URL
+;
+; (the deployment-scoped form .../openai/deployments/<deployment>/chat/completions?api-version=...
+;  also works; it needs no TS_LLM_DEFAULT_MODEL)
 ;
 ; or, for OpenRouter:
 ;

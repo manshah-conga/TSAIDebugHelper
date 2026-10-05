@@ -182,7 +182,14 @@ def main():
         check("and counted as customer-authored",
               own.get("is_customer_authored") is True and own.get("is_managed") is False, str(own)[:200])
         check("its call into a managed class is still an edge",
-              any(c2.get("target") == "PricingCallbackBase" and c2.get("kind") == "local_class"
+              # extractor 3.3.0: a call into a managed stub is labelled as such
+              # rather than as the customer's own (local_class) code.
+              any(c2.get("target") == "PricingCallbackBase"
+                  and c2.get("kind") in ("managed_package_class", "local_class")
+                  for c2 in own.get("calls_to", [])), str(own.get("calls_to")))
+        check("and is labelled as a managed-package class",
+              any(c2.get("target") == "PricingCallbackBase"
+                  and c2.get("kind") == "managed_package_class"
                   for c2 in own.get("calls_to", [])), str(own.get("calls_to")))
 
         print("\n-- flows are fetched through Composite, 10 per request --")

@@ -41,6 +41,7 @@ from typing import AsyncIterator
 
 from . import auth
 from . import chat_store
+from . import kb_lookup
 from . import limits
 from . import llm
 from . import llm_config
@@ -238,6 +239,16 @@ def _truncate(result):
         text = str(result)
     if len(text) <= MAX_TOOL_RESULT_BYTES:
         return text, False
+    # A dict is trimmed whole-item, section by section, with a note naming
+    # what was cut -- a byte cut mid-JSON once dropped the one section that
+    # held the answer (calls_to, behind 40 KB of soql/field_writes).
+    if isinstance(result, dict):
+        try:
+            shaped = json.dumps(kb_lookup.shape(result, MAX_TOOL_RESULT_BYTES - 200), default=str)
+            if len(shaped) <= MAX_TOOL_RESULT_BYTES:
+                return shaped, True
+        except Exception:                               # noqa: BLE001 - fall back to the cut
+            pass
     keep = MAX_TOOL_RESULT_BYTES
     return (text[:keep] +
             f"\n\n[TRUNCATED: this result was {len(text)} characters, cut to {keep}. "
@@ -285,6 +296,14 @@ def system_prompt(username, org_id, org_label=None, org_list=None):
         "enqueues/executes/schedules an async job (via System.enqueueJob etc.). An "
         "empty inbound result is evidence, not a licence to guess: say what it does "
         "not cover rather than inventing a caller.",
+        "- For 'which APIs / managed-package methods does class X call, in what order, "
+        "under what conditions': get_component with sections=[\"calls_to\",\"call_sites\"] "
+        "(or method=\"<name>\"). call_sites are in source order with caller_method, line "
+        "and the enclosing conditions; follow same_class sites into helper methods. For "
+        "the reverse question ('where/when is Ns.Class.method called'), "
+        "get_inbound_references accepts the qualified name directly. Only ask the user "
+        "for source code if the card predates call_sites (it has none) -- and then say "
+        "the org needs a Refresh.",
         "- Rank suspects by what the log actually shows executing, not by what could "
         "theoretically be involved. Name the specific component and say why.",
         "- Order of automation matters: a trigger writing a value that a later workflow "

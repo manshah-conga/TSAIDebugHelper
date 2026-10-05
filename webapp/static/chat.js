@@ -257,8 +257,8 @@ async function openKeySettings() {
             the service &mdash; deliberate friction, for a rare action.</p>
           <pre>${escapeHtml(env.provider || "TS_LLM_PROVIDER")}=azure | openrouter
 ${escapeHtml(env.api_key || "TS_LLM_API_KEY")}=<the key>
-${escapeHtml(env.endpoint || "TS_LLM_ENDPOINT")}=<Azure chat-completions URL, Azure only>
-${escapeHtml(env.default_model || "TS_LLM_DEFAULT_MODEL")}=<optional, new chats start here>
+${escapeHtml(env.endpoint || "TS_LLM_ENDPOINT")}=<Azure chat-completions URL, Azure only (v1 or deployments/...)>
+${escapeHtml(env.default_model || "TS_LLM_DEFAULT_MODEL")}=<optional; REQUIRED with an Azure v1 URL = deployment name>
 ${escapeHtml(env.lock_model || "TS_LLM_LOCK_MODEL")}=1   # optional: users cannot change model</pre>
           <p class="muted">On systemd, put these in the unit's EnvironmentFile (mode 0600) and
             run <code>systemctl restart ts-debug-helper</code>. The startup log line reports
@@ -310,9 +310,17 @@ ${escapeHtml(env.lock_model || "TS_LLM_LOCK_MODEL")}=1   # optional: users canno
   const fields = [];
   if (isAzure) {
     fields.push({
-      name: "endpoint", label: "Azure chat completions URL (includes the deployment and api-version)",
+      name: "endpoint", label: "Azure chat completions URL",
       type: "text", value: personal.endpoint || "",
-      placeholder: "https://<resource>.openai.azure.com/openai/deployments/gpt-4o/chat/completions?api-version=2024-08-01-preview",
+      placeholder: "https://<resource>.openai.azure.com/openai/v1/chat/completions",
+      hint: "Either form works: <code>.../openai/v1/chat/completions</code> (v1 &mdash; give the " +
+            "model below) or <code>.../openai/deployments/&lt;name&gt;/chat/completions?api-version=...</code>.",
+    });
+    fields.push({
+      name: "model", label: "Model / deployment name (required for a v1 URL)",
+      type: "text", value: personal.model || "",
+      placeholder: "e.g. gpt-6-luna",
+      hint: "Ignored for a deployments/... URL, where the path already names the deployment.",
     });
   }
   fields.push({
@@ -327,7 +335,8 @@ ${escapeHtml(env.lock_model || "TS_LLM_LOCK_MODEL")}=1   # optional: users canno
     title: personal.configured ? "Replace your personal key" : "Use your own key",
     body: (isAzure
         ? "Paste the <b>full chat completions URL</b> from the Azure portal, not just the " +
-          "resource root &mdash; the deployment in its path is what selects the model. "
+          "resource root. On a v1 URL the model name you enter selects the deployment; on a " +
+          "deployments/... URL the path does. "
         : "Paste an OpenRouter API key. ") +
       "This affects <b>only your own</b> chats; everyone else keeps using the shared server " +
       "connection. The key is encrypted with your password before it is stored, so it cannot " +
@@ -346,6 +355,7 @@ ${escapeHtml(env.lock_model || "TS_LLM_LOCK_MODEL")}=1   # optional: users canno
     body: JSON.stringify({
       api_key: answer.api_key, password: answer.password,
       provider, endpoint: answer.endpoint || null,
+      model: (answer.model || "").trim() || null,
     }),
   });
   if (!res.ok) { toast(await errorText(res), "error", 10000); return; }

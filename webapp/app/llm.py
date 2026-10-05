@@ -26,13 +26,23 @@ OPENROUTER_BASE = os.environ.get("TS_OPENROUTER_URL", "https://openrouter.ai/api
 # handled in _prepare() below rather than scattered through the module:
 #
 #   1. Auth is `api-key: <key>`, not `Authorization: Bearer <key>`.
-#   2. The model is chosen by the DEPLOYMENT in the URL path, so a `model` field
-#      in the body is meaningless and is stripped.
-#   3. The endpoint is a complete URL including `?api-version=`, so nothing may
-#      be appended to it.
+#   2. Which model answers depends on the URL style (see below).
+#   3. The endpoint is a complete URL, so nothing may be appended to it.
 #   4. Streaming usage needs `stream_options: {include_usage: true}`; the
 #      `usage: {include: true}` form is an OpenRouter extension, and Azure has
 #      no cost field at all (it bills on your Azure subscription, not per call).
+#
+# Azure has two URL styles, and both are accepted:
+#
+#   LEGACY  .../openai/deployments/<deployment>/chat/completions?api-version=...
+#           The deployment in the PATH picks the model, so a `model` field in
+#           the body is meaningless and is stripped. api-version is mandatory.
+#
+#   V1      .../openai/v1/chat/completions
+#           The OpenAI-compatible surface. No deployment in the path and no
+#           api-version; the deployment name travels as `model` in the BODY,
+#           exactly as on api.openai.com. So a v1 connection must carry a model
+#           name alongside the URL, and _prepare() sets it rather than strips it.
 PROVIDER_OPENROUTER = "openrouter"
 PROVIDER_AZURE = "azure"
 
@@ -65,19 +75,53 @@ def _headers(api_key):
     }
 
 
-def creds(provider, api_key, endpoint=None):
+def creds(provider, api_key, endpoint=None, model=None):
     """The credential bundle every call takes. One shape for both providers so
-    nothing above this module has to branch on which one is in use."""
+    nothing above this module has to branch on which one is in use.
+
+    `model` matters only for an Azure v1 endpoint, where it is the deployment
+    name sent in the body. Elsewhere it is carried but unused."""
     return {"provider": (provider or PROVIDER_OPENROUTER).strip().lower(),
-            "api_key": api_key, "endpoint": (endpoint or "").strip()}
+            "api_key": api_key, "endpoint": (endpoint or "").strip(),
+            "model": (model or "").strip() or None}
+
+
+_V1_PATH_RE = re.compile(r"/openai/v1(/|$)", re.IGNORECASE)
+
+
+def is_azure_v1(url):
+    """True for the OpenAI-compatible `/openai/v1/...` surface, where the
+    deployment is named in the body rather than the path."""
+    return bool(_V1_PATH_RE.search(urlparse((url or "").strip()).path or ""))
+
+
+def normalize_azure_endpoint(url):
+    """Complete a v1 base URL to its chat-completions route.
+
+    The portal and Microsoft's samples show the v1 surface as a BASE URL
+    (`.../openai/v1/`) handed to an OpenAI client, which appends the route
+    itself. People paste exactly that, so accept it rather than reject it.
+    Legacy URLs are returned unchanged -- there is no unambiguous fix for a
+    deployment URL missing pieces."""
+    url = (url or "").strip()
+    if not is_azure_v1(url):
+        return url
+    parsed = urlparse(url)
+    path = parsed.path.rstrip("/")
+    if path.lower().endswith("/openai/v1"):
+        path += "/chat/completions"
+        return parsed._replace(path=path).geturl()
+    return url
 
 
 def validate_azure_endpoint(url):
     """Azure endpoints are pasted by hand from the portal, so the failure modes
     are predictable -- the resource root without the deployment path, or a
-    missing api-version. Catching them here turns a baffling 404 much later
-    into a specific message at the moment of typing."""
-    url = (url or "").strip()
+    missing api-version on a legacy URL. Catching them here turns a baffling
+    404 much later into a specific message at the moment of typing.
+
+    Returns the endpoint normalized (a v1 base URL gains /chat/completions)."""
+    url = normalize_azure_endpoint(url)
     if not url:
         raise ValueError("An Azure endpoint URL is required.")
     parsed = urlparse(url)
@@ -92,33 +136,162 @@ def validate_azure_endpoint(url):
     if parsed.scheme != "https" and not (parsed.scheme == "http" and is_loopback):
         raise ValueError("The endpoint must be an https:// URL (http is allowed only for "
                          "localhost, for a local gateway or a test double).")
+
+    if is_azure_v1(url):
+        # v1: api-version is optional (Azure accepts `?api-version=preview` for
+        # preview features, nothing otherwise), so it is neither required nor
+        # stripped.
+        if not parsed.path.rstrip("/").lower().endswith("/chat/completions"):
+            raise ValueError(
+                "That v1 URL does not point at chat completions -- it should look like "
+                "https://<resource>.openai.azure.com/openai/v1/chat/completions")
+        return url
+
     if "/chat/completions" not in parsed.path:
         raise ValueError(
-            "Use the full chat completions URL, not just the resource root -- it should look "
-            "like https://<resource>.openai.azure.com/openai/deployments/<deployment>/"
-            "chat/completions?api-version=2024-08-01-preview")
+            "Use the full chat completions URL, not just the resource root. Either form works: "
+            "https://<resource>.openai.azure.com/openai/v1/chat/completions (v1, model name "
+            "sent separately) or https://<resource>.openai.azure.com/openai/deployments/"
+            "<deployment>/chat/completions?api-version=2024-08-01-preview")
     if "api-version=" not in (parsed.query or ""):
-        raise ValueError("The endpoint is missing its ?api-version=... parameter.")
+        raise ValueError(
+            "This deployment-style URL is missing its ?api-version=... parameter. Add one "
+            "(e.g. ?api-version=2024-08-01-preview), or use the v1 form "
+            "https://<resource>.openai.azure.com/openai/v1/chat/completions, which needs none.")
     return url
 
 
+def validate_azure_model(url, model):
+    """A v1 endpoint names no deployment, so without a model name every call
+    400s. Legacy URLs ignore it. Returns the cleaned model name or None."""
+    model = (model or "").strip() or None
+    if is_azure_v1(url) and not model:
+        raise ValueError(
+            "This is an Azure v1 endpoint (/openai/v1/...), which takes the deployment name "
+            "in the request rather than the URL -- so a model / deployment name is required "
+            "(for example gpt-6-luna).")
+    if model and not re.fullmatch(r"[A-Za-z0-9._:/-]{1,128}", model):
+        raise ValueError("That model / deployment name contains characters Azure does not allow.")
+    return model
+
+
 def azure_deployment(url):
-    """The deployment name out of the URL path -- that IS the model on Azure,
-    so it is what the picker shows."""
+    """The deployment name out of a legacy URL path -- that IS the model on
+    Azure, so it is what the picker shows."""
     m = re.search(r"/deployments/([^/?]+)", url or "")
     return m.group(1) if m else "azure-deployment"
+
+
+def azure_model(url, model=None):
+    """The model an Azure connection actually reaches: the explicit name on a
+    v1 endpoint, the deployment in the path on a legacy one."""
+    if is_azure_v1(url):
+        return (model or "").strip() or "azure-deployment"
+    return azure_deployment(url)
 
 
 def _prepare(c, payload):
     """Per-provider URL, headers and body. The only place the two differ."""
     if c["provider"] == PROVIDER_AZURE:
         body = dict(payload)
-        body.pop("model", None)       # the deployment in the URL decides this
+        if is_azure_v1(c["endpoint"]):
+            # The connection's own model wins over whatever the picker sent:
+            # on Azure the connection decides the deployment, and the picker
+            # only ever offers that one entry anyway.
+            body["model"] = c.get("model") or body.get("model")
+        else:
+            body.pop("model", None)   # the deployment in the URL decides this
         body.pop("usage", None)       # OpenRouter-only extension
         if body.get("stream"):
             body["stream_options"] = {"include_usage": True}
         return c["endpoint"], {"api-key": c["api_key"], "Content-Type": "application/json"}, body
     return f"{OPENROUTER_BASE}/chat/completions", _headers(c["api_key"]), payload
+
+
+# Compatibility quirks learned per Azure deployment, keyed (endpoint, model).
+# Each is discovered from a 400 that names the offending parameter, applied
+# from then on to every request to that deployment, and forgotten on restart
+# (re-learning costs one rejected request). In memory only: nothing secret,
+# and nothing worth persisting.
+#
+#   rename_max_tokens   send max_completion_tokens instead of max_tokens
+#   drop_temperature    the model accepts only its default temperature
+#   reasoning_none      send reasoning_effort="none" (legacy endpoints only).
+#                       Some reasoning-by-default deployments refuse function
+#                       tools on /chat/completions unless reasoning is off --
+#                       and every chat round here carries tools.
+#   use_responses       v1 endpoints: drive this deployment through the
+#                       Responses API instead (gpt-6-luna: refuses tools while
+#                       reasoning AND refuses reasoning_effort="none").
+_AZURE_QUIRKS = {}
+MAX_AZURE_ATTEMPTS = 4      # first try + one retry per quirk
+
+
+def _quirk_key(c):
+    return (c.get("endpoint") or "", c.get("model") or "")
+
+
+def _apply_quirks(c, body):
+    q = _AZURE_QUIRKS.get(_quirk_key(c)) or set()
+    if not q:
+        return body
+    out = dict(body)
+    if "rename_max_tokens" in q and "max_tokens" in out:
+        out["max_completion_tokens"] = out.pop("max_tokens")
+    if "drop_temperature" in q:
+        out.pop("temperature", None)
+    if "reasoning_none" in q:
+        out["reasoning_effort"] = "none"
+    return out
+
+
+def _azure_retry_body(body, status, body_text, c=None):
+    """Adjust a request after a 400 that names a parameter this deployment's
+    model family does not accept, so the operator does not need to know which
+    family a deployment belongs to. Returns the adjusted body, or None when
+    the 400 was about something else (or the fix was already applied, so a
+    retry would only repeat the failure). With `c`, the quirk is remembered
+    for that deployment so later requests get it right first time."""
+    if status != 400:
+        return None
+    text = (body_text or "").lower()
+    out = dict(body)
+    learned = set()
+
+    # Tools + reasoning refused on /chat/completions. On a v1 endpoint, go
+    # straight to the Responses API the error recommends: it keeps the model's
+    # reasoning, where reasoning_effort="none" would throw it away (and some
+    # deployments refuse "none" anyway). Elsewhere there is no Responses route
+    # to switch to, so "none" is the only remedy left to try.
+    v1 = c is not None and is_azure_v1(c.get("endpoint"))
+    refuses_none = ("reasoning_effort" in text and out.get("reasoning_effort") == "none"
+                    and ("does not support" in text or "unsupported" in text))
+    if v1 and not uses_responses_api(c) and (
+            refuses_none or ("reasoning_effort" in text and "/responses" in text)):
+        q = _AZURE_QUIRKS.setdefault(_quirk_key(c), set())
+        q.discard("reasoning_none")
+        q.add("use_responses")
+        out.pop("reasoning_effort", None)
+        return out
+    if refuses_none:
+        return None
+    if "max_tokens" in text and "max_tokens" in out and (
+            "max_completion_tokens" in text or "unsupported" in text):
+        out["max_completion_tokens"] = out.pop("max_tokens")
+        learned.add("rename_max_tokens")
+    if "temperature" in text and "temperature" in out and (
+            "unsupported" in text or "does not support" in text):
+        out.pop("temperature")
+        learned.add("drop_temperature")
+    if "reasoning_effort" in text and out.get("reasoning_effort") != "none" and (
+            "'none'" in text or '"none"' in text or " none" in text):
+        out["reasoning_effort"] = "none"
+        learned.add("reasoning_none")
+    if not learned:
+        return None
+    if c is not None:
+        _AZURE_QUIRKS.setdefault(_quirk_key(c), set()).update(learned)
+    return out
 
 
 def _explain_azure(status, body_text):
@@ -140,9 +313,10 @@ def _explain_azure(status, body_text):
         return LLMError(detail or "Azure refused this request -- often a network or firewall "
                                   "rule on the resource, or a key without access to this "
                                   "deployment.", status, "forbidden")
-    if status == 404:
-        return LLMError("Azure returned 404. The deployment name in the endpoint URL is probably "
-                        "wrong, or that deployment does not exist in this resource.",
+    if status == 404 or (status == 400 and "deploymentnotfound" in (body_text or "").lower()):
+        return LLMError("Azure could not find that deployment. Check the deployment name (in the "
+                        "URL path on a deployments/... endpoint, or the model name on a v1 "
+                        "endpoint) exists in this resource.",
                         status, "no_model")
     if status == 429:
         return LLMError("Azure rate limited this request -- the deployment's tokens-per-minute "
@@ -150,6 +324,12 @@ def _explain_azure(status, body_text):
                         status, "rate_limited")
     if status and status >= 500:
         return LLMError("Azure OpenAI had a server error. Try again.", status, "upstream")
+    if status == 400 and "reasoning_effort" in detail.lower():
+        return LLMError("This Azure deployment will not do tool calling on chat completions "
+                        "while reasoning. Use a v1 endpoint (https://<resource>.openai.azure.com/"
+                        "openai/v1/chat/completions), which lets the app switch it to the "
+                        "Responses API automatically. Azure said: " + detail,
+                        status, "unsupported_model")
     if status == 400 and "content" in detail.lower() and "filter" in detail.lower():
         return LLMError("Azure's content filter blocked this request or response. Debug logs can "
                         "trip it; try rephrasing, or have the filter relaxed for this deployment.",
@@ -193,7 +373,7 @@ async def list_models_for(c, force=False):
     Azure you change models by pointing at a different deployment, not by
     choosing from a menu."""
     if c["provider"] == PROVIDER_AZURE:
-        name = azure_deployment(c["endpoint"])
+        name = azure_model(c["endpoint"], c.get("model"))
         return [{
             "id": name,
             "name": f"{name} (Azure deployment)",
@@ -294,21 +474,47 @@ async def verify_creds(c):
 
     OpenRouter can be checked for free against /models. Azure has no equivalent
     on a deployment-scoped URL, so this sends a one-token completion -- which
-    also proves the deployment name and api-version are right, something a
-    catalogue lookup could never tell us. The cost is a handful of tokens.
+    also proves the deployment name (path or v1 model) and api-version are
+    right, something a catalogue lookup could never tell us. The cost is a
+    handful of tokens.
     """
     if c["provider"] != PROVIDER_AZURE:
         await verify_key(c["api_key"])
         return True
 
-    validate_azure_endpoint(c["endpoint"])
+    c = dict(c, endpoint=validate_azure_endpoint(c["endpoint"]))
+    c["model"] = validate_azure_model(c["endpoint"], c.get("model"))
+    # The ping carries a tool definition and a temperature on purpose: every
+    # real chat round sends both, and some deployments accept a plain prompt
+    # but refuse tools (e.g. "Function tools with reasoning_effort are not
+    # supported"). Testing without them let such a connection save cleanly
+    # and then fail on the first question.
     url, headers, body = _prepare(c, {
-        "messages": [{"role": "user", "content": "ping"}],
-        "max_tokens": 1, "stream": False,
+        "messages": [{"role": "user", "content": "Reply with the word ok."}],
+        "max_tokens": 16, "temperature": 0.2, "stream": False,
+        "tools": [{"type": "function", "function": {
+            "name": "noop", "description": "Unused connectivity check.",
+            "parameters": {"type": "object", "properties": {}}}}],
+        "tool_choice": "auto",
     })
-    async with httpx.AsyncClient(timeout=httpx.Timeout(CONNECT_TIMEOUT, read=30.0)) as client:
+    body = _apply_quirks(c, body)
+    async with httpx.AsyncClient(timeout=httpx.Timeout(CONNECT_TIMEOUT, read=60.0)) as client:
         try:
-            r = await client.post(url, headers=headers, json=body)
+            r = None
+            for _ in range(MAX_AZURE_ATTEMPTS):
+                if uses_responses_api(c):
+                    # A reasoning model can spend a tiny budget thinking and come
+                    # back "incomplete"; that still proves the key, deployment
+                    # and tool definition were all accepted.
+                    rbody = _to_responses_request(dict(body, max_tokens=256), stream=False)
+                    r = await client.post(azure_responses_url(c["endpoint"]),
+                                          headers=headers, json=rbody)
+                    break
+                r = await client.post(url, headers=headers, json=body)
+                retry = _azure_retry_body(body, r.status_code, r.text, c)
+                if retry is None:
+                    break
+                body = retry
         except httpx.RequestError as e:
             raise LLMError(f"Could not reach that Azure endpoint ({e.__class__.__name__}). "
                            f"Check the hostname, and that this server can reach it.",
@@ -316,6 +522,169 @@ async def verify_creds(c):
     if r.status_code >= 400:
         raise _explain_azure(r.status_code, r.text)
     return True
+
+
+# ---------- Azure Responses API ----------
+#
+# Some Azure deployments (gpt-6-luna is the one that forced this) reason by
+# default, refuse function tools on /chat/completions while reasoning, AND
+# refuse reasoning_effort="none". The only way to give them tools is the
+# Responses API (/openai/v1/responses). Rather than fork the agent loop, this
+# section translates at the edge: chat-completions messages in, the same
+# Delta stream out, so chat.py cannot tell which API answered.
+#
+# Deliberately not done: carrying encrypted reasoning items between rounds
+# (`include: ["reasoning.encrypted_content"]`). Without them the model
+# re-reasons after each tool result instead of resuming -- slower, but
+# correct, and nothing model-internal lands in our transcripts.
+
+def uses_responses_api(c):
+    return "use_responses" in (_AZURE_QUIRKS.get(_quirk_key(c)) or set())
+
+
+def azure_responses_url(endpoint):
+    """The Responses route beside a v1 chat-completions URL (query kept)."""
+    parsed = urlparse(endpoint)
+    path = re.sub(r"/chat/completions$", "/responses", parsed.path.rstrip("/"))
+    return parsed._replace(path=path).geturl()
+
+
+def _to_responses_request(chat_body, stream):
+    """Translate a chat-completions body into a Responses body.
+
+    `temperature` is never sent: only reasoning-class deployments are routed
+    here, and they accept only the default. `strict: False` on every tool is
+    load-bearing -- the Responses API defaults function tools to strict mode,
+    which would reject the app's MCP schemas (optional properties, no
+    additionalProperties: false).
+    """
+    items = []
+    for m in chat_body.get("messages") or []:
+        role = m.get("role")
+        if role == "system":
+            items.append({"role": "developer", "content": m.get("content") or ""})
+        elif role == "user":
+            items.append({"role": "user", "content": m.get("content") or ""})
+        elif role == "assistant":
+            if m.get("content"):
+                items.append({"role": "assistant", "content": m["content"]})
+            for tc in m.get("tool_calls") or []:
+                fn = tc.get("function") or {}
+                items.append({"type": "function_call", "call_id": tc.get("id"),
+                              "name": fn.get("name"), "arguments": fn.get("arguments") or "{}"})
+        elif role == "tool":
+            items.append({"type": "function_call_output", "call_id": m.get("tool_call_id"),
+                          "output": m.get("content") or ""})
+
+    body = {"model": chat_body.get("model"), "input": items, "store": False, "stream": stream}
+    tools = []
+    for t in chat_body.get("tools") or []:
+        fn = t.get("function") or {}
+        tools.append({"type": "function", "name": fn.get("name"),
+                      "description": fn.get("description") or "",
+                      "parameters": fn.get("parameters") or {"type": "object", "properties": {}},
+                      "strict": False})
+    if tools:
+        body["tools"] = tools
+        body["tool_choice"] = chat_body.get("tool_choice") or "auto"
+    limit = chat_body.get("max_tokens") or chat_body.get("max_completion_tokens")
+    if limit:
+        body["max_output_tokens"] = max(int(limit), 16)    # the API's floor is 16
+    return body
+
+
+def _responses_usage(u):
+    """Responses usage, in the chat-completions shape chat._usage reads."""
+    u = u or {}
+    return {
+        "prompt_tokens": u.get("input_tokens"),
+        "completion_tokens": u.get("output_tokens"),
+        "total_tokens": u.get("total_tokens"),
+        "completion_tokens_details": {
+            "reasoning_tokens": (u.get("output_tokens_details") or {}).get("reasoning_tokens")},
+    }
+
+
+class _ResponsesStream:
+    """Turns Responses SSE events into Deltas. Tool calls are re-indexed in
+    arrival order, because accumulate_tool_calls correlates fragments by
+    `index` exactly as chat-completions streams them."""
+
+    def __init__(self):
+        self.index_of = {}          # item id -> tool-call index
+        self.got_args = set()       # item ids whose arguments have arrived
+
+    def feed(self, ev):
+        t = ev.get("type") or ""
+        if t == "response.output_text.delta":
+            return [Delta(content=ev.get("delta"))] if ev.get("delta") else []
+        if t in ("response.reasoning_summary_text.delta", "response.reasoning_text.delta"):
+            return [Delta(reasoning=ev.get("delta"))] if ev.get("delta") else []
+        if t == "response.output_item.added":
+            item = ev.get("item") or {}
+            if item.get("type") != "function_call":
+                return []
+            iid = item.get("id") or f"out{ev.get('output_index')}"
+            idx = len(self.index_of)
+            self.index_of[iid] = idx
+            args = item.get("arguments") or ""
+            if args:
+                self.got_args.add(iid)
+            return [Delta(tool_calls=[{"index": idx, "id": item.get("call_id"),
+                                       "function": {"name": item.get("name"),
+                                                    "arguments": args}}])]
+        if t == "response.function_call_arguments.delta":
+            idx = self.index_of.get(ev.get("item_id"))
+            if idx is None or not ev.get("delta"):
+                return []
+            self.got_args.add(ev.get("item_id"))
+            return [Delta(tool_calls=[{"index": idx, "function": {"arguments": ev["delta"]}}])]
+        if t == "response.output_item.done":
+            # Some gateways deliver a call's arguments only in the final item.
+            item = ev.get("item") or {}
+            iid = item.get("id")
+            if (item.get("type") == "function_call" and iid in self.index_of
+                    and iid not in self.got_args and item.get("arguments")):
+                self.got_args.add(iid)
+                return [Delta(tool_calls=[{"index": self.index_of[iid],
+                                           "function": {"arguments": item["arguments"]}}])]
+            return []
+        if t in ("response.completed", "response.incomplete"):
+            resp = ev.get("response") or {}
+            if t == "response.incomplete":
+                reason = (resp.get("incomplete_details") or {}).get("reason") or "length"
+                finish = "length" if reason == "max_output_tokens" else reason
+            else:
+                finish = "tool_calls" if self.index_of else "stop"
+            return [Delta(finish_reason=finish, usage=_responses_usage(resp.get("usage")))]
+        if t in ("response.failed", "error"):
+            err = (ev.get("response") or {}).get("error") or ev.get("error") or ev
+            raise LLMError("Azure OpenAI failed this response: "
+                           f"{err.get('message') or err.get('code') or 'unknown error'}",
+                           None, "upstream")
+        return []
+
+
+async def _stream_responses(client, c, chat_body, headers, explain):
+    body = _to_responses_request(chat_body, stream=True)
+    async with client.stream("POST", azure_responses_url(c["endpoint"]),
+                             headers=headers, json=body) as response:
+        if response.status_code >= 400:
+            text = (await response.aread()).decode("utf-8", errors="replace")
+            raise explain(response.status_code, text)
+        parser = _ResponsesStream()
+        async for line in response.aiter_lines():
+            if not line or not line.startswith("data:"):
+                continue                     # `event:` lines repeat the type in the data
+            data = line[5:].strip()
+            if data == "[DONE]":
+                return
+            try:
+                ev = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            for delta in parser.feed(ev):
+                yield delta
 
 
 # ---------- streaming completions ----------
@@ -358,28 +727,48 @@ async def stream_chat(c, model, messages, tools=None,
         payload["max_tokens"] = max_tokens
 
     url, headers, payload = _prepare(c, payload)
-    explain = _explain_azure if c["provider"] == PROVIDER_AZURE else _explain
+    is_azure = c["provider"] == PROVIDER_AZURE
+    if is_azure:
+        payload = _apply_quirks(c, payload)
+    explain = _explain_azure if is_azure else _explain
 
     timeout = httpx.Timeout(CONNECT_TIMEOUT, read=READ_TIMEOUT, write=30.0, pool=CONNECT_TIMEOUT)
     async with httpx.AsyncClient(timeout=timeout) as client:
         try:
-            async with client.stream("POST", url, headers=headers, json=payload) as response:
-                if response.status_code >= 400:
-                    body = (await response.aread()).decode("utf-8", errors="replace")
-                    raise explain(response.status_code, body)
-
-                async for line in response.aiter_lines():
-                    if not line or not line.startswith("data:"):
-                        continue
-                    data = line[5:].strip()
-                    if data == "[DONE]":
-                        return
-                    try:
-                        chunk = json.loads(data)
-                    except json.JSONDecodeError:
-                        continue          # OpenRouter sends ": OPENROUTER PROCESSING" keepalives
-                    for delta in _deltas_from_chunk(chunk):
+            # Retries happen only on Azure, and only when a 400 names a
+            # parameter the deployment's model family does not accept (see
+            # _azure_retry_body). Each retry fixes a different parameter, and
+            # the fix is remembered, so this costs at most a few rejected
+            # requests per deployment per process. Nothing has been yielded
+            # at that point, so the retry is invisible to the caller.
+            for attempt in range(MAX_AZURE_ATTEMPTS if is_azure else 1):
+                if is_azure and uses_responses_api(c):
+                    async for delta in _stream_responses(client, c, payload, headers, explain):
                         yield delta
+                    return
+                async with client.stream("POST", url, headers=headers, json=payload) as response:
+                    if response.status_code >= 400:
+                        body = (await response.aread()).decode("utf-8", errors="replace")
+                        retry = (_azure_retry_body(payload, response.status_code, body, c)
+                                 if is_azure and attempt < MAX_AZURE_ATTEMPTS - 1 else None)
+                        if retry is not None:
+                            payload = retry
+                            continue
+                        raise explain(response.status_code, body)
+
+                    async for line in response.aiter_lines():
+                        if not line or not line.startswith("data:"):
+                            continue
+                        data = line[5:].strip()
+                        if data == "[DONE]":
+                            return
+                        try:
+                            chunk = json.loads(data)
+                        except json.JSONDecodeError:
+                            continue      # OpenRouter sends ": OPENROUTER PROCESSING" keepalives
+                        for delta in _deltas_from_chunk(chunk):
+                            yield delta
+                    return
         except httpx.RequestError as e:
             who = "Azure OpenAI" if c["provider"] == PROVIDER_AZURE else "OpenRouter"
             raise LLMError(f"Lost the connection to {who} ({e.__class__.__name__}).",

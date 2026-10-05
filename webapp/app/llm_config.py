@@ -16,10 +16,13 @@ whoever operates it:
 
     TS_LLM_PROVIDER        "azure" or "openrouter"
     TS_LLM_API_KEY         the key itself
-    TS_LLM_ENDPOINT        Azure only: the full chat-completions URL,
-                           including the deployment path and ?api-version=
-    TS_LLM_DEFAULT_MODEL   optional; the model new chats start on
-                           (on Azure the deployment already decides this)
+    TS_LLM_ENDPOINT        Azure only: the full chat-completions URL, either
+                           .../openai/deployments/<dep>/chat/completions?api-version=
+                           or the v1 form .../openai/v1/chat/completions
+    TS_LLM_DEFAULT_MODEL   optional; the model new chats start on. On a legacy
+                           Azure URL the deployment already decides this; on a
+                           v1 Azure URL it is REQUIRED -- it is the deployment
+                           name sent as `model` in every request.
     TS_LLM_LOCK_MODEL      optional; "1" stops non-admins changing model
 
 Every signed-in user gets this connection automatically. Nothing to paste,
@@ -108,9 +111,16 @@ def _validation_error():
                 f"'{llm.PROVIDER_AZURE}' or '{llm.PROVIDER_OPENROUTER}'.")
     if provider == llm.PROVIDER_AZURE:
         try:
-            llm.validate_azure_endpoint(_env(ENV_ENDPOINT))
+            url = llm.validate_azure_endpoint(_env(ENV_ENDPOINT))
         except ValueError as e:
             return f"{ENV_ENDPOINT} is not usable: {e}"
+        if llm.is_azure_v1(url):
+            try:
+                llm.validate_azure_model(url, _env(ENV_DEFAULT_MODEL))
+            except ValueError:
+                return (f"{ENV_ENDPOINT} is an Azure v1 URL, which names no deployment, so "
+                        f"{ENV_DEFAULT_MODEL} must be set to the deployment name "
+                        f"(for example {ENV_DEFAULT_MODEL}=gpt-6-luna).")
     return None
 
 
@@ -119,19 +129,21 @@ def provider():
 
 
 def endpoint():
-    return _env(ENV_ENDPOINT)
+    """Normalized: a v1 base URL (`.../openai/v1/`) gains /chat/completions."""
+    return llm.normalize_azure_endpoint(_env(ENV_ENDPOINT))
 
 
 def default_model():
     """The model a new chat starts on.
 
-    On Azure the deployment in the endpoint path IS the model, so an explicit
-    TS_LLM_DEFAULT_MODEL is redundant there and the deployment name wins --
-    otherwise a stale value in the environment would show a model in the UI
-    that no request could ever actually reach.
+    On a legacy Azure URL the deployment in the path IS the model, so an
+    explicit TS_LLM_DEFAULT_MODEL is redundant there and the deployment name
+    wins -- otherwise a stale value in the environment would show a model in
+    the UI that no request could ever actually reach. On a v1 Azure URL there
+    is no deployment in the path, and TS_LLM_DEFAULT_MODEL is the deployment.
     """
     if provider() == llm.PROVIDER_AZURE and endpoint():
-        return llm.azure_deployment(endpoint())
+        return llm.azure_model(endpoint(), _env(ENV_DEFAULT_MODEL))
     return _env(ENV_DEFAULT_MODEL) or None
 
 
@@ -143,7 +155,8 @@ def creds():
     """The credential bundle for the shared connection, or None."""
     if not configured():
         return None
-    return llm.creds(provider(), _env(ENV_API_KEY), endpoint())
+    model = default_model() if provider() == llm.PROVIDER_AZURE else None
+    return llm.creds(provider(), _env(ENV_API_KEY), endpoint(), model=model)
 
 
 def mark_verified(at):
@@ -216,7 +229,8 @@ def startup_report():
         return f"[TS Debug Helper] Shared LLM connection is NOT usable: {err}"
     detail = f"provider={provider()}"
     if provider() == llm.PROVIDER_AZURE:
-        detail += f", deployment={llm.azure_deployment(endpoint())}"
+        detail += (f", deployment={default_model()}"
+                   f"{' (v1 endpoint)' if llm.is_azure_v1(endpoint()) else ''}")
     elif default_model():
         detail += f", default model={default_model()}"
     return (f"[TS Debug Helper] Shared LLM connection loaded ({detail}, "

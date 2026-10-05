@@ -221,7 +221,7 @@ def _hint(api_key):
 # ---------- public operations ----------
 
 def store_key(username, password, api_key, provider=DEFAULT_PROVIDER, token_id=None,
-              endpoint=None):
+              endpoint=None, model=None):
     """Wrap and persist a new key, replacing any existing one, and unlock it
     for the calling session. `password` is verified by the caller against the
     account first; here it is only key material."""
@@ -256,6 +256,9 @@ def store_key(username, password, api_key, provider=DEFAULT_PROVIDER, token_id=N
         # does name internal infrastructure, so it stays inside data/auth/ with
         # everything else rather than anywhere public.
         "endpoint": (endpoint or "").strip() or None,
+        # Azure v1 endpoints carry no deployment in the URL, so the deployment
+        # name is stored beside it and sent as `model` on every call.
+        "model": (model or "").strip() or None,
         "hint": _hint(api_key),
         "created_at": _now(),
         "verified_at": None,
@@ -443,6 +446,7 @@ def public_state(username, token_id):
         "unlocked": bool(usable and key_for_session(token_id)),
         "provider": (record or {}).get("provider") or DEFAULT_PROVIDER,
         "endpoint": (record or {}).get("endpoint") if usable else None,
+        "model": (record or {}).get("model") if usable else None,
         "hint": (record or {}).get("hint") if usable else None,
         "created_at": (record or {}).get("created_at") if usable else None,
         "verified_at": (record or {}).get("verified_at") if usable else None,
@@ -538,6 +542,7 @@ def require_creds(ident):
             return {"provider": record.get("provider") or DEFAULT_PROVIDER,
                     "api_key": api_key,
                     "endpoint": record.get("endpoint") or "",
+                    "model": record.get("model"),
                     "source": "personal"}
 
     shared = llm_config.creds()

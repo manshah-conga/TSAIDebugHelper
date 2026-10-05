@@ -403,8 +403,11 @@ async def get_org_stats(org_id: str) -> dict:
 
 
 @mcp.tool()
-async def get_component(org_id: str, component_id: str) -> dict:
-    """Get the full stored knowledgebase card for one component (an Apex
+async def get_component(org_id: str, component_id: str,
+                        sections: Optional[list[str]] = None,
+                        method: Optional[str] = None,
+                        max_chars: int = 20000) -> dict:
+    """Get the stored knowledgebase card for one component (an Apex
     class/trigger, a flow, or an LWC bundle) -- its structure, objects/
     fields touched, calls made, and (for Apex) any detected static mutable
     state or risky field writes. For Apex, `async_dispatches` lists every
@@ -412,12 +415,40 @@ async def get_component(org_id: str, component_id: str) -> dict:
     component makes, and a Queueable/Batchable/Schedulable class's
     `entry_points[].invoked_by` lists who starts it. Use search_knowledgebase or
     find_field_writers first if you don't already know the exact id.
+    `component_id` may be namespace/method-qualified
+    ('Apttus_CPQApi.CPQWebService', 'MyClass.myMethod').
+
+    OUTBOUND CALLS (Apex): `calls_to` is one row per called class, with its
+    `namespace` and `kind` ('managed_package_class' for e.g. Apttus_* APIs).
+    `call_sites` is every call in SOURCE ORDER: `callee` (as written, e.g.
+    'Apttus_CPQApi.CPQWebService.addBundle'), `caller_method`, `line`,
+    `in_loop`, and `conditions` -- the enclosing if / else / for / try headers,
+    outermost first. Use call_sites for "which APIs run, in what order, under
+    what conditions". `same_class` sites link a method to the local helper it
+    calls, so follow them to trace order across methods. Conditions are the
+    source text, not evaluated logic.
+
+    CHANGE HISTORY: `source_last_changed` is when this component's source last
+    changed between Refreshes (`source_first_seen` when it first appeared).
+    If an answer differs from an earlier one, check it before blaming the
+    tools -- the code may simply have been edited in the org.
+
+    SIZE: large classes are trimmed to `max_chars` whole-section-first, with a
+    `_truncated` block naming what was cut. Ask for just what you need:
+    `sections=["calls_to","call_sites"]`, or `method="addToCart"` to keep only
+    that method's entries (including its call_sites). Never conclude something
+    is absent from a section listed in `_truncated`.
 
     For a flow, the card's `elements` include each assignment element's
     items (`to` / `from`) with their literal values -- this is how you resolve a
     find_field_writers `example` that is a variable reference (e.g.
     `recordToUpdate.Status__c`) to the actual value(s) the flow writes."""
-    return await _get(f"/api/orgs/{org_id}/components/{component_id}")
+    params = {"max_chars": max_chars}
+    if sections:
+        params["sections"] = ",".join(sections)
+    if method:
+        params["method"] = method
+    return await _get(f"/api/orgs/{org_id}/components/{component_id}", params=params)
 
 
 @mcp.tool()
@@ -482,6 +513,12 @@ async def get_inbound_references(org_id: str, component_id: str) -> dict:
       - method_call / constructor (`new X(...)`) / Type.forName('X')
       - actionCall (a flow, with the resolved @InvocableMethod), subflow
       - lwc_apex_import (an LWC importing @salesforce/apex/Class.method)
+    Works for managed-package classes too: pass 'Apttus_CPQApi.CPQWebService'
+    to list every org class calling it, or
+    'Apttus_CPQApi.CPQWebService.associateConstraintRules' to narrow to one
+    method. Apex rows carry `call_sites`: the caller's `caller_method`,
+    `line`, `in_loop` and `conditions` (enclosing if/else/loop/try headers)
+    for each call -- the answer to "under what conditions is X called".
     Not covered (an empty result does not rule these out): dynamic
     Type.forName with a non-literal name, callers inside managed packages
     whose source is hidden, jobs scheduled by hand in Setup, and classes

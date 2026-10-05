@@ -10,6 +10,7 @@ v3 additions over v2: the card envelope + namespace (../schema.py), a
 are approximate (computed on the comment-stripped source) and labelled as a
 triage aid, not exact positions.
 """
+import bisect
 import re
 
 from .. import schema
@@ -558,8 +559,36 @@ def find_async_dispatches(code, class_name, methods, loop_spans, all_class_names
 
 # ---------- calls_to classification (§6.5) ----------
 
+_CANON_CACHE = {}
+
+
+def _canon_map(all_class_names):
+    """lowercase -> declared spelling. Apex names are case-insensitive, so a
+    caller writing `CPQWebservice.x(` means the `CPQWebService` card. Cached
+    per name-set: one org parse passes the same set for every class."""
+    key = (id(all_class_names), len(all_class_names))
+    m = _CANON_CACHE.get(key)
+    if m is None:
+        if len(_CANON_CACHE) > 8:
+            _CANON_CACHE.clear()
+        m = {n.lower(): n for n in all_class_names}
+        _CANON_CACHE[key] = m
+    return m
+
+
 def classify_calls(code, name, all_class_names, async_dispatches=None):
+    canon = _canon_map(all_class_names)
     calls = {}
+    # `Apttus_CPQApi.CPQWebService.addBundle(` -- METHOD_CALL_RE below sees
+    # only the last receiver (`CPQWebService`), which is the KB id of the
+    # managed stub, so the edge is right but the namespace was lost. Recover
+    # it here so the card says WHICH package's class this is.
+    namespaces = {}
+    for m in QUALIFIED_CALL_RE.finditer(code):
+        chain = m.group(1).rstrip(".").split(".")
+        ns, cls = _namespace_split(chain, all_class_names)
+        if ns and cls:
+            namespaces.setdefault(canon.get(cls.lower(), cls), ns)
 
     def _edge(target, via):
         e = calls.setdefault(target, {"target": target, "kind": None, "methods_called": set(), "via": set()})
@@ -568,6 +597,8 @@ def classify_calls(code, name, all_class_names, async_dispatches=None):
 
     for m in METHOD_CALL_RE.finditer(code):
         target, method = m.group(1), m.group(2)
+        if target[:1].isupper():          # a lowercase receiver is a variable first
+            target = canon.get(target.lower(), target)
         if target == name:
             continue
         # A class receiver is Capitalised or a known class; a lowercase receiver
@@ -612,8 +643,205 @@ def classify_calls(code, name, all_class_names, async_dispatches=None):
             # variable we couldn't resolve to a type. Kept, but marked so a
             # genuine missing-class case is distinct from a resolved local one.
             kind = "unresolved_receiver"
-        out.append({"target": target, "kind": kind, "methods_called": sorted(methods),
-                    "via": sorted(e["via"])})
+        entry = {"target": target, "kind": kind, "methods_called": sorted(methods),
+                 "via": sorted(e["via"])}
+        if namespaces.get(target):
+            # Called as Ns.Class -- a managed-package (or own-namespace) class.
+            # index_builder refines this to managed_package_class from the
+            # target card's is_managed.
+            entry["namespace"] = namespaces[target]
+            entry["kind"] = "namespaced_class"
+        out.append(entry)
+    return out
+
+
+# ---------- call sites (extractor 3.3.0) ----------
+#
+# `calls_to` answers "what does this class call". It cannot answer the two
+# questions support engineers actually ask about a managed-package API --
+# "in what ORDER are these called" and "under what CONDITIONS" -- because it
+# is aggregated per target with no method, line or branch. `call_sites` is the
+# per-call record that can: every call, in source order, with the method it
+# sits in, its line, and the chain of enclosing if / else / loop / catch
+# headers. Static text, not evaluated logic: a condition is reported as
+# written, and a call reached through another local method is linked by the
+# `same_class` sites rather than inlined.
+
+# The whole receiver chain, anchored so a match never starts mid-chain
+# (`Apttus_CPQApi.CPQWebService.addBundle(` is one match, not three). Each
+# segment is delimited by a dot, so there is no ambiguous split to backtrack
+# over -- see the METHOD_DECL_RE note on why that matters here.
+QUALIFIED_CALL_RE = re.compile(r"(?<![\w.])((?:[A-Za-z_]\w*\.)+)([A-Za-z_]\w*)\s*\(")
+BARE_CALL_RE = re.compile(r"(?<![\w.])([A-Za-z_]\w*)\s*\(")
+_GUARD_RE = re.compile(r"\b(else\s+if|if|for|while|catch)\s*\(")
+_ELSE_RE = re.compile(r"\s*else\b(?!\s+if\b)")
+# Words that can directly precede a call. Anything else that is a word
+# (`void foo(`, `List<X> foo(`) makes the match a declaration, not a call.
+_CALL_PREFIX_WORDS = {"return", "else", "throw", "and", "or", "not", "in", "case", "when"}
+_SYSTEM_NAMESPACES = SYSTEM_CLASSES | {
+    "ConnectApi", "Auth", "Approval", "Cache", "Search", "Site", "Dom", "Process", "Flow",
+    "Crypto", "EncodingUtil", "Url", "Label", "Pattern", "Matcher", "Http", "HttpRequest",
+    "HttpResponse", "Exception", "PageReference", "Id", "Boolean", "Long", "Double",
+    "List", "Set", "Map", "Object", "SObject", "Savepoint", "Time", "Metadata", "Reports",
+    "QuickAction", "Wave", "KbManagement", "Sfc", "Canvas", "TxnSecurity", "Functions",
+}
+MAX_CALL_SITES = 400
+_GUARD_TEXT_MAX = 160
+
+
+def _namespace_split(chain, all_class_names):
+    """(namespace, class) for `Ns.Class[.Inner]` receivers, else (None, None).
+
+    A first segment is a namespace when it is not itself a class, object or
+    system type and the second segment is a class name (known to the org,
+    which includes managed stubs, or at least Capitalised)."""
+    if len(chain) < 2:
+        return None, None
+    canon = _canon_map(all_class_names)
+    first, second = chain[0], chain[1]
+    if first.lower() in canon or first in _SYSTEM_NAMESPACES or not first[:1].isupper():
+        return None, None
+    if first.endswith(("__c", "__r", "__e", "__mdt")):
+        return None, None
+    if second.lower() in canon:
+        return first, canon[second.lower()]
+    if "_" in first and second[:1].isupper():
+        return first, second
+    return None, None
+
+
+def _paren_end(code, open_idx):
+    depth = 0
+    for i in range(open_idx, len(code)):
+        c = code[i]
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+    return len(code) - 1
+
+
+def _body_span(code, start):
+    """Span of the statement or block that begins at/after `start`."""
+    i = start
+    n = len(code)
+    while i < n and code[i].isspace():
+        i += 1
+    if i < n and code[i] == "{":
+        return i, _brace_span(code, i)
+    semi = code.find(";", i)
+    return i, (semi + 1 if semi != -1 else n)
+
+
+def _guard_spans(code):
+    """[(start, end, label)] for every if / else-if / else / for / while /
+    catch body, so a position can be told which branches enclose it."""
+    spans = []
+    # body end -> the conditions already ruled out by the time an `else` /
+    # `else if` that follows it runs, so `else if (b)` reads "b, and not a".
+    ruled_out_after = {}
+    for m in _GUARD_RE.finditer(code):
+        kw = re.sub(r"\s+", " ", m.group(1))
+        open_idx = m.end() - 1
+        close = _paren_end(code, open_idx)
+        cond = re.sub(r"\s+", " ", code[open_idx + 1:close]).strip()
+        if len(cond) > _GUARD_TEXT_MAX:
+            cond = cond[:_GUARD_TEXT_MAX] + "..."
+        a, b = _body_span(code, close + 1)
+        prior = []
+        if kw == "else if":
+            p = m.start()
+            while p > 0 and code[p - 1].isspace():
+                p -= 1
+            prior = ruled_out_after.get(p, [])
+        label = f"{kw} ({cond})" + (f" [and not: {' / '.join(prior)}]" if prior else "")
+        spans.append((a, b, label))
+        if kw in ("if", "else if"):
+            ruled_out_after[b] = prior + [cond]
+            em = _ELSE_RE.match(code, b)
+            if em:
+                ea, eb = _body_span(code, em.end())
+                spans.append((ea, eb, f"else [not: {' / '.join(prior + [cond])}]"))
+    for m in re.finditer(r"\btry\s*\{", code):
+        spans.append((m.end() - 1, _brace_span(code, m.end() - 1), "try"))
+    return spans
+
+
+def find_call_sites(code, name, methods, loop_spans, all_class_names, known_objects=None):
+    """Per-call records in source order. See the section comment above."""
+    known_objects = known_objects or set()
+    method_names = {m["name"] for m in methods}
+    guards = _guard_spans(code)
+    line_starts = [0] + [i + 1 for i, c in enumerate(code) if c == "\n"]
+
+    def line_at(pos):
+        return bisect.bisect_right(line_starts, pos)
+
+    def conditions_at(pos):
+        enclosing = [(a, b, label) for a, b, label in guards if a <= pos < b]
+        enclosing.sort(key=lambda s: s[0])          # outermost first
+        return [label for _, _, label in enclosing]
+
+    sites = []
+
+    def add(pos, callee, target, ns, meth, kind):
+        entry = {"callee": callee, "target": target, "method_called": meth, "kind": kind,
+                 "caller_method": _method_at(pos, methods), "line": line_at(pos),
+                 "in_loop": _in_any_span(pos, loop_spans)}
+        if ns:
+            entry["namespace"] = ns
+        conds = conditions_at(pos)
+        if conds:
+            entry["conditions"] = conds
+        sites.append((pos, entry))
+
+    for m in QUALIFIED_CALL_RE.finditer(code):
+        chain = m.group(1).rstrip(".").split(".")
+        meth = m.group(2)
+        if chain == ["this"]:
+            if meth in method_names:
+                add(m.start(), f"this.{meth}", name, None, meth, "same_class")
+            continue
+        is_new = code[max(0, m.start() - 12):m.start()].rstrip().endswith("new")
+        ns, cls = _namespace_split(chain, all_class_names)
+        if ns:
+            add(m.start(), ".".join(chain + [meth]), cls, ns, meth,
+                "constructor" if is_new else "namespaced_class")
+            continue
+        head = chain[0]
+        if head[:1].isupper():            # a lowercase receiver is a variable first
+            head = _canon_map(all_class_names).get(head.lower(), head)
+        if head == name:
+            if meth in method_names:
+                add(m.start(), f"{name}.{meth}", name, None, meth, "same_class")
+            continue
+        if head in all_class_names:
+            add(m.start(), ".".join(chain + [meth]), head, None, meth,
+                "constructor" if is_new else "org_class")
+            continue
+        # Everything else is noise for "which APIs run": system types, objects
+        # (`Account.SObjectType...`), fields, and lowercase variables whose
+        # type is unknown statically.
+        continue
+
+    for m in BARE_CALL_RE.finditer(code):
+        meth = m.group(1)
+        if meth not in method_names or meth == name:
+            continue
+        before = code[max(0, m.start() - 40):m.start()].rstrip()
+        prev_word = re.search(r"([\w>\]]+)$", before)
+        if prev_word and prev_word.group(1).lower() not in _CALL_PREFIX_WORDS:
+            continue                                # a declaration: `void foo(`
+        if before.endswith("new"):
+            continue
+        add(m.start(), f"{name}.{meth}", name, None, meth, "same_class")
+
+    sites.sort(key=lambda s: s[0])
+    out = [e for _, e in sites]
+    if len(out) > MAX_CALL_SITES:
+        out = out[:MAX_CALL_SITES] + [{"truncated": True, "total": len(sites)}]
     return out
 
 
@@ -632,7 +860,8 @@ def parse_class(name, raw_code, known_objects, all_class_names, namespace_prefix
         "is_test_class": False, "extends": None, "implements": [], "entry_points": [],
         "methods": [], "soql": [], "dml": [], "callouts": [], "named_credentials": [],
         "exceptions_thrown": [], "exceptions_caught": [], "custom_exceptions_defined": [],
-        "calls_to": [], "objects_referenced": [], "static_mutable_state": [], "field_writes": [],
+        "calls_to": [], "call_sites": [], "objects_referenced": [], "static_mutable_state": [],
+        "field_writes": [],
     }
 
     decl = CLASS_DECL_RE.search(code)
@@ -707,6 +936,8 @@ def parse_class(name, raw_code, known_objects, all_class_names, namespace_prefix
 
     card["async_dispatches"] = find_async_dispatches(code, name, methods, loop_spans, all_class_names)
     card["calls_to"] = classify_calls(code, name, all_class_names, card["async_dispatches"])
+    card["call_sites"] = find_call_sites(code, name, methods, loop_spans, all_class_names,
+                                         known_objects)
     card["objects_referenced"] = find_objects_referenced(code, known_objects)
 
     static_state = find_static_mutable_state(code)
@@ -728,7 +959,8 @@ def parse_trigger(name, raw_code, known_objects, all_class_names, namespace_pref
         **schema.namespace_fields(namespace_prefix, name),
         "loc": raw_code.count("\n") + 1, "object": None, "events": [], "entry_points": [],
         "soql": [], "dml": [], "callouts": [], "exceptions_thrown": [], "exceptions_caught": [],
-        "calls_to": [], "objects_referenced": [], "static_mutable_state": [], "field_writes": [],
+        "calls_to": [], "call_sites": [], "objects_referenced": [], "static_mutable_state": [],
+        "field_writes": [],
     }
     m = TRIGGER_DECL_RE.search(code)
     if m:
@@ -751,6 +983,8 @@ def parse_trigger(name, raw_code, known_objects, all_class_names, namespace_pref
     card["exceptions_caught"] = characterise_catches(code, methods)
     card["async_dispatches"] = find_async_dispatches(code, name, methods, loop_spans, all_class_names)
     card["calls_to"] = classify_calls(code, name, all_class_names, card["async_dispatches"])
+    card["call_sites"] = find_call_sites(code, name, methods, loop_spans, all_class_names,
+                                         known_objects)
     card["objects_referenced"] = find_objects_referenced(code, known_objects)
 
     static_state = find_static_mutable_state(code)
