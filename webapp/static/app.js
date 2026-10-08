@@ -101,7 +101,14 @@ function modal({ title, body = "", fields = [], submitLabel = "OK", danger = fal
         <h3>${escapeHtml(title)}</h3>
         ${body ? `<p class="muted">${body}</p>` : ""}
         <form>
-          ${fields.map(f => `
+          ${fields.map(f => f.type === "select" ? `
+            <label for="mf-${f.name}">${escapeHtml(f.label)}</label>
+            <select id="mf-${f.name}" name="${f.name}">${f.optionsHtml || ""}${f.other
+              ? `<option value="__other__">${escapeHtml(f.otherLabel || "Other…")}</option>` : ""}</select>
+            ${f.other ? `<input id="mf-${f.name}-other" type="text" class="modal-other" style="display:none"
+                   placeholder="${escapeHtml(f.placeholder || "")}" autocomplete="off">` : ""}
+            ${f.hint ? `<div class="field-hint">${f.hint}</div>` : ""}
+          ` : `
             <label for="mf-${f.name}">${escapeHtml(f.label)}</label>
             <input id="mf-${f.name}" name="${f.name}" type="${f.type || "text"}"
                    placeholder="${escapeHtml(f.placeholder || "")}" value="${escapeHtml(f.value || "")}"
@@ -123,13 +130,57 @@ function modal({ title, body = "", fields = [], submitLabel = "OK", danger = fal
     back.querySelector("form").onsubmit = e => {
       e.preventDefault();
       const out = {};
-      fields.forEach(f => { out[f.name] = back.querySelector(`#mf-${f.name}`).value; });
+      fields.forEach(f => {
+        const v = back.querySelector(`#mf-${f.name}`).value;
+        out[f.name] = v === "__other__" ? back.querySelector(`#mf-${f.name}-other`).value : v;
+      });
       close(out);
     };
+    // A select with an "Other..." entry reveals a text box for a new value.
+    // `onChange(value, el)` lets one field drive another (org -> its account).
+    const el = name => back.querySelector(`#mf-${name}`);
+    const setValue = (name, value) => {
+      const s = el(name), f = fields.find(x => x.name === name);
+      if (!s) return;
+      if (s.tagName === "SELECT" && value && ![...s.options].some(o => o.value === value)) {
+        if (f && f.other) {
+          s.value = "__other__";
+          el(`${name}-other`).value = value;
+        } else {
+          s.insertAdjacentHTML("afterbegin", `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`);
+          s.value = value;
+        }
+      } else {
+        s.value = value || "";
+      }
+      s.dispatchEvent(new Event("change"));
+    };
+    fields.filter(f => f.type === "select").forEach(f => {
+      const s = el(f.name);
+      s.addEventListener("change", () => {
+        const other = el(`${f.name}-other`);
+        if (other) {
+          const show = s.value === "__other__";
+          other.style.display = show ? "" : "none";
+          if (show) other.focus();
+        }
+        if (f.onChange) f.onChange(s.value, { setValue, el });
+      });
+    });
     document.addEventListener("keydown", onKey);
     document.body.appendChild(back);
-    const first = back.querySelector("input");
-    if (first) { first.focus(); if (first.value) first.select(); } else back.querySelector("[type=submit]").focus();
+    fields.filter(f => f.type === "select").forEach(f => {
+      // Initial value after mount so "Other" / unknown values are handled
+      // the same way as a later change -- without firing onChange, which
+      // would overwrite a deliberately different saved value.
+      const s = el(f.name), v = f.value || "";
+      if (v && ![...s.options].some(o => o.value === v)) {
+        if (f.other) { s.value = "__other__"; el(`${f.name}-other`).value = v; el(`${f.name}-other`).style.display = ""; }
+        else { s.insertAdjacentHTML("afterbegin", `<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`); s.value = v; }
+      } else s.value = v;
+    });
+    const first = back.querySelector("input, select");
+    if (first) { first.focus(); if (first.value && first.tagName === "INPUT") first.select(); } else back.querySelector("[type=submit]").focus();
   });
 }
 
@@ -223,9 +274,16 @@ function showView(name) {
   // Full-screen chat takes over the window, so the page must not also scroll
   // behind it -- two scrollbars over one conversation is disorienting.
   document.body.classList.toggle("chat-fullscreen", name === "chat");
+  mountOrgList(name);
+  closeOrgSwitcher();
   if (typeof guideTabSeen === "function") guideTabSeen(name);
   if (name === "connections" && typeof loadHome === "function") loadHome();
-  if (name === "dashboard") loadDashboard();
+  if (name === "dashboard") {
+    loadDashboard();
+    // The org list lives here too. loadHome re-renders it (and is cached for
+    // 15s); without home.js the table alone still has to be drawn.
+    if (typeof loadHome === "function") loadHome(); else renderOrgsTable();
+  }
   if (name === "incidents") loadIncidents();
   if (name === "known") loadKnownIssues();
   if (name === "logs") loadLogs();
@@ -235,28 +293,239 @@ function showView(name) {
   if (name === "chat" && typeof mountChatFull === "function") mountChatFull();
 }
 
+/** Home and Org Dashboard show the same Accounts & orgs card. It is one DOM
+ *  node that moves to whichever of the two views is opening, so there is a
+ *  single set of ids, one filter box and one cards/table choice. */
+function mountOrgList(view) {
+  const card = document.getElementById("orgsCard");
+  const slot = document.getElementById(view === "dashboard" ? "orgsSlotDash"
+    : view === "connections" ? "orgsSlotHome" : "");
+  if (!card || !slot) return;
+  if (card.parentElement !== slot) slot.appendChild(card);
+  card.classList.toggle("in-dashboard", view === "dashboard");
+  if (!card.dataset.pickWired) {
+    card.dataset.pickWired = "1";
+    // On the Dashboard a click anywhere on a card or table row (other than
+    // its own buttons, links and switches) selects that org below.
+    card.addEventListener("click", e => {
+      if (!card.classList.contains("in-dashboard")) return;
+      if (e.target.closest("button, a, input, select, label, .vis-toggle")) return;
+      const hit = e.target.closest(".org-card[data-org], tr[data-org]");
+      if (hit) openOrgDashboard(hit.dataset.org);
+    });
+  }
+}
+
+/** Select an org and show its knowledgebase on the Dashboard, scrolled past
+ *  the org list so the result of the click is on screen. */
+function openOrgDashboard(id) {
+  const onDash = document.getElementById("view-dashboard")?.classList.contains("active");
+  if (id && id !== CURRENT_ORG) setActiveOrg(id);
+  if (!onDash) showView("dashboard");
+  setTimeout(() => {
+    const el = document.getElementById("dashDetail");
+    if (el && el.scrollIntoView) el.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, 30);
+}
+
+// ---------- the header org switcher ----------
+//
+// A button that names the active org the way the rest of the app does --
+// account avatar, account › org, environment badge -- and opens a searchable
+// popover grouped by account, with the same stars, stale dots and badges as
+// the Home cards. It replaced a native <select>: forty "id (name)" options in
+// an unstyled list was the one control on the page that looked like a
+// different product, and it could not be filtered.
+
+const ORG_SWITCH = { open: false, query: "", active: 0, shown: [] };
+
 function renderOrgPicker() {
   const el = document.getElementById("orgPicker");
+  if (!el) return;
   const ids = Object.keys(ORGS);
-  if (!ids.length) { el.textContent = "No orgs connected yet"; return; }
+  if (!ids.length) {
+    el.innerHTML = `<span class="org-switch-empty">No orgs connected yet</span>`;
+    closeOrgSwitcher();
+    return;
+  }
   if (!CURRENT_ORG || !ORGS[CURRENT_ORG]) CURRENT_ORG = ids[0];
-  el.innerHTML = "Active org: <select id='orgSelect'></select>";
-  const sel = document.getElementById("orgSelect");
-  // Grouped under the customer account once anyone uses accounts, so a
-  // customer's production org and its sandboxes sit together here as well.
-  const groups = accountGroups(Object.entries(ORGS));
-  const grouped = showAccountHeaders(groups);
-  groups.forEach(g => {
-    const parent = grouped ? document.createElement("optgroup") : sel;
-    if (grouped) { parent.label = g.name || "Unassigned"; sel.appendChild(parent); }
-    g.orgs.forEach(([id, o]) => {
-      const opt = document.createElement("option");
-      opt.value = id; opt.textContent = `${id} (${o.name})`;
-      if (id === CURRENT_ORG) opt.selected = true;
-      parent.appendChild(opt);
-    });
+  const o = ORGS[CURRENT_ORG] || {};
+  const acct = accountDisplayName(o.account);
+  const avatar = typeof accountAvatar === "function"
+    ? accountAvatar({ key: accountKey(o.account), name: acct || "" }) : "";
+  el.innerHTML = `<button type="button" class="org-switch" id="orgSwitchBtn" aria-haspopup="listbox"
+      aria-expanded="${ORG_SWITCH.open}" aria-controls="orgSwitchPop" onclick="toggleOrgSwitcher()"
+      title="Active org: ${escapeHtml(CURRENT_ORG)} -- click to switch">
+      ${avatar}
+      <span class="org-switch-text">
+        <span class="org-switch-kicker">${acct ? escapeHtml(acct) : "Active org"}</span>
+        <span class="org-switch-name">${escapeHtml(o.name || CURRENT_ORG)}${envBadge(o) ? ` ${envBadge(o)}` : ""}</span>
+      </span>
+      <span class="org-switch-chevron" aria-hidden="true">&#9662;</span>
+    </button>`;
+  if (ORG_SWITCH.open) renderOrgSwitcherList();
+}
+
+function toggleOrgSwitcher(force) {
+  const open = force === undefined ? !ORG_SWITCH.open : force;
+  if (open) openOrgSwitcher(); else closeOrgSwitcher();
+}
+
+function openOrgSwitcher() {
+  if (!Object.keys(ORGS).length) return;
+  closeOrgSwitcher();
+  ORG_SWITCH.open = true;
+  ORG_SWITCH.query = "";
+  const pop = document.createElement("div");
+  pop.className = "org-switch-pop";
+  pop.id = "orgSwitchPop";
+  pop.setAttribute("role", "dialog");
+  pop.setAttribute("aria-label", "Switch the active org");
+  const canWrite = !CURRENT_USER || CURRENT_USER.role !== "reader";
+  pop.innerHTML = `
+    <div class="org-switch-search">
+      <span class="org-switch-search-icon" aria-hidden="true">&#9906;</span>
+      <input id="orgSwitchInput" type="search" autocomplete="off" spellcheck="false"
+             placeholder="Find an org or account" aria-label="Find an org or account">
+    </div>
+    <div class="org-switch-list" id="orgSwitchList" role="listbox" aria-label="Orgs"></div>
+    <div class="org-switch-foot">
+      <button type="button" class="link-btn" onclick="closeOrgSwitcher(); showView('dashboard')">Manage orgs on the Dashboard</button>
+      ${canWrite ? `<button type="button" class="link-btn" onclick="closeOrgSwitcher(); showView('connections'); toggleConnect(true)">+ Connect an org</button>` : ""}
+    </div>`;
+  document.body.appendChild(pop);
+  placeOrgSwitcher();
+  const btn = document.getElementById("orgSwitchBtn");
+  if (btn) btn.setAttribute("aria-expanded", "true");
+  const input = document.getElementById("orgSwitchInput");
+  input.addEventListener("input", () => { ORG_SWITCH.query = input.value; ORG_SWITCH.active = -1; renderOrgSwitcherList(); });
+  input.addEventListener("keydown", e => {
+    if (e.key === "ArrowDown") { e.preventDefault(); moveOrgSwitcher(1); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); moveOrgSwitcher(-1); }
+    else if (e.key === "Enter") { e.preventDefault(); pickOrgSwitcher(ORG_SWITCH.active); }
+    else if (e.key === "Escape") { e.preventDefault(); closeOrgSwitcher(); if (btn) btn.focus(); }
   });
-  sel.addEventListener("change", () => setActiveOrg(sel.value));
+  ORG_SWITCH.active = -1;   // renderOrgSwitcherList lands on the active org
+  renderOrgSwitcherList();
+  setTimeout(() => {
+    document.addEventListener("mousedown", orgSwitcherOutside, true);
+    window.addEventListener("resize", placeOrgSwitcher);
+    window.addEventListener("scroll", placeOrgSwitcher, true);
+  }, 0);
+  input.focus();
+}
+
+function closeOrgSwitcher() {
+  const pop = document.getElementById("orgSwitchPop");
+  if (pop) pop.remove();
+  ORG_SWITCH.open = false;
+  document.removeEventListener("mousedown", orgSwitcherOutside, true);
+  window.removeEventListener("resize", placeOrgSwitcher);
+  window.removeEventListener("scroll", placeOrgSwitcher, true);
+  const btn = document.getElementById("orgSwitchBtn");
+  if (btn) btn.setAttribute("aria-expanded", "false");
+}
+
+function orgSwitcherOutside(e) {
+  const pop = document.getElementById("orgSwitchPop");
+  const btn = document.getElementById("orgSwitchBtn");
+  if (pop && !pop.contains(e.target) && !(btn && btn.contains(e.target))) closeOrgSwitcher();
+}
+
+/** Anchored under the button, right-aligned to it, kept on screen. */
+function placeOrgSwitcher() {
+  const pop = document.getElementById("orgSwitchPop");
+  const btn = document.getElementById("orgSwitchBtn");
+  if (!pop || !btn) return;
+  const r = btn.getBoundingClientRect();
+  const width = Math.min(420, window.innerWidth - 16);
+  pop.style.width = `${width}px`;
+  pop.style.top = `${Math.round(r.bottom + 6)}px`;
+  pop.style.left = `${Math.round(Math.max(8, Math.min(r.right - width, window.innerWidth - width - 8)))}px`;
+}
+
+function orgSwitcherMatches(id, o, q) {
+  if (!q) return true;
+  return [id, o.name, o.account, o.owner, (ENV_META[orgEnv(o)] || {}).label]
+    .some(v => String(v || "").toLowerCase().includes(q));
+}
+
+function renderOrgSwitcherList() {
+  const list = document.getElementById("orgSwitchList");
+  if (!list) return;
+  const q = ORG_SWITCH.query.trim().toLowerCase();
+  const pinned = typeof isPinned === "function" ? isPinned : () => false;
+  const allGroups = accountGroups(Object.entries(ORGS));
+  const headers = showAccountHeaders(allGroups);
+  // An account name that matches brings the whole account along.
+  const groups = allGroups.map(g => ({
+    ...g, orgs: q && (g.name || "unassigned").toLowerCase().includes(q) ? g.orgs
+      : g.orgs.filter(([id, o]) => orgSwitcherMatches(id, o, q)),
+  })).filter(g => g.orgs.length);
+  ORG_SWITCH.shown = groups.flatMap(g => g.orgs.map(([id]) => id));
+  if (ORG_SWITCH.active < 0 || ORG_SWITCH.active >= ORG_SWITCH.shown.length) {
+    const cur = ORG_SWITCH.shown.indexOf(CURRENT_ORG);
+    ORG_SWITCH.active = !q && cur >= 0 ? cur : 0;
+  }
+  if (!ORG_SWITCH.shown.length) {
+    list.innerHTML = `<div class="org-switch-none">No org or account matches &ldquo;${escapeHtml(ORG_SWITCH.query.trim())}&rdquo;.</div>`;
+    return;
+  }
+  let idx = 0;
+  list.innerHTML = groups.map(g => {
+    const head = headers ? `<div class="org-switch-group">
+        ${typeof accountAvatar === "function" ? accountAvatar(g) : ""}
+        <span class="org-switch-group-name${g.key === UNASSIGNED_KEY ? " unassigned" : ""}">${
+          g.key === UNASSIGNED_KEY ? "Unassigned" : escapeHtml(g.name)}</span>
+        <span class="org-switch-group-count">${g.orgs.length}</span></div>` : "";
+    const rows = g.orgs.map(([id, o]) => {
+      const i = idx++;
+      const days = typeof daysSince === "function" ? daysSince(o.last_extracted_at) : null;
+      const stale = days !== null && days > 30;
+      const cur = id === CURRENT_ORG;
+      return `<div class="org-switch-item${i === ORG_SWITCH.active ? " hl" : ""}${cur ? " current" : ""}"
+          role="option" aria-selected="${cur}" data-i="${i}" data-org="${escapeHtml(id)}"
+          onmouseenter="ORG_SWITCH.active=${i}; highlightOrgSwitcher()" onclick="pickOrgSwitcher(${i})">
+          <span class="org-switch-check" aria-hidden="true">${cur ? "&#10003;" : ""}</span>
+          <span class="org-switch-item-main">
+            <span class="org-switch-item-name">${escapeHtml(o.name || id)}</span>
+            <span class="org-switch-item-meta">${envBadge(o)}<span class="mono">${escapeHtml(id)}</span></span>
+          </span>
+          ${stale ? `<span class="fresh-dot stale" title="Stale: not refreshed in 30 days"></span>` : ""}
+          ${pinned(id) ? `<span class="org-switch-pin" title="Pinned">&#9733;</span>` : ""}
+        </div>`;
+    }).join("");
+    return head + rows;
+  }).join("");
+  highlightOrgSwitcher();
+}
+
+function highlightOrgSwitcher() {
+  const list = document.getElementById("orgSwitchList");
+  if (!list) return;
+  list.querySelectorAll(".org-switch-item").forEach(el =>
+    el.classList.toggle("hl", Number(el.dataset.i) === ORG_SWITCH.active));
+  const el = list.querySelector(".org-switch-item.hl");
+  if (el && el.scrollIntoView) el.scrollIntoView({ block: "nearest" });
+}
+
+function moveOrgSwitcher(delta) {
+  const n = ORG_SWITCH.shown.length;
+  if (!n) return;
+  ORG_SWITCH.active = (ORG_SWITCH.active + delta + n) % n;
+  highlightOrgSwitcher();
+}
+
+function pickOrgSwitcher(i) {
+  const id = ORG_SWITCH.shown[i];
+  if (!id) return;
+  closeOrgSwitcher();
+  if (id !== CURRENT_ORG) {
+    setActiveOrg(id);
+    toast(`Active org: ${id}`, "info", 2500);
+  }
+  const btn = document.getElementById("orgSwitchBtn");
+  if (btn) btn.focus();
 }
 
 /** Switching org has to invalidate every org-scoped view, not just the two
@@ -270,7 +539,9 @@ function setActiveOrg(id) {
   document.getElementById("fieldWriterResults").innerHTML = "";
   renderOrgPicker();
   loadDashboard(); loadIncidents(); loadKnownIssues();
+  renderOrgsTable();
   if (typeof renderHomeOrgs === "function") renderHomeOrgs();
+  if (typeof markInFlightOrgs === "function") markInFlightOrgs();
   // The chat dock scopes its tools to CURRENT_ORG, so it has to hear about
   // this too -- otherwise its org chip quietly disagrees with the rest of the
   // app and the assistant answers about the wrong org.
@@ -549,6 +820,7 @@ async function loadOrgs() {
   if (typeof chatOrgChanged === "function") chatOrgChanged();
   renderOrgsTable();
   if (typeof renderHomeOrgs === "function") renderHomeOrgs();
+  renderDashHead();
   markInFlightOrgs();
 }
 
@@ -723,8 +995,9 @@ function renderOrgsTable() {
       const [id, o] = row.org;
       const c = o.component_counts || {};
       tr.dataset.org = id;
+      if (id === CURRENT_ORG) tr.classList.add("active-org");
       tr.innerHTML = `<td>${typeof pinButton === "function" ? pinButton(id) : ""}</td>
-        <td><a class="link" onclick="setActiveOrg('${escapeHtml(id)}'); showView('dashboard')">${escapeHtml(id)}</a></td>
+        <td><a class="link" onclick="openOrgDashboard(${jsStr(id)})">${escapeHtml(id)}</a></td>
         <td>${escapeHtml(o.name)}</td><td>${envBadge(o) || "<span class='muted'>-</span>"}</td><td>${visibilityCell(id, o)}</td>
         <td>${o.owner ? escapeHtml(o.owner) : "<span class='muted'>(none)</span>"}</td>
         <td>${c.apex_classes ?? "-"}</td><td>${c.apex_triggers ?? "-"}</td>
@@ -1099,38 +1372,327 @@ function summariseChanges(org_id, ch) {
 
 // ---------- dashboard ----------
 
+// The selected org's knowledgebase, in the same visual language as the org
+// cards above it: a header that names the org the way the card does, count
+// tiles, then two lists of rollups (async/integration and risk) where every
+// row with something behind it opens a drill-down of the actual components
+// or fields -- the old text block gave only numbers, which a support engineer
+// then had to go and search for one at a time.
+
+const DASH = { org: null, stats: null, loading: null, loadingOrg: null, drill: null, drillFilter: "", facet: null };
+const DASH_LIST_CAP = 150;
+
+const FLAG_LABEL = {
+  soql_in_loop: "SOQL in a loop", dml_in_loop: "DML in a loop", silent_exception_handler: "Swallowed exceptions",
+  dynamic_soql: "Dynamic SOQL", no_fls_enforcement: "No FLS / sharing enforcement",
+  unpersisted_field_write: "Field written but never saved", writes_managed_package_fields: "Writes managed-package fields",
+  hardcoded_id: "Hard-coded record Ids", callout_in_loop: "Callout in a loop",
+};
+
+function flagLabel(f) {
+  return FLAG_LABEL[f] || String(f).replace(/_/g, " ").replace(/^./, c => c.toUpperCase());
+}
+
 async function loadDashboard() {
+  const head = document.getElementById("dashHead");
   const el = document.getElementById("dashStats");
+  if (!head || !el) return;
   if (!CURRENT_ORG) {
-    document.getElementById("dashOrgTitle").textContent = "Org stats";
+    head.innerHTML = "";
     el.innerHTML = emptyStateHtml({
       title: "No org selected",
-      body: "The dashboard shows one org's knowledgebase: component counts, async jobs, integration "
-          + "points and the risk rollups. Connect an org on Home, or pick one in the header.",
-      actions: [{ label: "Go to Home", onclick: "showView('connections')", primary: true },
+      body: "Pick an org in the list above or in the header switcher to see its knowledgebase: component counts, "
+          + "async jobs, integration points and the risk rollups.",
+      actions: [{ label: "Connect an org", onclick: "showView('connections'); toggleConnect(true)", primary: true, role: "user" },
                 { label: "Play the demo case", onclick: "startDemo()" }],
     });
     return;
   }
-  const acct = ORGS[CURRENT_ORG] && accountDisplayName(ORGS[CURRENT_ORG].account);
-  document.getElementById("dashOrgTitle").textContent = `Org stats -- ${acct ? `${acct} \u203a ` : ""}${CURRENT_ORG}`;
-  setBusy(el);
-  const s = await apiJson(`/api/orgs/${encodeURIComponent(CURRENT_ORG)}/stats`, {}, null);
-  if (!s) { el.innerHTML = "<p class='muted'>No knowledgebase yet for this org.</p>"; return; }
-  el.innerHTML = `
-    <div><b>Apex classes:</b> ${s.counts.apex_classes} &nbsp; <b>Triggers:</b> ${s.counts.apex_triggers} &nbsp;
-      <b>Test classes:</b> ${s.counts.test_classes}</div>
-    <div><b>Flows:</b> ${s.counts.flows} &nbsp; <b>Process Builder:</b> ${s.counts.process_builder_processes ?? 0} &nbsp;
-      <b>Workflow field updates:</b> ${s.counts.workflow_field_updates ?? 0} &nbsp; <b>LWC:</b> ${s.counts.lwc_components}</div>
-    <div><b>Batchable / Queueable / Schedulable / @future:</b>
-      ${s.async_job_classes.batchable.length} / ${s.async_job_classes.queueable.length} /
-      ${s.async_job_classes.schedulable.length} / ${s.async_job_classes.future.length}</div>
-    <div><b>Classes with callouts:</b> ${s.integration_points.classes_with_callouts.length}</div>
-    <div><b>Flows without a fault path:</b> ${s.flows_without_fault_paths.length}</div>
-    <div><b>Never-cleared static collections org-wide:</b> ${s.never_cleared_static_collections.length}</div>
-    <div><b>Fields with a high-risk writer:</b> ${s.fields_with_high_risk_writes.map(f => `<span class="pill link" onclick="showFieldWriters('${escapeHtml(f)}')">${escapeHtml(f)}</span>`).join(" ") || "none"}</div>
-    <div><b>Fields written by Flow/PB/Workflow automation:</b> ${(s.fields_written_by_declarative_automation || []).length}</div>
-  `;
+  const id = CURRENT_ORG;
+  head.innerHTML = dashHeadHtml(id, ORGS[id] || {});
+  // Switching org and opening the tab both ask for this; one request does.
+  if (DASH.loading && DASH.loadingOrg === id) return DASH.loading;
+  if (DASH.org !== id) { DASH.drill = null; DASH.drillFilter = ""; DASH.facet = null; setBusy(el, "Loading the knowledgebase..."); }
+  DASH.loadingOrg = id;
+  DASH.loading = (async () => {
+    const s = await apiJson(`/api/orgs/${encodeURIComponent(id)}/stats`, {}, null);
+    DASH.loading = null; DASH.loadingOrg = null;
+    if (id !== CURRENT_ORG) return;
+    DASH.org = id; DASH.stats = s;
+    if (!s) {
+      el.innerHTML = emptyStateHtml({
+        title: "No knowledgebase yet for this org",
+        body: "It has been registered but not fetched successfully. Refreshing it builds the knowledgebase.",
+        actions: ORGS[id] && ORGS[id].can_manage ? [{ label: "Refresh now", onclick: `refreshOrg(${JSON.stringify(id)})`, primary: true }] : [],
+      });
+      return;
+    }
+    el.innerHTML = dashStatsHtml(s);
+    renderDashDrill();
+  })();
+  return DASH.loading;
+}
+
+/** Redraw just the header (pins, visibility, incident counts change it)
+ *  without refetching the stats. */
+function renderDashHead() {
+  const head = document.getElementById("dashHead");
+  if (head && CURRENT_ORG && ORGS[CURRENT_ORG]) head.innerHTML = dashHeadHtml(CURRENT_ORG, ORGS[CURRENT_ORG]);
+}
+
+function dashHeadHtml(id, o) {
+  const acct = accountDisplayName(o.account);
+  const key = accountKey(o.account);
+  const days = typeof daysSince === "function" ? daysSince(o.last_extracted_at) : null;
+  const stale = days !== null && days > 30;
+  const fresh = days === null ? "unknown" : days <= 7 ? "ok" : stale ? "stale" : "warn";
+  const ago = typeof agoText === "function" ? agoText(days) : fmtWhen(o.last_extracted_at);
+  const st = (typeof HOME !== "undefined" && HOME.summary && HOME.summary.orgs && HOME.summary.orgs[id]) || null;
+  const a = jsStr(id);
+  let inc = "";
+  if (st && st.incidents) {
+    inc = `<span class="dash-dot-sep">&middot;</span><a class="link" onclick="showView('incidents')">${st.incidents} incident${st.incidents === 1 ? "" : "s"}</a>`
+      + (st.unresolved ? ` <a class="link warn-text" onclick="${typeof openUnresolved === "function" ? `openUnresolved(${a})` : "showView('known')"}">(${st.unresolved} without a fix)</a>` : "");
+  }
+  return `<div class="dash-head">
+      ${typeof accountAvatar === "function" ? accountAvatar({ key, name: acct || "" }) : ""}
+      <div class="dash-title">
+        <div class="dash-kicker">${acct ? escapeHtml(acct) : "<i>Unassigned</i>"} <span aria-hidden="true">&rsaquo;</span> Org dashboard</div>
+        <h2>${escapeHtml(o.name || id)} ${typeof pinButton === "function" ? pinButton(id) : ""}</h2>
+        <div class="dash-sub">
+          ${envBadge(o)}<span class="mono">${escapeHtml(id)}</span>
+          <span class="dash-dot-sep">&middot;</span><span class="fresh-dot ${fresh}" aria-hidden="true"></span>${
+            stale ? `<b>Stale</b>&nbsp;&mdash; refreshed ${escapeHtml(ago)}` : `Refreshed ${escapeHtml(ago)}`}
+          <span class="dash-dot-sep">&middot;</span>owner ${o.owner ? escapeHtml(o.owner) : "<span class='muted'>(none)</span>"}
+          ${inc}
+        </div>
+        ${changesHint(o)}
+      </div>
+      <div class="dash-side">
+        <div class="dash-vis">${visibilityCell(id, o)}</div>
+        <div class="dash-actions">
+          <button type="button" class="secondary" onclick="openChatFull()">Ask</button>
+          <button type="button" class="secondary" onclick="showView('incidents')">Incidents</button>
+          <button type="button" class="secondary" onclick="showView('known')">Known issues</button>
+          ${o.can_manage ? `<button type="button" class="secondary${stale ? " emphasis" : ""}" onclick="refreshOrg(${a})">Refresh</button>` : ""}
+        </div>
+      </div>
+    </div>
+    ${stale ? `<div class="dash-stale">This knowledgebase is ${days} days old. Refresh before trusting a negative result
+      &mdash; a component added since then is not in it.</div>` : ""}`;
+}
+
+function dashStatsHtml(s) {
+  const c = s.counts || {};
+  const ca = s.customer_authored_counts || {};
+  const aj = s.async_job_classes || {};
+  const ip = s.integration_points || {};
+  const num = n => (n === undefined || n === null ? "-" : Number(n).toLocaleString());
+  const len = v => (Array.isArray(v) ? v.length : v && typeof v === "object" ? Object.keys(v).length : 0);
+  const tile = (n, label, sub = "") => `<div class="dash-tile"><b>${num(n)}</b><span>${label}</span>${
+    sub ? `<em>${sub}</em>` : ""}</div>`;
+  const flags = s.components_with_flags || {};
+  const flagCount = len(flags);
+
+  const row = (key, label, n, hint, sev = "") => {
+    const on = DASH.drill === key;
+    const empty = !n;
+    return `<button type="button" class="dash-row${sev ? ` sev-${sev}` : ""}${on ? " on" : ""}${empty ? " empty" : ""}"
+        data-drill="${key}" ${empty ? "disabled" : `onclick="dashDrill('${key}')"`} aria-expanded="${on}">
+        <span class="dash-row-text"><span class="dash-row-label">${label}</span>${hint ? `<span class="dash-row-hint">${hint}</span>` : ""}</span>
+        <b class="dash-row-n">${num(n)}</b>
+        <span class="dash-row-chevron" aria-hidden="true">${empty ? "" : "&#9656;"}</span>
+      </button>`;
+  };
+
+  const objs = (s.most_referenced_objects || []).slice(0, 8).map(x => ({
+    name: x.object, n: Object.values(x.touches || {}).reduce((t, v) => t + (Array.isArray(v) ? v.length : 0), 0),
+  }));
+  const maxObj = Math.max(1, ...objs.map(x => x.n));
+
+  const notIndexed = Object.entries(s.coverage || {})
+    .filter(([, v]) => v && (v.status === "not_supported" || v.attempted === false))
+    .map(([k]) => k.replace(/_/g, " "));
+  const failed = Object.entries(s.coverage || {})
+    .filter(([, v]) => v && v.attempted && v.status && !["ok", "not_supported"].includes(v.status))
+    .map(([k, v]) => `${k.replace(/_/g, " ")} (${v.status})`);
+
+  return `
+    <div class="dash-section-title">Components</div>
+    <div class="dash-tiles">
+      ${tile(c.apex_classes, "Apex classes", ca.apex != null ? `${num(ca.apex)} customer-authored` : "")}
+      ${tile(c.test_classes, "Test classes")}
+      ${tile(c.apex_triggers, "Triggers")}
+      ${tile(c.flows, "Flows", ca.flows != null ? `${num(ca.flows)} customer-authored` : "")}
+      ${tile(c.process_builder_processes ?? 0, "Process Builder")}
+      ${tile(c.workflow_field_updates ?? 0, "Field updates")}
+      ${tile(c.lwc_components, "LWC")}
+    </div>
+
+    <div class="dash-cols">
+      <div class="dash-col">
+        <div class="dash-section-title">Risk signals</div>
+        ${row("high_risk_fields", "Fields with a high-risk writer", len(s.fields_with_high_risk_writes), "Apex writers rated high risk", "high")}
+        ${row("no_fault", "Flows without a fault path", len(s.flows_without_fault_paths), "An error here fails the whole transaction", "warn")}
+        ${row("flags", "Components with code flags", flagCount, "SOQL in loops, swallowed exceptions, no FLS&hellip;", "warn")}
+        ${row("static", "Never-cleared static collections", len(s.never_cleared_static_collections), "Grow across a transaction; recursion and heap risk")}
+        ${row("decl_fields", "Fields written by declarative automation", len(s.fields_written_by_declarative_automation), "Flow, Process Builder or Workflow")}
+      </div>
+      <div class="dash-col">
+        <div class="dash-section-title">Async &amp; integration</div>
+        ${row("batchable", "Batchable", len(aj.batchable))}
+        ${row("queueable", "Queueable", len(aj.queueable))}
+        ${row("schedulable", "Schedulable", len(aj.schedulable))}
+        ${row("future", "@future methods", len(aj.future))}
+        ${row("callouts", "Classes with callouts", len(ip.classes_with_callouts))}
+        ${row("named_creds", "Named credentials referenced", len(ip.named_credentials_referenced))}
+        ${row("exceptions", "Custom exceptions defined", len(s.custom_exceptions_defined))}
+      </div>
+    </div>
+
+    <div id="dashDrill" class="dash-drill" style="display:none;"></div>
+
+    ${objs.length ? `<div class="dash-section-title">Most referenced objects</div>
+      <div class="dash-objects">${objs.map(x => `
+        <button type="button" class="dash-obj${DASH.drill === "obj:" + x.name ? " on" : ""}" data-drill="${escapeHtml("obj:" + x.name)}" onclick="dashDrill(${jsStr("obj:" + x.name)})"
+                title="Everything that touches ${escapeHtml(x.name)}">
+          <span class="dash-obj-name">${escapeHtml(x.name)}</span>
+          <span class="dash-obj-bar"><span style="width:${Math.max(4, Math.round(100 * x.n / maxObj))}%"></span></span>
+          <span class="dash-obj-n">${num(x.n)}</span>
+        </button>`).join("")}</div>` : ""}
+
+    ${notIndexed.length || failed.length ? `<div class="dash-coverage">
+      ${failed.length ? `<span class="warn-text"><b>Fetch problems:</b> ${escapeHtml(failed.join(", "))}.</span> ` : ""}
+      ${notIndexed.length ? `Not in this knowledgebase: ${escapeHtml(notIndexed.join(", "))} &mdash; an absent result there means nothing.` : ""}
+    </div>` : ""}`;
+}
+
+/** Items behind one rollup row: [{ label, sub, run }] where run is inline JS. */
+function dashDrillItems(key, s) {
+  const comp = ids => (ids || []).map(id => ({ label: id, run: `dashShowComponent(${jsStr(id)})` }));
+  const field = fs => (fs || []).map(f => ({ label: f, run: `dashFieldWriters(${jsStr(f)})` }));
+  const aj = s.async_job_classes || {};
+  const inv = s.async_invocations || {};
+  const withCallers = ids => (ids || []).map(id => ({
+    label: id, sub: (inv[id] || []).length ? `started by ${inv[id].length}` : "", run: `dashShowComponent(${jsStr(id)})`,
+  }));
+  switch (key) {
+    case "high_risk_fields": return { title: "Fields with a high-risk writer", items: field(s.fields_with_high_risk_writes),
+      note: "Click a field to list every writer, with its risk and a sample of what it assigns." };
+    case "decl_fields": return { title: "Fields written by declarative automation", items: field(s.fields_written_by_declarative_automation) };
+    case "no_fault": return { title: "Flows without a fault path", items: comp(s.flows_without_fault_paths) };
+    case "static": return { title: "Never-cleared static collections", items: (s.never_cleared_static_collections || []).map(x => ({
+      label: `${x.component}.${x.field}`, sub: x.type || "", run: `dashShowComponent(${jsStr(x.component)})` })) };
+    case "batchable": return { title: "Batchable classes", items: withCallers(aj.batchable) };
+    case "queueable": return { title: "Queueable classes", items: withCallers(aj.queueable) };
+    case "schedulable": return { title: "Schedulable classes", items: withCallers(aj.schedulable) };
+    case "future": return { title: "Classes with @future methods", items: comp(aj.future) };
+    case "callouts": return { title: "Classes with callouts", items: comp((s.integration_points || {}).classes_with_callouts) };
+    case "named_creds": return { title: "Named credentials referenced", items: ((s.integration_points || {}).named_credentials_referenced || [])
+      .map(n => ({ label: n, run: `dashSearch(${jsStr(n)})` })) };
+    case "exceptions": return { title: "Custom exceptions defined", items: (s.custom_exceptions_defined || [])
+      .map(n => ({ label: n, run: `dashSearch(${jsStr(n)})` })) };
+    case "flags": {
+      const byFlag = {};
+      Object.entries(s.components_with_flags || {}).forEach(([cid, fl]) =>
+        (Array.isArray(fl) ? fl : Object.keys(fl || {})).forEach(f => { (byFlag[f] = byFlag[f] || []).push(cid); }));
+      const facets = Object.entries(byFlag).sort((x, y) => y[1].length - x[1].length);
+      if (!DASH.facet || !byFlag[DASH.facet]) DASH.facet = facets.length ? facets[0][0] : null;
+      return { title: "Components with code flags", facets: facets.map(([f, l]) => ({ key: f, label: flagLabel(f), n: l.length })),
+               items: comp((byFlag[DASH.facet] || []).sort()) };
+    }
+    default: return null;
+  }
+}
+
+function dashDrill(key) {
+  if (DASH.drill === key) { DASH.drill = null; } else { DASH.drill = key; DASH.drillFilter = ""; if (key !== "flags") DASH.facet = null; }
+  renderDashDrill(true);
+}
+
+/** Mark the row that opened the drill-down, without redrawing the panel. */
+function markDashRows() {
+  document.querySelectorAll("#dashStats [data-drill]").forEach(b => {
+    const on = b.dataset.drill === DASH.drill;
+    b.classList.toggle("on", on);
+    b.setAttribute("aria-expanded", String(on));
+  });
+}
+
+function dashSetFacet(f) { DASH.facet = f; DASH.drillFilter = ""; renderDashDrill(); }
+
+function dashFilterDrill(v) { DASH.drillFilter = v; renderDashDrillList(); }
+
+function renderDashDrill(scroll = false) {
+  const host = document.getElementById("dashDrill");
+  const s = DASH.stats;
+  if (!host) return;
+  markDashRows();
+  if (!DASH.drill || !s) { host.style.display = "none"; host.innerHTML = ""; return; }
+  // Mark the row that opened it.
+  markDashRows();
+  host.style.display = "";
+  if (DASH.drill.startsWith("obj:")) {
+    const name = DASH.drill.slice(4);
+    host.innerHTML = `<div class="dash-drill-head"><h3>Everything that touches ${escapeHtml(name)}</h3>
+        <button type="button" class="link-btn" onclick="dashDrill(${jsStr(DASH.drill)})">Close</button></div>
+      <div id="dashObjTouch"><p class="muted loading">Loading...</p></div><div id="dashDrillDetail"></div>`;
+    showObjectTouch(name, "dashObjTouch", "dashDrillDetail");
+  } else {
+    const d = dashDrillItems(DASH.drill, s);
+    if (!d) { host.style.display = "none"; return; }
+    host.innerHTML = `<div class="dash-drill-head">
+        <h3>${escapeHtml(d.title)} <span class="count-chip">${d.items.length}</span></h3>
+        <div class="dash-drill-tools">
+          ${d.items.length > 12 ? `<input type="search" class="dash-drill-filter" placeholder="Filter" aria-label="Filter this list"
+             value="${escapeHtml(DASH.drillFilter)}" oninput="dashFilterDrill(this.value)">` : ""}
+          <button type="button" class="link-btn" onclick="dashDrill(${jsStr(DASH.drill)})">Close</button>
+        </div>
+      </div>
+      ${d.facets ? `<div class="dash-facets">${d.facets.map(f => `<button type="button" class="dash-facet${f.key === DASH.facet ? " on" : ""}"
+          onclick="dashSetFacet(${jsStr(f.key)})">${escapeHtml(f.label)} <b>${f.n}</b></button>`).join("")}</div>` : ""}
+      ${d.note ? `<p class="muted dash-drill-note">${escapeHtml(d.note)}</p>` : ""}
+      <div class="dash-drill-list" id="dashDrillList"></div>
+      <div id="dashDrillDetail"></div>`;
+    host._items = d.items;
+    renderDashDrillList();
+  }
+  if (scroll && host.scrollIntoView) host.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+function renderDashDrillList() {
+  const host = document.getElementById("dashDrill");
+  const list = document.getElementById("dashDrillList");
+  if (!host || !list) return;
+  const q = DASH.drillFilter.trim().toLowerCase();
+  const items = (host._items || []).filter(i => !q || i.label.toLowerCase().includes(q));
+  const shown = items.slice(0, DASH_LIST_CAP);
+  list.innerHTML = shown.length
+    ? shown.map(i => `<button type="button" class="dash-chip" onclick="${i.run}" title="${escapeHtml(i.label)}">
+        <span>${escapeHtml(i.label)}</span>${i.sub ? `<em>${escapeHtml(i.sub)}</em>` : ""}</button>`).join("")
+      + (items.length > shown.length ? `<span class="muted dash-more">+${items.length - shown.length} more &mdash; filter to narrow</span>` : "")
+    : `<span class="muted">Nothing matches &ldquo;${escapeHtml(DASH.drillFilter)}&rdquo;.</span>`;
+}
+
+function dashShowComponent(id) {
+  showComponent(id, "dashDrillDetail").then(() => {
+    const el = document.getElementById("dashDrillDetail");
+    if (el && el.scrollIntoView) el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  });
+}
+
+function dashFieldWriters(f) {
+  document.getElementById("fieldWriterBox").value = f;
+  findFieldWriters();
+  const el = document.getElementById("fieldWriterBox");
+  if (el && el.scrollIntoView) el.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+function dashSearch(q) {
+  document.getElementById("searchBox").value = q;
+  runSearch();
+  const el = document.getElementById("searchBox");
+  if (el && el.scrollIntoView) el.scrollIntoView({ behavior: "smooth", block: "center" });
 }
 
 async function runSearch() {
@@ -1156,20 +1718,26 @@ async function runSearch() {
     : `<p class="muted">Nothing matching "${escapeHtml(q)}" in customer-authored components.</p>`;
 }
 
-async function showComponent(id) {
+async function showComponent(id, hostId = null) {
   const card = await apiJson(`/api/orgs/${encodeURIComponent(CURRENT_ORG)}/components/${encodeURIComponent(id)}`, {}, null);
-  const host = document.getElementById("searchDetail") || document.getElementById("searchResults");
+  const host = (hostId && document.getElementById(hostId))
+    || document.getElementById("searchDetail") || document.getElementById("searchResults");
   host.innerHTML = card ? renderComponentCard(id, card) : `<p class="muted">No card for ${escapeHtml(id)}.</p>`;
 }
 
-async function showObjectTouch(name) {
+/** `hostId` / `compHostId` let the Dashboard's drill-down render this (and a
+ *  component opened from it) in place instead of in the search card. */
+async function showObjectTouch(name, hostId = null, compHostId = null) {
   const data = await apiJson(`/api/orgs/${encodeURIComponent(CURRENT_ORG)}/object-touch/${encodeURIComponent(name)}`, {}, {});
-  const host = document.getElementById("searchDetail") || document.getElementById("searchResults");
+  const host = (hostId && document.getElementById(hostId))
+    || document.getElementById("searchDetail") || document.getElementById("searchResults");
+  if (!host) return;
   const groups = Object.entries(data || {});
+  const open = c => compHostId ? `showComponent(${jsStr(c)}, ${jsStr(compHostId)})` : `showComponent('${escapeHtml(c)}')`;
   host.innerHTML = groups.length
-    ? `<div class="detail-block"><h3>Everything that touches ${escapeHtml(name)}</h3>` +
+    ? `<div class="detail-block">${hostId ? "" : `<h3>Everything that touches ${escapeHtml(name)}</h3>`}` +
       groups.map(([k, v]) => `<p><b>${escapeHtml(k)}</b> (${(v || []).length}): ` +
-        (v || []).map(i => `<span class="pill link" onclick="showComponent('${escapeHtml(typeof i === "string" ? i : i.component || "")}')">${escapeHtml(typeof i === "string" ? i : i.component || JSON.stringify(i))}</span>`).join(" ") +
+        (v || []).map(i => `<span class="pill link" onclick="${open(typeof i === "string" ? i : i.component || "")}">${escapeHtml(typeof i === "string" ? i : i.component || JSON.stringify(i))}</span>`).join(" ") +
         `</p>`).join("") + collapsibleJson("Raw JSON", data) + `</div>`
     : `<p class="muted">Nothing in the knowledgebase touches ${escapeHtml(name)}.</p>`;
 }
@@ -2290,12 +2858,30 @@ async function deleteLogs(ids) {
   await loadLogs();
 }
 
+/** Org + account pickers for tagging logs. Real dropdowns, not datalists:
+ *  a datalist hides its suggestions until you type, and filters them by the
+ *  pre-filled value -- so editing a tagged log showed no stored accounts at
+ *  all. Picking an org fills in that org's own account. */
 function tagFields(m = {}) {
+  const accounts = logAccountNames();
+  // Same account, different spelling ("ibm" vs "IBM") selects the existing
+  // option instead of looking like a brand-new one.
+  const current = m.account
+    ? (accounts.find(a => accountKey(a) === accountKey(m.account)) || m.account) : "";
   return [
-    { name: "org_id", label: "Org", value: m.org_id || "", placeholder: "Org ID (leave blank for none)",
-      options: Object.keys(ORGS).sort(), hint: "An org's own account is used when it has one." },
-    { name: "account", label: "Customer account", value: m.account || "", placeholder: "e.g. Acme Corp",
-      options: logAccountNames(), hint: "Clear a box to remove that tag." },
+    { name: "org_id", label: "Org", type: "select", value: m.org_id || "",
+      optionsHtml: orgOptionsHtml(m.org_id || "", { blank: "No org" }),
+      hint: "An org's own account is used when it has one.",
+      onChange: (orgId, { setValue }) => {
+        const acct = orgId && ORGS[orgId] ? accountDisplayName(ORGS[orgId].account) : null;
+        if (acct) setValue("account", acct);
+      } },
+    { name: "account", label: "Customer account", type: "select", value: current,
+      optionsHtml: `<option value="">No account</option>` + accounts.map(a =>
+        `<option value="${escapeHtml(a)}">${escapeHtml(a)}</option>`).join(""),
+      other: true, otherLabel: "New account…", placeholder: "e.g. Acme Corp",
+      hint: accounts.length ? "Choose “No org” / “No account” to remove a tag."
+                            : "No accounts yet — choose “New account…” to type one." },
   ];
 }
 
@@ -2315,9 +2901,9 @@ async function editLogTags(id) {
   const label = cleanTag(answer.label), org = cleanTag(answer.org_id), acct = cleanTag(answer.account);
   if (label !== (m.label || "")) body.label = label || null;
   if (org !== (m.org_id || "")) body.org_id = org || null;
-  if (acct !== (m.account || "") || "org_id" in body) body.account = acct || null;
+  if (accountKey(acct || "") !== accountKey(m.account || "") || "org_id" in body) body.account = acct || null;
   if (!Object.keys(body).length) return;
-  if (org && !ORGS[org]) { toast(`No org '${org}' that you can see.`, "error"); return; }
+  if ("org_id" in body && org && !ORGS[org]) { toast(`No org '${org}' that you can see.`, "error"); return; }
   const r = await patchLog(id, body);
   if (!r.ok) { toast("Could not save: " + r.error, "error"); return; }
   toast("Saved.", "ok");
@@ -2553,7 +3139,7 @@ function applyRole() {
 }
 
 // Must match APP_BUILD in app/main.py and the ?v= on index.html's assets.
-const CLIENT_BUILD = 28;
+const CLIENT_BUILD = 30;
 let SERVER_BUILD = null;   // null = not checked yet, 0 = a server too old to report one
 
 /** Static files are served fresh, but the server's Python is only loaded at

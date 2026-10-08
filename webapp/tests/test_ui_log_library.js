@@ -52,7 +52,7 @@ const state = {
     LOG("20260926T100000Z_old", { label: "Old one", owner: "dana", archived: true, archived_by: "dana" }),
     LOG("20250101T000000Z_legacy", { owner: null, can_manage: false }),
   ],
-  uploads: [], patches: [], deletes: [], serverBuild: 28,
+  uploads: [], patches: [], deletes: [], serverBuild: 30,
 };
 
 const routes = {
@@ -257,9 +257,37 @@ $("logOrg").value = "acmeprod"; logOrgChanged(); $("logStore").checked = true;
 await normalizeLog();
 await tick(20);
 check("an upload whose tags were dropped says why", $("logStatus").textContent.includes("ignored the owner and tags"), $("logStatus").textContent);
-S.serverBuild = 28;
+S.serverBuild = 30;
 await checkServerBuild();
 check("matching builds hide the banner", $("buildBanner").style.display === "none");
+
+log("\\n-- edit dialog lists stored accounts and orgs (2026-10-08 regression) --");
+{
+  const target = S.logs.find(l => l.can_manage) || S.logs[0];
+  target.org_id = null; target.account = "acme corp";
+  const pending = editLogTags(target.log_id);
+  await tick(5);
+  const orgSel = document.querySelector("#mf-org_id"), acctSel = document.querySelector("#mf-account");
+  check("org is a real dropdown of visible orgs", orgSel && orgSel.tagName === "SELECT"
+    && [...orgSel.options].some(o => o.value === "acmeprod"));
+  check("account is a real dropdown of stored accounts", acctSel && acctSel.tagName === "SELECT"
+    && [...acctSel.options].some(o => o.value === "Acme Corp"));
+  check("a differently-cased saved account selects the stored one", acctSel && acctSel.value === "Acme Corp", acctSel && acctSel.value);
+  orgSel.value = "loose"; orgSel.dispatchEvent(new window.Event("change"));
+  check("an org without an account leaves the account alone", acctSel.value === "Acme Corp");
+  acctSel.value = "__other__"; acctSel.dispatchEvent(new window.Event("change"));
+  const other = document.querySelector("#mf-account-other");
+  check("New account... reveals a text box", other && other.style.display !== "none");
+  other.value = "Globex";
+  let patched = null;
+  const origPatch = patchLog;
+  patchLog = async (id, body) => { patched = body; return { ok: true }; };
+  document.querySelector(".modal form").dispatchEvent(new window.Event("submit", { cancelable: true }));
+  await pending;
+  patchLog = origPatch;
+  check("saves the picked org and the typed account", patched && patched.org_id === "loose"
+    && patched.account === "Globex", JSON.stringify(patched));
+}
 
 log("\\n-- a reader --");
 CURRENT_USER = { username: "rita", role: "reader" };

@@ -249,6 +249,25 @@ check("askAbout opens the dock, so the record stays on screen",
 check("the question is pre-filled but not sent",
   (CHAT.el.input.value || "").startsWith("Which flows write"));
 check("nothing was sent", CHAT.streaming === false);
+
+log("\\n-- ask from another tab after using full screen (2026-10-08 regression) --");
+// Full-screen chat was used, then the engineer went to the Log Normalizer.
+// CHAT.mode stays "full", and askAbout used to pre-fill the hidden composer.
+enterChatFull();
+showView("logs");
+check("left full screen for another tab", CHAT.mode === "full"
+  && !document.body.classList.contains("chat-fullscreen"));
+askAbout("Analyze stored normalized log L1");
+check("Ask the assistant opens the dock from another tab", $("chatDock").classList.contains("open"));
+check("...with the question in the VISIBLE composer",
+  CHAT.mode === "dock" && $("chatDock").contains(CHAT.el.input)
+  && CHAT.el.input.value.startsWith("Analyze stored normalized log"));
+toggleChatDock(false);
+enterChatFull();
+askAbout("Asked while in full screen");
+check("in full screen it still pre-fills in place",
+  CHAT.mode === "full" && CHAT.el.input.value === "Asked while in full screen"
+  && !$("chatDock").classList.contains("open"));
 `;
 
 window.eval(read("app.js") + "\n;\n" + read("chat.js") + "\n;\n" + CHECKS);

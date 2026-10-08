@@ -649,7 +649,8 @@ async def normalize_log(log_text: str, label: Optional[str] = None, store: bool 
     normalized JSON -- execution units (with nesting depth and which threw),
     deduplicated exceptions with type/message/stack, collapsed SOQL and DML
     summaries, callouts, flow events, validation failures, final governor
-    limits, and any component names the log itself mentions. The raw log is
+    limits, any component names the log itself mentions, and `async_jobs`
+    (job classes constructed/enqueued, by which method and line). The raw log is
     processed in memory and never stored; if `store` is true the derived
     JSON (never the raw log) is kept in the library, owned by you, and a
     `log_id` is returned. When storing, tag it with the customer it came from:
@@ -732,12 +733,49 @@ async def update_normalized_log(log_id: str, archived: Optional[bool] = None,
 
 
 @mcp.tool()
-async def get_normalized_log(log_id: str) -> dict:
-    """Get the full normalized JSON for one stored log (plus its metadata).
+async def get_normalized_log(log_id: str, sections: Optional[list[str]] = None,
+                             offset: int = 0, limit: Optional[int] = None) -> dict:
+    """Get the normalized JSON for one stored log (plus its metadata).
     Use this to analyze a previously-normalized log and produce an RCA and
     suggested resolution from the log alone -- see normalize_log for what the
-    log-only analysis should cover and how to caveat it."""
-    return await _get(f"/api/logs/{log_id}")
+    log-only analysis should cover and how to caveat it.
+
+    A large log may come back shaped to fit, with a `_truncated` note naming
+    the trimmed sections. Page one of them with `sections` (e.g.
+    ["soql_summary"]) plus `offset` / `limit`, which apply to each list
+    section in log order (offset = the `_i` index shown on a trimmed item).
+    Sections: header, execution_units, exceptions, soql_summary, dml_summary,
+    callouts, user_debug, validation_failures, flow_events, limits_final,
+    limits_by_namespace, involved_components, and (when async work ran)
+    async_jobs: whether the transaction is itself async, which job classes
+    were constructed / enqueued by which method and line, and the enqueue
+    that tripped an async limit. Logs normalized before 2026-10-08 lack
+    async_jobs; re-normalize the raw log to get it."""
+    result = await _get(f"/api/logs/{log_id}")
+    if not sections or not isinstance(result, dict) or not isinstance(result.get("normalized_log"), dict):
+        return result
+    full = result["normalized_log"]
+    wanted = [s.strip() for s in sections if s and s.strip()]
+    offset = max(int(offset or 0), 0)
+    picked, page = {}, {}
+    for s in wanted:
+        if s not in full:
+            continue
+        v = full[s]
+        if isinstance(v, list):
+            end = len(v) if limit is None else offset + max(int(limit), 0)
+            picked[s] = v[offset:end]
+            page[s] = {"total": len(v), "offset": offset, "returned": len(picked[s]),
+                       "next_offset": end if end < len(v) else None}
+        else:
+            picked[s] = v
+    result["normalized_log"] = picked
+    result["_page"] = page
+    missing = sorted(set(wanted) - set(full))
+    if missing:
+        result["_missing_sections"] = missing
+        result["_available_sections"] = sorted(full)
+    return result
 
 
 if __name__ == "__main__":

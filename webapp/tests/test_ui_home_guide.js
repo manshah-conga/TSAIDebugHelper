@@ -409,7 +409,18 @@ check("Unassigned offers to organize", document.querySelector('.acct-group[data-
 check("the nudge goes once accounts exist", $("acctNudge").innerHTML === "");
 check("table gets one header row per account", $("orgsTable").querySelectorAll("tr.acct-row").length === 3
   && $("orgsTable").querySelectorAll("tr[data-org]").length === 4);
-check("header picker groups by account", [...$("orgSelect").querySelectorAll("optgroup")].map(g => g.label).join() === "Acme,Globex,Unassigned");
+check("header switcher names the active org's account", $("orgSwitchBtn").textContent.includes("Acme"));
+openOrgSwitcher();
+check("header switcher groups by account", [...document.querySelectorAll("#orgSwitchList .org-switch-group-name")].map(g => g.textContent.trim()).join() === "Acme,Globex,Unassigned");
+check("...and marks the active org", document.querySelector("#orgSwitchList .org-switch-item.current").dataset.org === "acme_prod");
+$("orgSwitchInput").value = "globex"; $("orgSwitchInput").dispatchEvent(new window.Event("input"));
+check("...filters by account name", [...document.querySelectorAll("#orgSwitchList .org-switch-item")].map(i => i.dataset.org).join() === "globex");
+closeOrgSwitcher();
+check("...and closes", !$("orgSwitchPop"));
+showView("dashboard");
+check("the org list moves to the Dashboard", $("orgsCard").parentElement.id === "orgsSlotDash" && $("orgsCard").classList.contains("in-dashboard"));
+showView("connections");
+check("...and back to Home", $("orgsCard").parentElement.id === "orgsSlotHome" && !$("orgsCard").classList.contains("in-dashboard"));
 
 await toggleAccountCollapsed("acme");
 check("folding saves a preference", (GUIDE.prefs.collapsed_accounts || []).includes("acme"));

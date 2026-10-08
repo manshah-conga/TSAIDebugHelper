@@ -353,7 +353,7 @@ const TOURS = {
     { el: "#orgsCard", view: "connections", title: "Your orgs",
       body: "Freshness, open incidents and quick actions on each card. Star the ones you work on to keep them at the top." },
     { el: "#orgPicker", title: "The active org",
-      body: "Dashboard, Incidents, Known Issues and the assistant all act on the org chosen here." },
+      body: "Dashboard, Incidents, Known Issues and the assistant all act on the org chosen here. Click it to search and switch, grouped by customer account." },
     { el: "#paletteTrigger", title: "Jump anywhere",
       body: "Ctrl+K (Cmd+K on Mac) opens this from any screen: tabs, orgs, components, fields -- or type a question for the assistant." },
     { el: "#navChat", title: "Ask the assistant",

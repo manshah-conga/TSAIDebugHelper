@@ -133,9 +133,185 @@ def involved_components(execution_units, exceptions, index_ids=None):
     return sorted(involved)
 
 
+# ---------- async job evidence ----------
+#
+# 2026-10-08: "Too many queueable jobs added to the queue: 2" in a Queueable
+# (Apttus CreateOrderQJob) -- the RCA needs WHICH jobs were enqueued, and the
+# normalizer dropped every event that could say so. With APEX_CODE >= FINE a
+# log has METHOD_ENTRY / CONSTRUCTOR_ENTRY (who called whom, at which line);
+# with SYSTEM >= FINE it also has SYSTEM_METHOD_ENTRY for System.enqueueJob
+# itself. Together they name the job class and the enqueuing line.
+
+ASYNC_SYSTEM_METHODS = (
+    ("System.enqueueJob", "System.enqueueJob"),
+    ("Database.executeBatch", "Database.executeBatch"),
+    ("System.scheduleBatch", "System.scheduleBatch"),
+    ("System.schedule", "System.schedule"),
+)
+JOB_NAME_RE = re.compile(r"queu|queable|job|batch|schedul|async|future|worker", re.I)
+ASYNC_LIMIT_RE = re.compile(r"Too many (queueable jobs added to the queue|future calls|"
+                            r"batch jobs|async)\S*:?\s*(\d+)?", re.I)
+LINE_RE = re.compile(r"^\[(\d+)\]$")
+MAX_JOB_CONSTRUCTIONS = 60
+_LEVELS = ("NONE", "ERROR", "WARN", "INFO", "DEBUG", "FINE", "FINER", "FINEST")
+
+
+def _line_no(field):
+    m = LINE_RE.match((field or "").strip())
+    return int(m.group(1)) if m else None
+
+
+def _callee(sig):
+    """'Ns.Class.method(List<X>, Id)' -> 'Ns.Class.method'."""
+    return (sig or "").split("(", 1)[0].strip()
+
+
+def _level_at_least(levels, cat, want):
+    have = (levels.get(cat) or "NONE").upper()
+    return have in _LEVELS and _LEVELS.index(have) >= _LEVELS.index(want)
+
+
+class _AsyncTracker:
+    """Method-frame stack per code unit, plus what async work each frame
+    started. Fed one event at a time from parse_log_text."""
+
+    def __init__(self):
+        self.frames = []            # [{"unit": label, "methods": [name, ...], "last_ctor": {...}}]
+        self.dispatches = []
+        self.constructions = {}     # (class, line, caller) -> entry
+        self.failed = []
+        self.managed_entries = 0
+
+    def caller(self):
+        if not self.frames:
+            return None
+        f = self.frames[-1]
+        return f["methods"][-1] if f["methods"] else f["unit"]
+
+    def unit_started(self, label):
+        self.frames.append({"unit": label, "methods": [], "last_ctor": None})
+
+    def unit_finished(self):
+        if self.frames:
+            self.frames.pop()
+
+    def method_entry(self, parts):
+        if self.frames:
+            self.frames[-1]["methods"].append(_callee(parts[-1]))
+
+    def method_exit(self, parts):
+        """Pop back to the matching entry. Logs are not perfectly paired
+        (some exits have no entry), so an exit naming nothing on the stack
+        is ignored rather than popping an unrelated frame."""
+        if not self.frames:
+            return
+        stack, name = self.frames[-1]["methods"], _callee(parts[-1])
+        for i in range(len(stack) - 1, -1, -1):
+            if stack[i] == name:
+                del stack[i:]
+                return
+
+    def constructor(self, parts):
+        cls = (parts[-1] or "").strip()
+        line = _line_no(parts[2]) if len(parts) > 2 else None
+        if not cls or cls.startswith("<"):
+            return
+        entry = {"class": cls, "line": line, "caller": self.caller(),
+                 "code_unit": self.frames[-1]["unit"] if self.frames else None}
+        if self.frames:
+            self.frames[-1]["last_ctor"] = entry
+        if JOB_NAME_RE.search(cls):
+            key = (cls, line, entry["caller"])
+            if key in self.constructions:
+                self.constructions[key]["count"] += 1
+            elif len(self.constructions) < MAX_JOB_CONSTRUCTIONS:
+                self.constructions[key] = dict(entry, count=1)
+
+    def _nearest_ctor(self, line):
+        """The last object constructed in this frame -- `System.enqueueJob(new
+        X())` constructs X on the same line; `X j = new X(); enqueueJob(j);` a
+        line or two before. The line is reported so the reader can judge."""
+        c = self.frames[-1]["last_ctor"] if self.frames else None
+        if c and c.get("caller") == self.caller() and (line is None or c["line"] is None
+                                                       or 0 <= line - c["line"] <= 25):
+            return {"class": c["class"], "line": c["line"]}
+        return None
+
+    def system_method(self, parts):
+        sig = parts[-1] if parts else ""
+        for prefix, mech in ASYNC_SYSTEM_METHODS:
+            if sig.startswith(prefix + "("):
+                line = _line_no(parts[2]) if len(parts) > 2 else None
+                self.dispatches.append({
+                    "mechanism": mech, "line": line, "caller": self.caller(),
+                    "code_unit": self.frames[-1]["unit"] if self.frames else None,
+                    "job_class_guess": self._nearest_ctor(line), "failed": False,
+                })
+                return
+
+    def exception(self, parts, msg):
+        m = ASYNC_LIMIT_RE.search(msg or "")
+        if not m:
+            return
+        line = _line_no(parts[2]) if len(parts) > 3 else None
+        # The enqueue that tripped the limit is the last dispatch at this line.
+        for d in reversed(self.dispatches):
+            if d["line"] == line and d["caller"] == self.caller():
+                d["failed"] = True
+                break
+        self.failed.append({
+            "message": truncate(msg, 200), "line": line, "caller": self.caller(),
+            "code_unit": self.frames[-1]["unit"] if self.frames else None,
+            "attempted_count": int(m.group(2)) if m.group(2) else None,
+            "job_class_guess": self._nearest_ctor(line),
+        })
+
+    def result(self, header, execution_units):
+        levels = header.get("log_levels") or {}
+        visibility = []
+        if not _level_at_least(levels, "APEX_CODE", "FINE"):
+            visibility.append("APEX_CODE is below FINE: method and constructor entries are not "
+                              "logged, so job classes and callers cannot be seen.")
+        if not _level_at_least(levels, "SYSTEM", "FINE"):
+            visibility.append("SYSTEM is below FINE: System.enqueueJob / Database.executeBatch "
+                              "calls themselves are not logged. job_constructions (classes that "
+                              "look like jobs, constructed with caller and line) are the best "
+                              "evidence; re-capture with SYSTEM=FINE to see every enqueue.")
+        if self.managed_entries:
+            visibility.append(f"Managed-package code ran {self.managed_entries} time(s) "
+                              f"(ENTERING_MANAGED_PKG); its internals, including any enqueues, "
+                              f"are hidden from the log.")
+        top = next((u["label"] for u in execution_units if u["depth"] == 0), None)
+        context = None
+        if top:
+            looks_async = bool(JOB_NAME_RE.search(top)) and "__sfdc_trigger" not in top
+            context = {
+                "entry_unit": top,
+                "likely_async": looks_async,
+                "note": ("Entry unit looks like an async job (Queueable/Batch/Future). In an "
+                         "async transaction only ONE System.enqueueJob is allowed, so a second "
+                         "enqueue anywhere in this transaction -- including from triggers it "
+                         "fires -- throws 'Too many queueable jobs added to the queue: 2'. "
+                         "In a synchronous transaction the limit is 50.") if looks_async else None,
+            }
+        # Visibility notes alone are noise (SYSTEM=DEBUG is the default), so
+        # the section exists only when something async actually showed up.
+        if not (self.dispatches or self.constructions or self.failed
+                or (context and context["likely_async"])):
+            return None
+        return {
+            "context": context,
+            "dispatches": self.dispatches[:100],
+            "failed_async_limit": self.failed,
+            "job_constructions": list(self.constructions.values()),
+            "visibility": visibility,
+        }
+
+
 def parse_log_text(text, index_ids=None):
     lines = text.splitlines()
     header = parse_debug_level_header(lines[0] if lines else "")
+    tracker = _AsyncTracker()
 
     code_unit_stack, execution_units = [], []
     soql_open, dml_open = [], []
@@ -169,9 +345,21 @@ def parse_log_text(text, index_ids=None):
             frame = {"label": label, "depth": len(code_unit_stack), "had_exception": False}
             execution_units.append(frame)
             code_unit_stack.append(frame)
+            tracker.unit_started(label)
         elif evt == "CODE_UNIT_FINISHED":
             if code_unit_stack:
                 code_unit_stack.pop()
+            tracker.unit_finished()
+        elif evt == "METHOD_ENTRY":
+            tracker.method_entry(parts)
+        elif evt == "METHOD_EXIT":
+            tracker.method_exit(parts)
+        elif evt == "CONSTRUCTOR_ENTRY":
+            tracker.constructor(parts)
+        elif evt == "SYSTEM_METHOD_ENTRY":
+            tracker.system_method(parts)
+        elif evt == "ENTERING_MANAGED_PKG":
+            tracker.managed_entries += 1
         elif evt == "SOQL_EXECUTE_BEGIN":
             query = parts[-1] if len(parts) >= 4 else ""
             soql_open.append({"query": query})
@@ -211,6 +399,7 @@ def parse_log_text(text, index_ids=None):
             exceptions.append(current_exception)
             for frame in code_unit_stack:
                 frame["had_exception"] = True
+            tracker.exception(parts, msg)
         elif evt == "FATAL_ERROR":
             in_fatal_stack = True
             current_stack_lines = []
@@ -258,6 +447,7 @@ def parse_log_text(text, index_ids=None):
     ]
 
     involved = involved_components(execution_units, exceptions, index_ids)
+    async_jobs = tracker.result(header, execution_units)
 
     return {
         "header": header,
@@ -268,4 +458,5 @@ def parse_log_text(text, index_ids=None):
         "callouts": callouts, "user_debug": user_debug, "validation_failures": validation_failures,
         "flow_events": flow_events, "limits_final": limits_final,
         "limits_by_namespace": limits_by_namespace, "involved_components": involved,
+        **({"async_jobs": async_jobs} if async_jobs else {}),
     }

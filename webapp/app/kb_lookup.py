@@ -24,7 +24,7 @@ IDENTITY_KEYS = ("id", "type", "schema_version", "extractor_version", "extracted
                  "source_api_version", "namespace", "is_managed", "is_customer_authored",
                  "source_first_seen", "source_last_changed",
                  "loc", "sharing", "is_test_class", "extends", "implements", "object",
-                 "events", "label", "status", "mechanism", "file")
+                 "events", "label", "status", "mechanism", "file", "_stale", "_resolved")
 
 # Digest order: what answers the most questions per byte goes first. Keys not
 # listed sit between these and the bulky tail, so a flow's `elements` (its main
@@ -199,3 +199,76 @@ def shape(card, max_chars):
                                "Do not conclude something is absent from a trimmed section.",
     }
     return out
+
+
+# ---------- stale cards ----------
+#
+# A card extracted by an older extractor simply LACKS sections added later.
+# On 2026-10-08 an org still at 3.1.0 was asked "which Queueables does
+# IbmcOrderTriggerHandler.onBeforeUpdate enqueue?". Its card had no
+# async_dispatches (added in 3.2.0) and no call_sites (3.3.0), the model read
+# `_missing_sections: ["call_sites"]` as "nothing there", and the answer was
+# "the card doesn't confirm it" instead of "Refresh the org". Saying which
+# features a card predates turns that absence into an actionable gap.
+
+# (version that introduced it, section, what it answers)
+APEX_FEATURES = (
+    ("3.2.0", "async_dispatches",
+     "System.enqueueJob / Database.executeBatch / System.schedule calls, with the job class, "
+     "method and line -- e.g. which Queueable a method enqueues"),
+    ("3.3.0", "call_sites",
+     "per-method outbound calls in source order with line and enclosing conditions"),
+)
+APEX_TYPES = ("ApexClass", "ApexTrigger")
+
+
+def _ver(v):
+    try:
+        return tuple(int(x) for x in str(v).split("."))
+    except (TypeError, ValueError):
+        return (0,)
+
+
+def stale_note(card):
+    """None if the card has every feature, else a `_stale` block."""
+    if not isinstance(card, dict) or card.get("type") not in APEX_TYPES:
+        return None
+    have = card.get("extractor_version")
+    missing = [{"section": sec, "added_in": ver, "answers": what}
+               for ver, sec, what in APEX_FEATURES
+               if _ver(have) < _ver(ver) and sec not in card]
+    if not missing:
+        return None
+    return {
+        "extractor_version": have,
+        "missing_features": missing,
+        "meaning": "This card was extracted before these sections existed. Their absence is NOT "
+                   "evidence that the code has no such calls. Tell the user the org needs a "
+                   "Refresh (Connections tab) to answer this from static metadata, and meanwhile "
+                   "answer only from what the card and the log do show.",
+    }
+
+
+def org_stale_note(index, sample=400):
+    """Org-level version of stale_note, from a sample of Apex cards: used by
+    routes (inbound references) whose answer is built from many cards."""
+    vers = []
+    for card in index.values():
+        if isinstance(card, dict) and card.get("type") in APEX_TYPES:
+            vers.append(_ver(card.get("extractor_version")))
+            if len(vers) >= sample:
+                break
+    if not vers:
+        return None
+    oldest = min(vers)
+    missing = [{"section": sec, "added_in": ver, "answers": what}
+               for ver, sec, what in APEX_FEATURES if oldest < _ver(ver)]
+    if not missing:
+        return None
+    return {
+        "extractor_version": ".".join(str(x) for x in oldest),
+        "missing_features": missing,
+        "meaning": "This org was extracted before these features existed, so edges they create "
+                   "(e.g. who enqueues a Queueable via System.enqueueJob) are missing from this "
+                   "result. An empty or short list is NOT evidence. The org needs a Refresh.",
+    }

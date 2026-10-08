@@ -80,6 +80,8 @@ async function togglePin(id) {
   await savePrefs({ pinned_orgs: [...pins] });
   renderOrgsTable();
   renderHomeOrgs();
+  renderOrgPicker();
+  if (typeof renderDashHead === "function") renderDashHead();
 }
 
 // =====================================================================
@@ -146,6 +148,7 @@ function renderHome() {
   renderReaderFixes();
   renderMcpCard();
   renderHomeOrgs();
+  if (typeof renderDashHead === "function") renderDashHead();
   showTriageKind();
 }
 
@@ -561,7 +564,7 @@ function orgCardHtml(id, o, st) {
       <div class="org-card-top">
         ${pinButton(id)}
         <div class="org-card-title">
-          <a class="org-card-name" title="${escapeHtml(o.name || id)}" onclick="setActiveOrg('${a}'); showView('dashboard')">${escapeHtml(o.name || id)}</a>
+          <a class="org-card-name" title="${escapeHtml(o.name || id)}" onclick="openOrgDashboard('${a}')">${escapeHtml(o.name || id)}</a>
           <div class="muted mono">${envBadge(o)}${escapeHtml(id)}${active ? ` <span class="active-tag">active</span>` : ""}</div>
         </div>
         <div class="org-card-vis">${visibilityCell(id, o)}</div>
@@ -583,7 +586,7 @@ function orgCardHtml(id, o, st) {
       <div class="org-card-inflight"></div>
       <div class="org-card-actions">
         <button type="button" class="secondary" onclick="setActiveOrg('${a}'); openChatFull()">Ask</button>
-        <button type="button" class="secondary" onclick="setActiveOrg('${a}'); showView('dashboard')">Dashboard</button>
+        <button type="button" class="secondary" onclick="openOrgDashboard('${a}')">Dashboard</button>
         <button type="button" class="secondary" onclick="setActiveOrg('${a}'); showView('incidents')">Incidents</button>
         ${o.can_manage ? `<button type="button" class="secondary${stale ? " emphasis" : ""}" onclick="refreshOrg('${a}')">Refresh</button>` : ""}
         <span class="org-card-links">

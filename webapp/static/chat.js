@@ -744,6 +744,17 @@ function renderConfirmCard(c) {
 
 async function confirmPendingTool(callId, approve) {
   CHAT.pendingConfirm = null;
+  // The server settles the parked call itself (runs it, or marks it not run),
+  // so the card goes now rather than lingering until the next reload.
+  for (const m of CHAT.messages) {
+    for (const c of (m.tool_calls || [])) {
+      if (c.id === callId) {
+        c.pending = false;
+        if (!approve) { c.ok = false; c.preview = "not run -- you declined it"; }
+      }
+    }
+  }
+  renderTranscript();
   if (!approve) {
     CHAT.messages.push({ role: "user", content: "Don't run that -- explain what you were going to do instead." });
     renderTranscript();
@@ -1287,7 +1298,13 @@ async function renderChatQuota(known) {
  *  from there is that the thing being asked about stays on screen next to the
  *  answer. Full screen would cover it up. */
 function askAbout(question) {
-  if (CHAT.mode === "full") {
+  // CHAT.mode only says where the composer was last MOUNTED. After someone
+  // leaves full-screen chat for another tab it stays "full", so this used to
+  // pre-fill a composer inside a hidden view -- the click appeared to do
+  // nothing. Only skip the dock when the chat view is actually on screen.
+  const fullVisible = CHAT.mode === "full"
+    && !!document.querySelector("#view-chat.active");
+  if (fullVisible) {
     // ...unless they are already in full screen, in which case yanking them
     // out of it would be the more surprising move.
     prefillChat(question);

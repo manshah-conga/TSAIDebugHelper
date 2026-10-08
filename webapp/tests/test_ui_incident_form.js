@@ -59,7 +59,7 @@ const state = {
 
 const routes = {
   "/api/auth/me": () => ({ status: 401 }),
-  "/api/build": () => ({ json: { build: 28 } }),
+  "/api/build": () => ({ json: { build: 30 } }),
   "/api/me/guide": () => ({ status: 404 }),
   "/api/home": () => ({ json: { orgs: {} } }),
   "/api/orgs/": (url, opts) => {

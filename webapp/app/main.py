@@ -250,7 +250,7 @@ def change_own_password(req: ChangePasswordRequest, ident=Depends(auth.require_r
 # after an update a browser can be running new UI against an old server that
 # silently ignores the new fields (log tags were dropped exactly this way).
 # The page compares the two and tells the person to restart the server.
-APP_BUILD = 28
+APP_BUILD = 30
 
 
 @app.get("/api/build")
@@ -772,6 +772,12 @@ def get_component(org_id: str, component_id: str, sections: Optional[str] = None
         card = kb_lookup.shape(card, max(2000, min(int(max_chars), 200000)))
     if note:
         card = dict(card, _resolved=note)
+    # Only for callers asking for a shaped card (MCP / chat always do); the
+    # UI's plain fetch gets the card exactly as stored.
+    if sections or method or max_chars:
+        stale = kb_lookup.stale_note(kb["org_index"][cid])
+        if stale:
+            card = dict(card, _stale=stale)
     return card
 
 
@@ -852,6 +858,9 @@ def get_inbound(org_id: str, component_id: str):
     if apex_rows and not any("call_sites" in r for r in apex_rows):
         result["_note"] = ("These rows have no call_sites (method/line/conditions) because the org "
                            "was extracted before extractor 3.3.0. Refresh the org to get them.")
+    stale = kb_lookup.org_stale_note(kb["org_index"])
+    if stale:
+        result["_stale"] = stale
     return result
 
 

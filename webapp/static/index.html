@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>TS Intelligent Debug Helper</title>
-<link rel="stylesheet" href="/static/style.css?v=28">
+<link rel="stylesheet" href="/static/style.css?v=30">
 </head>
 <body>
 
@@ -76,9 +76,12 @@
     <kbd id="paletteKbd">Ctrl K</kbd>
   </button>
   <div class="header-right">
+    <!-- The active org. A button + popover (app.js renderOrgPicker), not a
+         native <select>: it is searchable, grouped by account, and shows the
+         same env badges / stars / stale dots as the org cards. -->
+    <div id="orgPicker" class="org-picker" data-tour-anchor="org-picker"></div>
     <div class="header-meta">
       <div class="sub" id="userInfo"></div>
-      <div class="sub" id="orgPicker"></div>
     </div>
     <button type="button" id="quotaChip" class="quota-chip" data-tour-anchor="quota" style="display:none;"
             onclick="showView('usage')" title="Your LLM allowance -- click for details"></button>
@@ -190,6 +193,10 @@
       <div id="createStatus" class="status-line"></div>
     </div>
 
+    <!-- The org list is ONE component shared by Home and Org Dashboard:
+         showView() moves #orgsCard between #orgsSlotHome and #orgsSlotDash,
+         so ids stay unique and every renderer keeps working unchanged. -->
+    <div id="orgsSlotHome" class="orgs-slot">
     <div class="card" id="orgsCard" data-tour="orgs">
       <div class="card-head">
         <h2>Accounts &amp; orgs</h2>
@@ -206,7 +213,8 @@
         </div>
       </div>
       <p class="muted">Orgs are grouped by customer account. You see every public org, plus your own private
-        ones; admins see all. Star an org or an account to keep it at the top.</p>
+        ones; admins see all. Star an org or an account to keep it at the top.<span class="dash-only">
+        Click an org to open its knowledgebase below.</span></p>
       <div id="acctNudge"></div>
       <div id="orgsLayout" class="orgs-layout">
         <aside id="acctRail" class="acct-rail" aria-label="Accounts" style="display:none;"></aside>
@@ -221,26 +229,40 @@
         </div>
       </div>
     </div>
+    </div><!-- /orgsSlotHome -->
   </section>
 
   <section id="view-dashboard" class="view">
-    <div class="card">
-      <h2 id="dashOrgTitle">Org stats</h2>
-      <div id="dashStats" class="grid2"></div>
+    <!-- Top: the same Accounts & orgs list as Home (moved here by showView).
+         Below: the selected org's knowledgebase, then the two lookups. -->
+    <div id="orgsSlotDash" class="orgs-slot"></div>
+
+    <div class="card org-detail" id="dashDetail">
+      <div id="dashHead"></div>
+      <div id="dashStats"></div>
     </div>
-    <div class="card" data-tour="dashboard-search">
-      <h2>Search the knowledgebase</h2>
-      <label>Component, object, or field name (partial match)</label>
-      <input id="searchBox" placeholder="e.g. Increment_Adjustment__c" onkeydown="if(event.key==='Enter') runSearch()">
-      <button class="secondary" onclick="runSearch()">Search</button>
-      <div id="searchResults"></div>
-    </div>
-    <div class="card" data-tour="dashboard-writers">
-      <h2>Find who writes a field (no exception needed)</h2>
-      <label>Field API Name</label>
-      <input id="fieldWriterBox" placeholder="Increment_Adjustment__c" onkeydown="if(event.key==='Enter') findFieldWriters()">
-      <button class="secondary" onclick="findFieldWriters()">Find writers</button>
-      <div id="fieldWriterResults"></div>
+
+    <div class="dash-tools">
+      <div class="card" data-tour="dashboard-search">
+        <div class="card-head"><h2>Search the knowledgebase</h2></div>
+        <p class="muted">Components, objects and fields in the active org whose names contain what you type.</p>
+        <div class="inline-form">
+          <input id="searchBox" placeholder="e.g. Increment_Adjustment__c" aria-label="Component, object, or field name (partial match)"
+                 onkeydown="if(event.key==='Enter') runSearch()">
+          <button class="primary" onclick="runSearch()">Search</button>
+        </div>
+        <div id="searchResults"></div>
+      </div>
+      <div class="card" data-tour="dashboard-writers">
+        <div class="card-head"><h2>Find who writes a field</h2></div>
+        <p class="muted">Every Apex, Flow, Process Builder and Workflow writer of a field &mdash; no exception or log needed.</p>
+        <div class="inline-form">
+          <input id="fieldWriterBox" placeholder="Increment_Adjustment__c" aria-label="Field API name"
+                 onkeydown="if(event.key==='Enter') findFieldWriters()">
+          <button class="primary" onclick="findFieldWriters()">Find writers</button>
+        </div>
+        <div id="fieldWriterResults"></div>
+      </div>
     </div>
   </section>
 
@@ -766,13 +788,13 @@
 </aside>
 
 </div>
-<script src="/static/app.js?v=28"></script>
-<script src="/static/chat.js?v=28"></script>
-<script src="/static/activity.js?v=28"></script>
+<script src="/static/app.js?v=30"></script>
+<script src="/static/chat.js?v=30"></script>
+<script src="/static/activity.js?v=30"></script>
 <!-- Home page + command palette, then onboarding/help. Both are optional
      layers over app.js: every call into them from app.js is guarded, so a
      cached page that loads without them still works. -->
-<script src="/static/home.js?v=28"></script>
-<script src="/static/guide.js?v=28"></script>
+<script src="/static/home.js?v=30"></script>
+<script src="/static/guide.js?v=30"></script>
 </body>
 </html>

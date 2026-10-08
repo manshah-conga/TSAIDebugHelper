@@ -45,6 +45,7 @@ from . import kb_lookup
 from . import limits
 from . import llm
 from . import llm_config
+from . import log_shape
 from . import secrets_store
 from . import usage as usage_ledger
 from .common_now import iso_now
@@ -105,6 +106,9 @@ MAX_TOOL_ROUNDS = int(os.environ.get("TS_CHAT_MAX_TOOL_ROUNDS", "25"))
 # warned is the difference between a useful partial answer and no answer.
 WRAP_UP_MARGIN = 4
 MAX_TOOL_RESULT_BYTES = int(os.environ.get("TS_CHAT_MAX_TOOL_RESULT_BYTES", "24000"))
+# A normalized log is the whole basis of a log RCA; ~12k tokens is affordable
+# on every supported model and holds most logs after compaction.
+MAX_LOG_RESULT_BYTES = int(os.environ.get("TS_CHAT_MAX_LOG_RESULT_BYTES", "48000"))
 TURN_DEADLINE_SECONDS = float(os.environ.get("TS_CHAT_TURN_SECONDS", "300"))
 
 _SCHEMA_CACHE = {}
@@ -237,6 +241,21 @@ def _truncate(result):
         text = json.dumps(result, default=str)
     except (TypeError, ValueError):
         text = str(result)
+    # A normalized log ({"meta", "normalized_log": {...}}) IS the evidence for
+    # a log RCA, so it gets its own, larger budget and a log-aware shaper.
+    # kb_lookup.shape() is for component cards: it cannot descend into the
+    # nested normalized_log dict and used to replace the whole thing with
+    # {"omitted": true} for any log over the cap.
+    if log_shape.is_log_result(result):
+        if len(text) <= MAX_LOG_RESULT_BYTES:
+            return text, False
+        try:
+            shaped = json.dumps(log_shape.shape_log_result(result, MAX_LOG_RESULT_BYTES - 200),
+                                default=str)
+            if len(shaped) <= MAX_LOG_RESULT_BYTES:
+                return shaped, True
+        except Exception:                               # noqa: BLE001 - fall back to the cut
+            pass
     if len(text) <= MAX_TOOL_RESULT_BYTES:
         return text, False
     # A dict is trimmed whole-item, section by section, with a note naming
@@ -310,6 +329,24 @@ def system_prompt(username, org_id, org_label=None, org_list=None):
         "field update overwrites is one of the most common causes of 'the value is wrong'.",
         "- Check list_known_issues before concluding. If this signature has been seen "
         "and resolved before, that answer is already on file.",
+        "- A normalized log that comes back with a `_truncated` note is still evidence: "
+        "reason over what is shown, and page a trimmed section with get_normalized_log "
+        "(sections / offset / limit) if the answer depends on it.",
+        "- Async-limit errors ('Too many queueable jobs added to the queue', future calls, "
+        "batch jobs): name the jobs, do not stop at the limit. Read the log's `async_jobs` "
+        "(context = is the transaction itself async, where only ONE enqueue is allowed; "
+        "dispatches / job_constructions = which job classes were built and enqueued, by "
+        "which method and line; failed_async_limit = the enqueue that tripped it). Then "
+        "open the failing method with get_component(method=...) and read its "
+        "async_dispatches, and use get_inbound_references on each job class to find other "
+        "enqueuers. Also scan user_debug lines just before the failure for job names.",
+        "- A card or result with `_stale` predates sections such as async_dispatches or "
+        "call_sites. Their absence there is not evidence; say the org needs a Refresh and "
+        "what that would answer.",
+        "- Write tools (file_incident, record_resolution, set_org_visibility, "
+        "set_org_account) need a human click. Propose one only when the user asks to "
+        "file, record or change something -- never as a way to get more evidence: a "
+        "filed incident holds the same normalized log you can already read.",
         "",
         "ANSWER WITH JUDGEMENT, NOT A DUMP. A tool result is evidence to reason over, "
         "never the answer itself. Relaying every row a tool returned is the most common "
@@ -507,15 +544,35 @@ async def run_turn(ident, chat_id, user_text, org_id, org_label, model,
         return
 
     history = chat_store.load_messages(username, chat_id)
+
+    # Settle any write call parked for confirmation BEFORE asking the model
+    # anything. The confirm click used to just replay the turn with the call
+    # id and hope the model re-issued the same call with the SAME id -- but a
+    # provider mints a fresh id on every completion, so the id never matched,
+    # the call was parked again, and every "Run it" click looped (seen as
+    # file_incident asked for three times). Now the parked call itself runs.
+    seen_calls = set()
+    ran_confirmed = False
+    async for frame in _settle_pending(history, confirmed, ident, seen_calls):
+        if frame is True:
+            ran_confirmed = True
+        else:
+            yield frame
+    if ran_confirmed or any(m.get("_settled") for m in history):
+        for m in history:
+            m.pop("_settled", None)
+        chat_store.save_messages(username, chat_id, history)
+
     user_msg = {"role": "user", "content": user_text, "at": iso_now(), "org_id": org_id}
-    new_messages = [user_msg]
+    # A confirm click is not something the user said; the UI does not show
+    # it, and the model should simply continue from the tool result.
+    new_messages = [] if ran_confirmed else [user_msg]
 
     sys_msg = system_prompt(username, org_id, org_label)
-    wire = to_provider_messages(sys_msg, history + [user_msg])
+    wire = to_provider_messages(sys_msg, history + new_messages)
     schemas = await tool_schemas(bool(org_id))
 
     final_usage = None
-    seen_calls = set()
     rounds_used = 0
     used_text_tool_calls = False
     # Accounting for the usage ledger. `turn_error` holds the first error code
@@ -665,6 +722,19 @@ async def run_turn(ident, chat_id, user_text, org_id, org_label, model,
                 executed.append(_record(call, payload, ok=False, ms=0))
                 yield sse("tool_result", {"id": call["id"], "ok": False, "ms": 0,
                                           "preview": payload["error"]})
+                continue
+
+            # A write the user already approved (and that already ran) must not
+            # be parked for a second confirmation -- that was the loop.
+            write_sig = (call["name"], json.dumps(call["args"], sort_keys=True, default=str))
+            if call["name"] in WRITE_TOOLS and write_sig in seen_calls:
+                payload = {"error": f"{call['name']} with these arguments already ran in this "
+                                    f"turn after the user confirmed it; its result is above. "
+                                    f"Do not call it again -- answer from that result."}
+                executed.append(_record(call, payload, ok=False, ms=0))
+                yield sse("tool_result", {"id": call["id"], "ok": False, "ms": 0,
+                                          "preview": "already ran after confirmation",
+                                          "result": json.dumps(payload)})
                 continue
 
             if call["name"] in WRITE_TOOLS and call["id"] not in confirmed:
@@ -854,6 +924,60 @@ def _usage(raw):
         "reasoning_tokens": details.get("reasoning_tokens"),
         "cost": raw.get("cost"),
     }
+
+
+async def _settle_pending(history, confirmed, ident, seen_calls):
+    """Resolve every write call still parked in `history` (mutated in place).
+
+    Confirmed ones are executed and their "awaiting_user_confirmation" tool
+    message is replaced with the real result. Any other parked call is
+    marked not-run: the user declined it or moved on, and leaving it
+    "awaiting" invites the model to propose it again.
+
+    Yields SSE frames for the UI, and the sentinel True once if a confirmed
+    call ran. Changed messages carry `_settled` so the caller knows to save.
+    """
+    tool_msgs = {m.get("tool_call_id"): m for m in history if m.get("role") == "tool"}
+    for m in history:
+        if m.get("role") != "assistant":
+            continue
+        for c in m.get("tool_calls") or []:
+            if not c.get("pending"):
+                continue
+            c["pending"] = False
+            m["_settled"] = True
+            tm = tool_msgs.get(c["id"])
+            if c["id"] not in confirmed:
+                c.update(ok=False, ms=0, preview="not run -- the user did not confirm it")
+                if tm is not None:
+                    tm["content"] = json.dumps({
+                        "status": "not_run",
+                        "detail": "The user did not confirm this call, so it was NOT executed. "
+                                  "Do not propose it again unless the user asks for it."})
+                continue
+            yield sse("tool_call", {"id": c["id"], "name": c["name"], "args": c.get("args") or {}})
+            t0 = time.monotonic()
+            try:
+                result = await call_tool(c["name"], c.get("args") or {}, _session_token(ident))
+                ok = not (isinstance(result, dict) and result.get("error"))
+            except Exception as e:                    # noqa: BLE001 - incl. ToolError
+                result = {"error": f"{e.__class__.__name__}: {e}"}
+                ok = False
+            ms = int((time.monotonic() - t0) * 1000)
+            rec = _record(c, result, ok=ok, ms=ms)
+            c.update(rec["display"])
+            if tm is not None:
+                tm["content"] = rec["tool_message"]["content"]
+                tm["at"] = rec["tool_message"]["at"]
+            else:
+                history.insert(history.index(m) + 1, rec["tool_message"])
+            # The model must not re-propose what the user just approved.
+            seen_calls.add((c["name"], json.dumps(c.get("args") or {}, sort_keys=True, default=str)))
+            yield sse("tool_result", {"id": c["id"], "ok": ok, "ms": ms,
+                                      "truncated": rec["display"]["truncated"],
+                                      "preview": rec["display"]["preview"],
+                                      "result": rec["tool_message"]["content"]})
+            yield True
 
 
 def _record(call, result, ok, ms, content=None, truncated=False):
