@@ -132,7 +132,62 @@ SERVER_INSTRUCTIONS = (
     + FIELD_VALUE_PROTOCOL
 )
 
-mcp = FastMCP("ts-debug-helper", instructions=SERVER_INSTRUCTIONS, stateless_http=True)
+def _transport_kwargs() -> dict:
+    """Host-header and body-size settings for the Streamable HTTP transport (/mcp).
+
+    Host header: FastMCP's `host` defaults to 127.0.0.1, and from mcp ~1.2x on
+    that silently turns on DNS-rebinding protection allowing ONLY
+    Host: 127.0.0.1/localhost. Every request that reaches the server by its
+    real IP or hostname (a VM, nginx passing `Host $host`, the Claude Desktop
+    extension) then gets `421 Invalid Host header`. It passed every local test
+    because those all used 127.0.0.1.
+
+    DNS rebinding protects an UNAUTHENTICATED local server from a malicious web
+    page. /mcp is not that: every request needs an API token in a header
+    (app/mcp_http.py never reads the session cookie), which a browser page
+    cannot obtain. So the default is OFF. To enforce it anyway, list the
+    names clients use in TS_MCP_ALLOWED_HOSTS, e.g.
+        TS_MCP_ALLOWED_HOSTS=10.0.12.34,ts-debug-helper.corp.example
+    (a bare name also matches any port; localhost is always allowed).
+
+    Body size: mcp 1.30 rejects MCP request bodies over 4 MiB, and a raw debug
+    log sent to normalize_log can be up to 20 MB. Default 32 MiB, matching
+    client_max_body_size in deploy/nginx-ts-debug-helper.conf.
+
+    Built by inspecting FastMCP's signature because requirements allow any
+    mcp >=1.9,<2, and older releases have neither keyword."""
+    import inspect
+    try:
+        params = inspect.signature(FastMCP.__init__).parameters
+    except (TypeError, ValueError):
+        return {}
+    kwargs = {}
+
+    if "transport_security" in params:
+        from mcp.server.transport_security import TransportSecuritySettings
+        hosts = [h.strip() for h in os.environ.get("TS_MCP_ALLOWED_HOSTS", "").split(",") if h.strip()]
+        if hosts:
+            allowed = ["127.0.0.1:*", "localhost:*", "[::1]:*"]
+            for h in hosts:
+                allowed.append(h)
+                if ":" not in h.replace("[::1]", ""):
+                    allowed.append(h + ":*")
+            origins = [f"{scheme}://{h}" for h in allowed for scheme in ("http", "https")]
+            kwargs["transport_security"] = TransportSecuritySettings(
+                enable_dns_rebinding_protection=True, allowed_hosts=allowed, allowed_origins=origins)
+        else:
+            kwargs["transport_security"] = TransportSecuritySettings(enable_dns_rebinding_protection=False)
+
+    if "max_request_body_size" in params:
+        try:
+            mb = float(os.environ.get("TS_MCP_MAX_BODY_MB", "32"))
+        except ValueError:
+            mb = 32.0
+        kwargs["max_request_body_size"] = max(1, int(mb * 1024 * 1024))
+    return kwargs
+
+
+mcp = FastMCP("ts-debug-helper", instructions=SERVER_INSTRUCTIONS, stateless_http=True, **_transport_kwargs())
 
 
 def _client_name_from_context(context) -> str:
