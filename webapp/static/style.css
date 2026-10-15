@@ -223,6 +223,12 @@ a.link { color: var(--conga-color-action-secondary); cursor: pointer; text-decor
   word-break: break-all; font-family: var(--conga-font-family-mono); font-size: var(--conga-font-size-sm);
 }
 
+/* Claude Desktop extension download card (API Tokens view) */
+.ext-download { display: flex; flex-wrap: wrap; align-items: center; gap: var(--conga-space-4); margin: var(--conga-space-3) 0; }
+.ext-download .muted { font-size: var(--conga-font-size-sm); }
+.ext-paths { margin: 4px 0 8px; padding-left: 20px; font-size: var(--conga-font-size-sm); word-break: break-all; }
+.ext-sha { font-size: var(--conga-font-size-xs); word-break: break-all; margin-bottom: 0; }
+
 /* org visibility (see app/org_access.py) */
 .badge.visibility-public { background: var(--conga-color-status-neutral); }
 .badge.visibility-private { background: var(--conga-color-brand); }

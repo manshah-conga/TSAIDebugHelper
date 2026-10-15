@@ -124,6 +124,9 @@ CATALOG = {
     ("GET", "/api/tokens"): ("tokens.list", "Tokens", "Listed API tokens", "nonweb"),
     ("POST", "/api/tokens"): ("tokens.create", "Tokens", "Created an API token", "always"),
     ("DELETE", "/api/tokens/{token_id}"): ("tokens.revoke", "Tokens", "Revoked an API token", "always"),
+    ("GET", "/api/desktop-extension"): ("tokens.extension_info", "Tokens", "", "never"),
+    ("GET", "/api/desktop-extension/download"): ("tokens.extension_download", "Tokens",
+                                                 "Downloaded the Claude Desktop extension", "always"),
     # orgs
     ("POST", "/api/orgs"): ("org.connect", "Orgs", "Connected an org", "always"),
     ("GET", "/api/orgs"): ("org.list", "Orgs", "Listed orgs", "nonweb"),

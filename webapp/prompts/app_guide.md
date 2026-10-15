@@ -6,7 +6,7 @@ Tabs:
 - Incidents: file an incident from a debug log and/or a suspect field; the report ranks prime suspects and flags recurrences. Record the fix at the bottom of the report.
 - Known Issues: every failure signature in the active org, with its fix if one is recorded. Filter by text or show only issues with no fix.
 - Log Normalizer: condense a raw debug log to normalized JSON without any org; optionally store it in the library.
-- API Tokens: create a token for Claude Desktop or any MCP client. It inherits your role and is shown once.
+- API Tokens: create a token for Claude Desktop or any MCP client. It inherits your role and is shown once. The same tab has a **Download ts-debug-helper.mcpb** button (the Claude Desktop extension): double-click it, paste this site's address as the Server URL and the token. It is the recommended way to use Claude Desktop because it works over the VPN. If the card says it is not published yet, an admin must copy the file onto the server.
 - Usage: your own LLM quota and consumption (admins see everyone's).
 - Admin (admins only): create users, verify self-signups, set roles and LLM quota limits.
 - Ask: this assistant, full screen; the side-panel button opens it docked next to whatever you are looking at.

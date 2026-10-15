@@ -287,7 +287,7 @@ function showView(name) {
   if (name === "incidents") loadIncidents();
   if (name === "known") loadKnownIssues();
   if (name === "logs") loadLogs();
-  if (name === "tokens") loadTokens();
+  if (name === "tokens") { loadTokens(); loadDesktopExtension(); }
   if (name === "usage") loadUsageView();
   if (name === "admin") loadUsers();
   if (name === "chat" && typeof mountChatFull === "function") mountChatFull();
@@ -3139,7 +3139,7 @@ function applyRole() {
 }
 
 // Must match APP_BUILD in app/main.py and the ?v= on index.html's assets.
-const CLIENT_BUILD = 32;
+const CLIENT_BUILD = 33;
 let SERVER_BUILD = null;   // null = not checked yet, 0 = a server too old to report one
 
 /** Static files are served fresh, but the server's Python is only loaded at
@@ -3502,6 +3502,69 @@ async function loadTokens() {
       <td><button class="secondary" onclick="revokeToken('${escapeHtml(t.id)}')">Revoke</button></td>`;
     return tr;
   });
+}
+
+// ---------- Claude Desktop extension (.mcpb) ----------
+
+async function loadDesktopExtension() {
+  const body = document.getElementById("extBody");
+  if (!body) return;
+  const info = await apiJson("/api/desktop-extension", {}, null);
+  if (!info) {
+    body.innerHTML = `<p class="muted">Could not check for the extension on this server.</p>`;
+    return;
+  }
+  if (!info.available) {
+    const isAdmin = CURRENT_USER && CURRENT_USER.role === "admin";
+    let html = `<p class="muted">The extension has not been published on this server yet.`;
+    if (!isAdmin) {
+      html += ` Ask an admin to add it. Meanwhile you can still connect with the steps in Help (the ? in the header).</p>`;
+    } else {
+      html += `</p>`;
+      if (info.error) html += `<p class="status-line error">${escapeHtml(info.error)} (${escapeHtml(info.path || "")})</p>`;
+      const paths = (info.looked_in || []).map(p => `<li><span class="mono">${escapeHtml(p)}</span></li>`).join("");
+      html += `<p class="muted"><b>Admin:</b> copy <span class="mono">${escapeHtml(info.filename)}</span>
+          (built in <span class="mono">desktop-extension/</span>) to ${info.configured ? "the path set in" : "one of these paths, or point"}
+          <span class="mono">${escapeHtml(info.env_var || "TS_MCPB_PATH")}</span>${info.configured ? ":" : " at it:"}</p>
+        <ul class="ext-paths">${paths}</ul>
+        <p class="muted">No restart needed &mdash; reload this page after copying the file.</p>`;
+    }
+    body.innerHTML = html;
+    return;
+  }
+  const meta = [
+    info.version ? `Version ${escapeHtml(info.version)}` : "",
+    info.size ? fmtBytes(info.size) : "",
+    info.modified ? `updated ${escapeHtml(new Date(info.modified * 1000).toISOString().slice(0, 10))}` : "",
+  ].filter(Boolean).join(" &middot; ");
+  body.innerHTML = `
+    <p class="muted">Use these tools from Claude Desktop with one install &mdash; no Python, nothing else to set up.
+      The extension runs on your machine and talks to this server over the VPN with your API token.</p>
+    <div class="ext-download">
+      <button type="button" class="primary" onclick="downloadDesktopExtension()">Download ${escapeHtml(info.filename)}</button>
+      <span class="muted">${meta}</span>
+    </div>
+    <ol class="setup-steps">
+      <li><b>Download</b> the file above.</li>
+      <li><b>Create an API token</b> below and copy it.</li>
+      <li><b>Install:</b> double-click the downloaded file, or in Claude Desktop open
+        Settings &rarr; Extensions &rarr; Advanced settings &rarr; Install Extension&hellip; and pick it.</li>
+      <li><b>Configure:</b> paste this as the <i>Server URL</i>, and your token as the <i>API token</i>:
+        <div class="copy-row"><code id="extServerUrl">${escapeHtml(location.origin)}</code>
+          <button type="button" class="secondary" onclick="copyText('extServerUrl')">Copy</button></div></li>
+      <li><b>Try it:</b> ask Claude <i>"Which orgs can I see in the TS Debug Helper?"</i></li>
+    </ol>
+    ${info.sha256 ? `<p class="muted ext-sha">SHA-256: <span class="mono">${escapeHtml(info.sha256)}</span></p>` : ""}`;
+}
+
+function downloadDesktopExtension() {
+  // Same-origin link: the session cookie goes with it, so no token juggling.
+  const a = document.createElement("a");
+  a.href = "/api/desktop-extension/download";
+  a.download = "ts-debug-helper.mcpb";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
 }
 
 async function revokeToken(id) {

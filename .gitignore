@@ -21,6 +21,10 @@
 /webapp/data/
 /webapp/logs/
 
+# Claude Desktop extension package served on the API Tokens tab. A build
+# artifact copied onto the server by hand (see webapp/downloads/README.md).
+/webapp/downloads/*.mcpb
+
 # Real customer-org artifacts that were sitting next to the CLI scripts
 /scripts/BoxSBJuly26/
 /scripts/**/knowledge_base/

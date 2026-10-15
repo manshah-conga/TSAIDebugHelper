@@ -39,6 +39,7 @@ from . import usage as usage_ledger
 from . import activity
 from . import guide as guide_mod
 from . import kb_lookup
+from . import desktop_ext
 from .onboarding import run_onboarding, JOBS, progress_payload, job_in_flight
 from .log_normalizer import parse_log_text, involved_components
 from .rca import assemble_context, lookup_field_writers
@@ -250,7 +251,7 @@ def change_own_password(req: ChangePasswordRequest, ident=Depends(auth.require_r
 # after an update a browser can be running new UI against an old server that
 # silently ignores the new fields (log tags were dropped exactly this way).
 # The page compares the two and tells the person to restart the server.
-APP_BUILD = 32
+APP_BUILD = 33
 
 
 @app.get("/api/build")
@@ -487,6 +488,27 @@ def revoke_token(token_id: str, request: Request, _ident=Depends(auth.require_re
         raise HTTPException(404, "No such token (or not yours to revoke).")
     secrets_store.evict(token_id)   # that session's unwrapped LLM key dies with it
     return {"ok": True}
+
+
+# ---------- Claude Desktop extension (.mcpb) download ----------
+# The file is dropped on the server by an operator (see app/desktop_ext.py
+# for where it is looked for); the app only serves it. Sign-in required: the
+# package holds no secrets, but it is an internal tool and the page that
+# links to it is behind sign-in anyway.
+
+@app.get("/api/desktop-extension")
+def desktop_extension_info(_ident=Depends(auth.require_reader)):
+    return desktop_ext.info(include_paths=_ident["role"] == "admin")
+
+
+@app.get("/api/desktop-extension/download")
+def desktop_extension_download(_ident=Depends(auth.require_reader)):
+    path = desktop_ext.download_path()
+    if not path:
+        raise HTTPException(404, "The Claude Desktop extension has not been published on this server yet. "
+                                 "Ask an admin to copy ts-debug-helper.mcpb onto the server.")
+    return FileResponse(path, media_type="application/octet-stream", filename=desktop_ext.FILENAME,
+                        headers={"Cache-Control": "no-store"})
 
 
 # ---------- org connections ----------

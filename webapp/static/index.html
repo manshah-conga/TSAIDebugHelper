@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>TS Intelligent Debug Helper</title>
-<link rel="stylesheet" href="/static/style.css?v=32">
+<link rel="stylesheet" href="/static/style.css?v=33">
 </head>
 <body>
 
@@ -465,6 +465,13 @@
   </section>
 
   <section id="view-tokens" class="view">
+    <!-- Claude Desktop extension download. Filled by loadDesktopExtension()
+         from GET /api/desktop-extension; the .mcpb itself is dropped on the
+         server by an operator (see app/desktop_ext.py). -->
+    <div class="card ext-card" id="extCard">
+      <div class="card-head"><h2>Claude Desktop extension</h2></div>
+      <div id="extBody"><p class="muted">Checking for the extension&hellip;</p></div>
+    </div>
     <div class="card" data-tour="tokens">
       <h2>Create an API token for the MCP server</h2>
       <p class="muted">The MCP server authenticates to this app with an API token. A token inherits <b>your</b>
@@ -789,13 +796,13 @@
 </aside>
 
 </div>
-<script src="/static/app.js?v=32"></script>
-<script src="/static/chat.js?v=32"></script>
-<script src="/static/activity.js?v=32"></script>
+<script src="/static/app.js?v=33"></script>
+<script src="/static/chat.js?v=33"></script>
+<script src="/static/activity.js?v=33"></script>
 <!-- Home page + command palette, then onboarding/help. Both are optional
      layers over app.js: every call into them from app.js is guarded, so a
      cached page that loads without them still works. -->
-<script src="/static/home.js?v=32"></script>
-<script src="/static/guide.js?v=32"></script>
+<script src="/static/home.js?v=33"></script>
+<script src="/static/guide.js?v=33"></script>
 </body>
 </html>

@@ -218,7 +218,11 @@ function mcpSetupHtml() {
         visibility, and it is shown once.
         <div><button type="button" class="secondary" onclick="closeAnyModal(); showView('tokens');
           document.getElementById('tokenLabel').focus()">Create a token</button></div></li>
-      <li><b>Claude Desktop / claude.ai:</b> Settings &rarr; Connectors &rarr; Add custom connector, with this URL:
+      <li><b>Claude Desktop (recommended):</b> download the <b>Claude Desktop extension</b> from the
+        API Tokens tab, double-click it, then paste <span class="mono">${escapeHtml(location.origin)}</span>
+        as the Server URL and your token. Works over the VPN with nothing else to install.
+        <div><button type="button" class="secondary" onclick="closeAnyModal(); showView('tokens')">Get the extension</button></div></li>
+      <li><b>claude.ai / other connectors:</b> Settings &rarr; Connectors &rarr; Add custom connector, with this URL:
         ${code(url, "mcpUrl")}
         <span class="muted">If the connector form has no header field, append <span class="mono">?token=&lt;token&gt;</span>
         &mdash; use a reader token with a short expiry for that, since URLs end up in logs.</span></li>
