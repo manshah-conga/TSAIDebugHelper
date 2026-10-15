@@ -207,15 +207,16 @@ check("going private needs no confirmation and is sent", patched && patched.visi
 ORGS.acme.visibility = "private";
 renderHomeOrgs();
 check("the Connect form uses a switch too", $("newVisToggle").getAttribute("role") === "switch");
-check("...defaulting to private", $("newVisibility").value === "private");
+check("...defaulting to public", $("newVisibility").value === "public"
+  && $("newVisToggle").classList.contains("on") && $("newVisToggle").getAttribute("aria-checked") === "true");
 // jsdom's "outside-only" mode does not run inline onclick attributes, so
 // call the handler the attribute names.
 check("the switch is wired to its handler", $("newVisToggle").getAttribute("onclick") === "toggleNewOrgVisibility(this)");
 toggleNewOrgVisibility($("newVisToggle"));
-check("clicking it sets public for createOrg", $("newVisibility").value === "public"
-  && $("newVisToggle").classList.contains("on") && $("newVisDesc").textContent.includes("Everyone"));
+check("clicking it sets private for createOrg", $("newVisibility").value === "private"
+  && !$("newVisToggle").classList.contains("on") && $("newVisDesc").textContent.includes("Only you"));
 toggleNewOrgVisibility($("newVisToggle"));
-check("...and back", $("newVisibility").value === "private");
+check("...and back", $("newVisibility").value === "public" && $("newVisDesc").textContent.includes("Everyone"));
 
 log("\\n-- what's broken? --");
 check("an exception is recognised", classifyTriage("System.NullPointerException: Attempt to de-reference a null object").kind === "exception");

@@ -29,6 +29,7 @@ const CHAT = {
   streaming: false,
   abort: null,
   pendingConfirm: null,
+  liveMsg: null,          // the assistant turn currently streaming, if any
   el: {},
   open: false,
 };
@@ -649,12 +650,29 @@ function renderMessage(m) {
     el.appendChild(d);
   }
 
-  (m.tool_calls || []).forEach(c => el.appendChild(renderToolRow(c)));
+  // Tool rows are opt-in (Chat settings -> "Show tool calls"). With them off,
+  // the only tool UI left is a write tool waiting on the user's click -- that
+  // confirmation can never be hidden, so it renders on its own with its
+  // arguments in view.
+  const showTools = showToolCalls();
+  (m.tool_calls || []).forEach(c => {
+    if (showTools) el.appendChild(renderToolRow(c));
+    else if (c.pending) el.appendChild(renderConfirmCard(c, { standalone: true }));
+  });
 
   if (m.content) {
     const body = chatEl("div", "chat-body");
     body.innerHTML = renderMarkdown(m.content);
     el.appendChild(body);
+  }
+
+  if (CHAT.streaming && m === CHAT.liveMsg) {
+    const label = liveActivity(m, showTools);
+    if (label) {
+      el.appendChild(chatEl("div", "chat-activity",
+        `<span class="chat-activity-dots" aria-hidden="true"><i></i><i></i><i></i></span>` +
+        `<span>${escapeHtml(label)}&hellip;</span>`));
+    }
   }
 
   if (m.notice) {
@@ -669,6 +687,99 @@ function renderMessage(m) {
       (u.cost !== null && u.cost !== undefined ? ` &middot; ${fmtCost(u.cost)}` : "")));
   }
   return el;
+}
+
+// ---------- tool-call visibility ----------
+//
+// Per-user preference, stored server-side with the rest of the user's prefs
+// (app/guide.py PREF_KEYS). Absent means OFF, so every existing and new
+// account sees the plain status line until it opts in from Chat settings.
+
+function showToolCalls() {
+  try {
+    return typeof homePrefs === "function" && (homePrefs() || {}).chat_show_tools === true;
+  } catch (e) { return false; }
+}
+
+/** What the status line says while a tool runs. Deliberately generic --
+ *  what is happening, not which tool or with which arguments. */
+const TOOL_ACTIVITY = {
+  list_orgs: "Looking up your orgs",
+  list_accounts: "Looking up customer accounts",
+  normalize_log: "Reading the debug log",
+  list_normalized_logs: "Checking the log library",
+  get_normalized_log: "Reading the debug log",
+  get_org_stats: "Reviewing the org's customization",
+  get_org_connection_status: "Checking the org connection",
+  get_component: "Examining the code",
+  get_object_touch: "Mapping the automation on the object",
+  find_field_writers: "Tracing what writes to the field",
+  get_inbound_references: "Tracing references",
+  get_entry_points: "Finding entry points",
+  search_knowledgebase: "Searching the knowledgebase",
+  list_incidents: "Reviewing past incidents",
+  get_incident: "Reviewing past incidents",
+  list_known_issues: "Checking known issues",
+  file_incident: "Filing the incident",
+  record_resolution: "Recording the resolution",
+  set_org_visibility: "Updating the org's visibility",
+  set_org_account: "Updating the org's account",
+};
+
+/** The live status for the turn that is streaming, or null when there is
+ *  nothing to say (text is arriving, or a confirmation is waiting). */
+function liveActivity(m, showTools) {
+  const calls = m.tool_calls || [];
+  if (calls.some(c => c.pending)) return null;
+  const running = calls.filter(c => c.ok === null || c.ok === undefined);
+  if (running.length) {
+    if (showTools) return null;                  // the running row already says so
+    return TOOL_ACTIVITY[running[running.length - 1].name] || "Working";
+  }
+  if (m.content) return null;
+  if (calls.length) return "Analyzing what it found";
+  return m.reasoning ? "Thinking" : "Working on it";
+}
+
+const WRITE_ACTION = {
+  file_incident: "file an incident",
+  record_resolution: "record a resolution",
+  set_org_visibility: "change an org's visibility",
+  set_org_account: "move an org to a different account",
+};
+
+function openChatSettings() {
+  const back = chatEl("div", "modal-backdrop");
+  back.innerHTML = `
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="chatSettingsTitle" style="width:460px;">
+      <h3 id="chatSettingsTitle">Chat settings</h3>
+      <label class="chat-setting">
+        <input type="checkbox" id="chatShowTools" ${showToolCalls() ? "checked" : ""}>
+        <span>
+          <b>Show tool calls</b>
+          <span class="muted">See each lookup the assistant runs: the tool name, its arguments
+            and the raw result it was given. When off, you see a short status such as
+            &ldquo;Searching the knowledgebase&hellip;&rdquo; instead. Write actions always
+            ask you to confirm either way.</span>
+        </span>
+      </label>
+      <div class="modal-actions">
+        <button type="button" class="primary" data-cancel>Done</button>
+      </div>
+    </div>`;
+  const close = () => { document.removeEventListener("keydown", onKey); back.remove(); };
+  const onKey = e => { if (e.key === "Escape") close(); };
+  back.querySelector("#chatShowTools").onchange = e => {
+    const on = e.target.checked;
+    // null clears the key, which reads as OFF -- the default.
+    if (typeof savePrefs === "function") savePrefs({ chat_show_tools: on ? true : null });
+    renderTranscript();
+    if (typeof toast === "function") toast(on ? "Tool calls will be shown." : "Tool calls hidden.", "ok");
+  };
+  back.querySelector("[data-cancel]").onclick = close;
+  back.onclick = e => { if (e.target === back) close(); };
+  document.addEventListener("keydown", onKey);
+  document.body.appendChild(back);
 }
 
 /** Tool rows are the trust surface of this whole feature. Collapsed by
@@ -726,13 +837,19 @@ function renderToolRow(c) {
  *  customer Apex source and raw-log text -- third-party content that can
  *  contain instructions aimed at the model -- and set_org_visibility can
  *  expose an org to every account in the app. */
-function renderConfirmCard(c) {
-  const card = chatEl("div", "tool-confirm");
+function renderConfirmCard(c, { standalone = false } = {}) {
+  const card = chatEl("div", standalone ? "tool-confirm standalone" : "tool-confirm");
+  // Standalone = tool rows are hidden, so there are no arguments "above" to
+  // review. Show them here instead: a write is never approved blind.
+  const body = standalone
+    ? `The assistant wants to <b>${escapeHtml(WRITE_ACTION[c.name] || "change stored data")}</b>.
+       This changes stored data.
+       <details open class="tool-confirm-args"><summary>What it will send</summary>
+         <pre>${escapeHtml(JSON.stringify(c.args || {}, null, 2))}</pre></details>`
+    : `<b class="mono">${escapeHtml(c.name)}</b> changes stored data. Review the arguments above.`;
   card.innerHTML = `
     <div class="tool-confirm-title">Confirm before this runs</div>
-    <div class="tool-confirm-body">
-      <b class="mono">${escapeHtml(c.name)}</b> changes stored data. Review the arguments above.
-    </div>
+    <div class="tool-confirm-body">${body}</div>
     <div class="tool-confirm-actions">
       <button type="button" class="secondary" data-decline>Don't run it</button>
       <button type="button" class="primary" data-confirm>Run it</button>
@@ -812,6 +929,7 @@ async function sendTurn(text, confirmToolIds) {
   const assistant = { role: "assistant", content: "", tool_calls: [], reasoning: "" };
   CHAT.messages.push(assistant);
   CHAT.streaming = true;
+  CHAT.liveMsg = assistant;
   renderTranscript();
   renderComposer();
 
@@ -927,6 +1045,7 @@ function handleFrame(frame, assistant) {
 function finishStream(assistant, errorMessage) {
   CHAT.streaming = false;
   CHAT.abort = null;
+  CHAT.liveMsg = null;
   if (errorMessage) {
     assistant.content += (assistant.content ? "\n\n" : "") + `**${errorMessage}**`;
   }
@@ -1166,6 +1285,7 @@ function mountChat(container, mode = "dock") {
         <button type="button" class="icon-btn" data-act="history" title="Conversations">&#9776;</button>
         <button type="button" class="icon-btn" data-act="share" title="Share transcript">&#128279;</button>
         <button type="button" class="icon-btn" data-act="new" title="New conversation">+</button>
+        <button type="button" class="icon-btn" data-act="settings" title="Chat settings" aria-label="Chat settings">&#9881;</button>
         <button type="button" class="icon-btn" data-act="close" title="${full ? "Back to the app" : "Close"}">&times;</button>
       </div>
     </div>
@@ -1202,6 +1322,7 @@ function mountChat(container, mode = "dock") {
       if (act === "history") openChatList();
       if (act === "share") (CHAT.meta && CHAT.meta.share_token) ? unshareChat() : shareChat();
       if (act === "new") newChat();
+      if (act === "settings") openChatSettings();
       // enterChatFull, NOT openChatFull. openChatFull is the nav button's
       // entry point and honours the remembered preference -- and opening the
       // dock sets that preference to "dock", so routing this button through

@@ -250,7 +250,7 @@ def change_own_password(req: ChangePasswordRequest, ident=Depends(auth.require_r
 # after an update a browser can be running new UI against an old server that
 # silently ignores the new fields (log tags were dropped exactly this way).
 # The page compares the two and tells the person to restart the server.
-APP_BUILD = 31
+APP_BUILD = 32
 
 
 @app.get("/api/build")

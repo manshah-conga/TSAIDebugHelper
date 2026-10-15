@@ -268,6 +268,64 @@ askAbout("Asked while in full screen");
 check("in full screen it still pre-fills in place",
   CHAT.mode === "full" && CHAT.el.input.value === "Asked while in full screen"
   && !$("chatDock").classList.contains("open"));
+
+log("\\n-- tool calls hidden by default (Chat settings opt-in) --");
+// home.js is not loaded here, so stand in for its prefs store.
+var TEST_PREFS = {};
+function homePrefs() { return TEST_PREFS; }
+function savePrefs(patch) {
+  Object.entries(patch).forEach(([k, v]) => { if (v === null) delete TEST_PREFS[k]; else TEST_PREFS[k] = v; });
+  return Promise.resolve();
+}
+const tx = () => CHAT.el.transcript;
+CHAT.messages = [
+  { role: "user", content: "why did it fail?" },
+  { role: "assistant", content: "", tool_calls: [
+      { id: "c1", name: "find_field_writers", args: { field: "Region__c" }, ok: true, ms: 12, preview: "3 writers" },
+      { id: "c2", name: "search_knowledgebase", args: { q: "x" }, ok: null, ms: null } ] },
+];
+CHAT.streaming = true; CHAT.liveMsg = CHAT.messages[1];
+renderTranscript();
+check("default: no tool rows are rendered", !tx().querySelector(".tool-row"));
+check("...and no tool names leak into the transcript",
+  !tx().textContent.includes("find_field_writers") && !tx().textContent.includes("search_knowledgebase"));
+check("...a generic status says what is happening",
+  !!tx().querySelector(".chat-activity") && tx().querySelector(".chat-activity").textContent.includes("Searching the knowledgebase"),
+  (tx().querySelector(".chat-activity") || {}).textContent);
+CHAT.messages[1].tool_calls[1].ok = true;
+renderTranscript();
+check("between tools it says it is analyzing", tx().querySelector(".chat-activity").textContent.includes("Analyzing"));
+CHAT.messages[1].content = "The answer";
+renderTranscript();
+check("once text streams the status goes away", !tx().querySelector(".chat-activity"));
+CHAT.streaming = false; CHAT.liveMsg = null;
+renderTranscript();
+check("a finished turn shows no status", !tx().querySelector(".chat-activity"));
+
+CHAT.messages.push({ role: "assistant", content: "", tool_calls: [
+  { id: "w1", name: "record_resolution", args: { org_id: "acme", fix: "deactivate flow" }, pending: true, ok: null } ] });
+renderTranscript();
+const card = tx().querySelector(".tool-confirm.standalone");
+check("a pending write still asks for confirmation with rows hidden", !!card);
+check("...in plain words", card && card.textContent.includes("record a resolution"));
+check("...with its arguments in view, never approved blind",
+  card && card.querySelector("pre").textContent.includes("deactivate flow"));
+check("...and both buttons", card && !!card.querySelector("[data-confirm]") && !!card.querySelector("[data-decline]"));
+
+check("the chat head has a settings button", !!document.querySelector('[data-act="settings"]'));
+document.querySelector('[data-act="settings"]').click();
+const box = document.getElementById("chatShowTools");
+check("Chat settings offers 'Show tool calls', unchecked by default", !!box && box.checked === false);
+box.checked = true; box.dispatchEvent(new window.Event("change"));
+check("turning it on saves the per-user pref", TEST_PREFS.chat_show_tools === true);
+check("...and the rows come back", tx().querySelectorAll(".tool-row").length === 3);
+check("...with the pending write confirmed inside its row, not twice",
+  !tx().querySelector(".tool-confirm.standalone") && !!tx().querySelector(".tool-row .tool-confirm"));
+box.checked = false; box.dispatchEvent(new window.Event("change"));
+check("turning it off clears the pref back to the default", !("chat_show_tools" in TEST_PREFS));
+check("...and hides the rows again", !tx().querySelector(".tool-row"));
+document.querySelector(".modal-backdrop [data-cancel]").click();
+check("Done closes the dialog", !document.getElementById("chatShowTools"));
 `;
 
 window.eval(read("app.js") + "\n;\n" + read("chat.js") + "\n;\n" + CHECKS);

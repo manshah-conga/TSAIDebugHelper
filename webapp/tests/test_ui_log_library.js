@@ -257,7 +257,7 @@ $("logOrg").value = "acmeprod"; logOrgChanged(); $("logStore").checked = true;
 await normalizeLog();
 await tick(20);
 check("an upload whose tags were dropped says why", $("logStatus").textContent.includes("ignored the owner and tags"), $("logStatus").textContent);
-S.serverBuild = 30;
+S.serverBuild = CLIENT_BUILD;
 await checkServerBuild();
 check("matching builds hide the banner", $("buildBanner").style.display === "none");
 

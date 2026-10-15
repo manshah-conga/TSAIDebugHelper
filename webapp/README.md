@@ -193,12 +193,14 @@ Roles say *what kind* of action you may take; **visibility** says *which orgs* y
 may take it against. Every connected org has an **owner** (whoever connected it) and
 a visibility setting:
 
-- **private** (the default for a newly connected org) -- only the owner and admins
+- **private** -- only the owner and admins
   can see it. To everyone else the org simply does not exist: it is absent from the
   org list, and every endpoint for it returns **404**, not 403, so the app never
   confirms that someone else's org is there.
-- **public** -- every signed-in account can see it, at whatever role that account
-  already has (a reader still only reads).
+- **public** (the default for a newly connected org, since build 32) -- every
+  signed-in account can see it, at whatever role that account already has (a reader
+  still only reads). Re-connecting or refreshing an existing org keeps its current
+  visibility; the new default never turns an existing private org public.
 
 Orgs connected before ownership was tracked have neither field. They read as
 **private with no owner**, which means **admins only**. That default was reversed
@@ -517,8 +519,8 @@ On the **Home** tab (open the **Connect a new org** card), you need:
 - **Org Name**: a display label.
 - **Instance URL**: e.g. `https://yourorg.my.salesforce.com`.
 - **Access Token**: a valid Salesforce session/access token for that org.
-- **Who can see this org?**: `private` (default -- only you and admins) or `public`
-  (everyone signed in). See "Org visibility" in section 1a; you can change it later
+- **Who can see this org?**: `public` (default -- everyone signed in) or `private`
+  (only you and admins). See "Org visibility" in section 1a; you can change it later
   from the Connected orgs table.
 
 This app does not implement an OAuth login flow -- you obtain the token yourself,
@@ -1458,7 +1460,7 @@ message telling you what to fix.
 Org visibility applies over MCP exactly as it does in the browser: the token acts as
 the account that created it, so `list_orgs` returns only the orgs that account may
 see, and any other tool called with an org_id outside that set reports "no such org".
-`create_org_connection` takes a `visibility` argument (`"private"` by default) and
+`create_org_connection` takes a `visibility` argument (`"public"` by default) and
 `set_org_visibility` flips an org you own between private and public.
 
 To use it, start the web app first, then point an MCP client at the script:

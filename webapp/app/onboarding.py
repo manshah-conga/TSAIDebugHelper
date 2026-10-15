@@ -558,8 +558,12 @@ async def run_onboarding(org_id, org_name, instance_url, access_token, existing_
             # Access settings: keep whatever is already on record unless the
             # caller explicitly supplied new values.
             "owner": owner or prior.get("owner"),
+            # A brand-new org falls back to the new-org default (public); an
+            # entry already on record keeps its own -- including a legacy
+            # entry with no field, which must stay private, not turn public.
             "visibility": org_access.normalize_visibility(
-                visibility, default=prior.get("visibility") or org_access.DEFAULT_VISIBILITY),
+                visibility, default=(org_access.visibility_of(prior) if prior
+                                     else org_access.DEFAULT_VISIBILITY)),
             "first_onboarded_at": prior.get("first_onboarded_at", iso_now()),
             "last_extracted_at": iso_now(),
             "component_counts": index_result["org_stats"]["counts"],

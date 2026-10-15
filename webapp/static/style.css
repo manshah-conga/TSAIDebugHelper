@@ -1954,3 +1954,21 @@ button.secondary.danger-outline:hover { background: var(--conga-color-status-err
 
 /* Modal select with an "Other..." free-text box (log tag editor). */
 .modal-other { margin-top: 6px; }
+
+/* Chat: generic live status shown instead of tool rows (default), plus the
+   Chat settings toggle that brings the rows back. */
+.chat-activity { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--grey); padding: 4px 0; }
+.chat-activity-dots { display: inline-flex; gap: 3px; }
+.chat-activity-dots i { width: 5px; height: 5px; border-radius: 50%; background: var(--navy); opacity: 0.25;
+  animation: chatDot 1.2s ease-in-out infinite; }
+.chat-activity-dots i:nth-child(2) { animation-delay: 0.2s; }
+.chat-activity-dots i:nth-child(3) { animation-delay: 0.4s; }
+@keyframes chatDot { 0%, 80%, 100% { opacity: 0.25; } 40% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .chat-activity-dots i { animation: none; opacity: 0.6; } }
+.tool-confirm.standalone { border: 1px solid var(--gold); border-left-width: 2px; border-radius: 4px; background: #fdf8ec; }
+.tool-confirm-args { margin-top: 6px; }
+.tool-confirm-args summary { font-size: 11px; cursor: pointer; }
+.tool-confirm-args pre { font-size: 11px; max-height: 200px; margin: 4px 0 0; }
+.chat-setting { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; font-size: 13px; line-height: 1.45; }
+.chat-setting input { margin-top: 3px; flex: 0 0 auto; width: auto; }
+.chat-setting > span { display: flex; flex-direction: column; gap: 3px; }

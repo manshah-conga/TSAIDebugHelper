@@ -6,7 +6,7 @@ Model
 Every registry entry carries two extra fields:
 
     "owner"      -- username of the account that connected the org
-    "visibility" -- "private" (default) or "public"
+    "visibility" -- "public" (default for new orgs) or "private"
 
 Rules (agreed with the product owner):
 
@@ -38,8 +38,14 @@ admin's hands: they can see these orgs, and setting a visibility on one
 stamps them as its owner and makes the choice explicit.
 
 An ownerless org can only be managed by an admin, who can also claim it by
-setting its visibility (which stamps an owner). Newly connected orgs default
-to **private**.
+setting its visibility (which stamps an owner).
+
+Newly connected orgs default to **public** (product decision, 2026-10-15):
+the point of connecting an org is usually that colleagues can investigate
+against it, so private is now the deliberate opt-in. This applies only to
+orgs connected from now on -- it does NOT reopen the legacy ownerless orgs
+above, which still read as private via `visibility_of`, and re-connecting
+or refreshing an existing org keeps whatever visibility it already has.
 
 Existence hiding
 ----------------
@@ -54,7 +60,9 @@ from . import storage
 PUBLIC = "public"
 PRIVATE = "private"
 VISIBILITIES = (PUBLIC, PRIVATE)
-DEFAULT_VISIBILITY = PRIVATE
+# Default for a NEWLY connected org only. Legacy entries with no visibility
+# field still read as PRIVATE -- see visibility_of().
+DEFAULT_VISIBILITY = PUBLIC
 
 
 def normalize_visibility(value, default=DEFAULT_VISIBILITY):

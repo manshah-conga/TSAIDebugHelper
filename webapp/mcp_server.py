@@ -341,7 +341,7 @@ async def _post_form(path: str, data: dict, files: Optional[dict] = None):
 
 @mcp.tool()
 async def create_org_connection(org_id: str, org_name: str, instance_url: str,
-                                access_token: str, visibility: str = "private",
+                                access_token: str, visibility: str = "public",
                                 account: str = "") -> dict:
     """Connect a new Salesforce org: fetch its Apex classes/triggers, flows,
     LWC components and custom objects via the Tooling API, then build and
@@ -351,9 +351,9 @@ async def create_org_connection(org_id: str, org_name: str, instance_url: str,
     call list_orgs() until it reports status 'done'.
 
     `visibility` controls who else can see the org in this app:
-      "private" (default) -- only the account that owns the API token you are
+      "public" (default)  -- every signed-in account.
+      "private"           -- only the account that owns the API token you are
                              using, plus admins.
-      "public"            -- every signed-in account.
     Either way, only the owner or an admin can re-connect/refresh the org or
     change its visibility later (see set_org_visibility). Re-connecting an
     org you already own keeps its current visibility unless you pass a new

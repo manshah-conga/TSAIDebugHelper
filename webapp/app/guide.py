@@ -65,6 +65,10 @@ PREF_KEYS = {
     "mcp_card_dismissed": bool,
     "collapsed_accounts": list,   # account keys (casefolded) folded on Home
     "pinned_accounts": list,      # account keys kept at the top
+    # Chat: show raw tool-call rows (name, arguments, results). Absent means
+    # OFF -- every existing and new user gets the plain "Working..." status
+    # until they opt in from Chat settings.
+    "chat_show_tools": bool,
 }
 MAX_PINNED = 50
 

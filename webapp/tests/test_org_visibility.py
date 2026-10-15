@@ -230,8 +230,10 @@ def main():
 
         print("\n-- defaults --")
         reg = storage.load_registry()
-        check("new orgs default to private",
-              org_access.normalize_visibility(None) == "private")
+        check("new orgs default to public",
+              org_access.normalize_visibility(None) == "public")
+        check("legacy entries with no visibility field still read as private",
+              org_access.visibility_of({}) == "private")
         check("registry keeps owner across a refresh-shaped write",
               reg["alice_public"].get("owner") == "alice")
 
@@ -241,7 +243,7 @@ def main():
                                         "instance_url": "https://nope.invalid", "access_token": "t"})
         check("queueing a new org reports owner + default visibility",
               r.status_code == 200 and r.json().get("owner") == "bob"
-              and r.json().get("visibility") == "private", r.text[:160])
+              and r.json().get("visibility") == "public", r.text[:160])
         check("another user cannot poll status of an in-flight private org",
               alice.get("/api/orgs/bob_new/status").status_code == 404)
         check("owner can poll status of her in-flight org",
