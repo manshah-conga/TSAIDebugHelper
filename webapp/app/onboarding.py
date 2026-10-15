@@ -125,6 +125,11 @@ def _job(org_id, status, detail="", counts=None):
         "counts": merged_counts,
         "tracks": tracks,
         **({"fetch_stats": prev["fetch_stats"]} if prev.get("fetch_stats") else {}),
+        **({"timings": prev["timings"]} if prev.get("timings") else {}),
+        # Frozen at the first terminal update so elapsed time stops counting
+        # once the job is over (it used to keep growing on every poll).
+        **({"finished_at": prev.get("finished_at") or time.time()}
+           if status in ("done", "error") else {}),
         "step_label": STEP_LABELS.get(status),
         "step_index": (STEP_ORDER.index(status) + 1) if status in STEP_ORDER else None,
         "step_count": len(STEP_ORDER),
@@ -202,11 +207,12 @@ def progress_payload(job):
         return {"status": "unknown", "detail": "", "warnings": [], "percent": 0,
                 "step_label": None, "step_index": None, "step_count": len(STEP_ORDER),
                 "counts": {}, "tracks": [], "elapsed_seconds": None, "steps": _step_manifest()}
-    out = {k: v for k, v in job.items() if k not in ("owner", "started_at", "tracks")}
+    out = {k: v for k, v in job.items() if k not in ("owner", "started_at", "finished_at", "tracks")}
     out.setdefault("percent", _percent(job.get("status"), job.get("tracks")))
     out.setdefault("counts", {})
     started = job.get("started_at")
-    out["elapsed_seconds"] = round(time.time() - started, 1) if started else None
+    end = job.get("finished_at") or time.time()
+    out["elapsed_seconds"] = round(end - started, 1) if started else None
     # The full step list rides along so the UI can show every phase with a
     # tick against the finished ones, rather than just a bare percentage.
     out["steps"] = _step_manifest(job.get("status"))
@@ -268,6 +274,7 @@ async def run_onboarding(org_id, org_name, instance_url, access_token, existing_
     client_sf = SalesforceClient(instance_url, access_token)
     _job(org_id, "connecting")
     fetch_started = time.time()
+    marks = {}   # phase end times, for the per-phase breakdown in fetch_stats
 
     apex_cards, flow_cards, lwc_cards, workflow_cards = {}, {}, {}, {}
     file_hashes, warnings = {}, []
@@ -303,6 +310,7 @@ async def run_onboarding(org_id, org_name, instance_url, access_token, existing_
                 _soft(client_sf.list_lwc_bundles(http_client), "lwc bundle list", []),
                 client_sf.fetch_org_namespace(http_client),
             ])
+            marks["listed"] = time.time()
             # Every class NAME, managed or not -- a call into a managed class
             # is still a real edge and must classify as one.
             all_class_names = {r["Name"] for r in class_list if r.get("Name")}
@@ -471,6 +479,7 @@ async def run_onboarding(org_id, org_name, instance_url, access_token, existing_
             try:
                 await _gather_or_cancel(jobs)
             finally:
+                marks["fetched"] = time.time()
                 await parser.__aexit__(None, None, None)
                 warnings.extend(parser.warnings)
             for name in ("classes", "triggers", "flows", "lwc"):
@@ -506,11 +515,20 @@ async def run_onboarding(org_id, org_name, instance_url, access_token, existing_
         "concurrency_adaptive": client_sf.limiter.stats(),
         "flow_composite": client_sf.composite_ok and _sf.COMPOSITE_SIZE > 1,
         "parse_mode": parser.mode,
+        # Where the time went. Request times are summed across overlapping
+        # requests; parse "slot wait" > 0 means chunks queued for a parse
+        # worker (parse is the bottleneck, not Salesforce).
+        "request_timing": client_sf.request_timing(),
+        "parse_timing": parser.timing(),
         # components the parse watchdog stopped (stub cards, analysis_status='timeout')
         "parse_timeouts": parser.timed_out,
         "managed_skipped": skipped,
         "org_namespace": org_ns,
     }
+    t_listed = marks.get("listed", fetch_started)
+    t_fetched = marks.get("fetched", time.time())
+    fetch_stats["timings"] = {"listing_s": round(t_listed - fetch_started, 1),
+                              "fetch_parse_s": round(t_fetched - t_listed, 1)}
     JOBS[org_id]["fetch_stats"] = fetch_stats
     lim = fetch_stats["concurrency_adaptive"]
     print(f"[TS Debug Helper] org '{org_id}' fetched+parsed in {fetch_stats['seconds']}s "
@@ -524,14 +542,25 @@ async def run_onboarding(org_id, org_name, instance_url, access_token, existing_
     _job(org_id, "indexing", counts={
         "components": len(apex_cards) + len(flow_cards) + len(lwc_cards) + len(workflow_cards),
     })
+    t_index = time.time()
     index_result = await asyncio.to_thread(
         build_index, apex_cards, flow_cards, lwc_cards, workflow_cards, coverage)
+    fetch_stats["timings"]["indexing_s"] = round(time.time() - t_index, 1)
 
     _job(org_id, "saving")
     # Writing the knowledgebase is a dozen json.dump calls over documents
     # that reach tens of megabytes on a large org -- also blocking, also off
     # the loop.
+    t_save = time.time()
     await asyncio.to_thread(storage.save_kb, org_id, index_result, file_hashes)
+    fetch_stats["timings"]["saving_s"] = round(time.time() - t_save, 1)
+    fetch_stats["timings"]["total_s"] = round(time.time() - fetch_started, 1)
+    tm, rq, pt = fetch_stats["timings"], fetch_stats["request_timing"], fetch_stats["parse_timing"]
+    print(f"[TS Debug Helper] org '{org_id}' timings: listing {tm['listing_s']}s, fetch+parse "
+          f"{tm['fetch_parse_s']}s, indexing {tm['indexing_s']}s, saving {tm['saving_s']}s, "
+          f"total {tm['total_s']}s | requests avg {rq['avg_seconds']}s / max {rq['max_seconds']}s | "
+          f"parse {pt['chunks']} chunks, waited {pt['slot_wait_seconds_total']}s for a worker",
+          flush=True)
 
     # What actually moved since the last fetch. Purely derived from the
     # content hashes we already keep, so a refresh can report "3 classes and

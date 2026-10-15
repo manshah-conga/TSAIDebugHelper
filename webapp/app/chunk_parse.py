@@ -29,6 +29,7 @@ import concurrent.futures
 import hashlib
 import multiprocessing
 import os
+import time
 
 from .common_now import iso_now
 from .extractors import apex as apex_extractor
@@ -283,7 +284,28 @@ def parse_workflow(workflow_raw, existing_hashes):
 _WORKER_CTX = {}
 
 
+def _lower_priority():
+    """Run this (parse worker) process below the web app, so a big fetch's
+    CPU-bound parsing cannot starve logins and page loads on a small box. The
+    parse only gets slower when something else actually wants the CPU; on an
+    idle machine it still runs at full speed. TS_PARSE_LOW_PRIORITY=0 turns
+    it off. Never raises -- priority is a courtesy, not a requirement."""
+    if os.environ.get("TS_PARSE_LOW_PRIORITY", "1") == "0":
+        return
+    try:
+        if os.name == "nt":
+            import ctypes
+            BELOW_NORMAL_PRIORITY_CLASS = 0x00004000
+            k32 = ctypes.windll.kernel32
+            k32.SetPriorityClass(k32.GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS)
+        else:
+            os.nice(5)
+    except Exception:
+        pass
+
+
 def _worker_init(known_objects, all_class_names, org_namespace):
+    _lower_priority()
     _WORKER_CTX["known_objects"] = known_objects
     _WORKER_CTX["all_class_names"] = all_class_names
     _WORKER_CTX["org_namespace"] = org_namespace
@@ -363,6 +385,16 @@ class ApexParser:
         self._gen = 0             # bumped on every pool recycle
         self._lock = None
         self._slots = None
+        # Timing, so "why was this fetch slow" has an answer. Chunks overlap,
+        # so these are sums across chunks, not wall-clock time.
+        self.parse_chunks = 0
+        self.parse_chunk_seconds = 0.0   # per chunk: waiting for a worker slot + parsing
+        self.parse_slot_wait_seconds = 0.0   # the waiting part: > 0 means parse is the bottleneck
+
+    def timing(self):
+        return {"chunks": self.parse_chunks,
+                "chunk_seconds_total": round(self.parse_chunk_seconds, 1),
+                "slot_wait_seconds_total": round(self.parse_slot_wait_seconds, 1)}
 
     # ---- pool lifecycle ----
 
@@ -494,6 +526,14 @@ class ApexParser:
                 pass
 
     async def parse(self, kind, records, existing_hashes):
+        t0 = time.perf_counter()
+        try:
+            return await self._parse(kind, records, existing_hashes)
+        finally:
+            self.parse_chunks += 1
+            self.parse_chunk_seconds += time.perf_counter() - t0
+
+    async def _parse(self, kind, records, existing_hashes):
         # Only the hash entries this chunk can touch cross the process
         # boundary, not the whole org's manifest.
         subset = {}
@@ -504,7 +544,9 @@ class ApexParser:
                     subset[key] = existing_hashes[key]
         await self._await_ready()
         if self.pool is not None:
+            t_wait = time.perf_counter()
             async with self._slots:
+                self.parse_slot_wait_seconds += time.perf_counter() - t_wait
                 try:
                     res = await self._run_in_pool(kind, records, subset, self.chunk_timeout)
                     if res is not None:

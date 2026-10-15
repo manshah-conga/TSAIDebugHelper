@@ -236,6 +236,16 @@ class SalesforceClient:
         self.requests_made = 0
         self.retries = 0
         self.composite_ok = COMPOSITE_SIZE > 1
+        # Time spent inside client.request (send -> body received), so a slow
+        # fetch can be told apart: slow Salesforce responses vs slow local work.
+        self.req_seconds_total = 0.0
+        self.req_seconds_max = 0.0
+
+    def request_timing(self):
+        n = max(1, self.requests_made)
+        return {"avg_seconds": round(self.req_seconds_total / n, 2),
+                "max_seconds": round(self.req_seconds_max, 1),
+                "total_seconds": round(self.req_seconds_total, 1)}
 
     def _headers(self, query=False):
         h = {"Authorization": f"Bearer {self.access_token}", "Content-Type": "application/json"}
@@ -264,8 +274,14 @@ class SalesforceClient:
             try:
                 async with self.limiter:
                     self.requests_made += 1
-                    resp = await client.request(method, url, headers=self._headers(query=query),
-                                                json=json_body, timeout=timeout)
+                    t_req = time.perf_counter()     # after the slot is won: excludes queueing
+                    try:
+                        resp = await client.request(method, url, headers=self._headers(query=query),
+                                                    json=json_body, timeout=timeout)
+                    finally:
+                        dt = time.perf_counter() - t_req
+                        self.req_seconds_total += dt
+                        self.req_seconds_max = max(self.req_seconds_max, dt)
             except (httpx.TimeoutException, httpx.RemoteProtocolError, httpx.ReadError,
                     httpx.ConnectError) as e:
                 if isinstance(e, httpx.TimeoutException):
