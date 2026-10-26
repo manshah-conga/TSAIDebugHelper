@@ -69,6 +69,9 @@ PREF_KEYS = {
     # OFF -- every existing and new user gets the plain "Working..." status
     # until they opt in from Chat settings.
     "chat_show_tools": bool,
+    # Chat: also search Conga's product knowledge (Congaroo) during a turn.
+    # Absent means OFF; see app/congaroo.py.
+    "congaroo_enabled": bool,
 }
 MAX_PINNED = 50
 

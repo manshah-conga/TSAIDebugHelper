@@ -18,3 +18,4 @@ Other things:
 - Orgs are private to their owner (and admins) by default; the owner can make one public from the Home page. Only the owner or an admin can refresh an org. Refreshing needs a fresh Salesforce access token.
 - Roles: reader (read only), user/"writer" (also connect orgs, file incidents, normalize logs, record fixes), admin (everything plus user management).
 - Only derived JSON is stored: no Apex/Flow source, no raw debug logs, no Salesforce access tokens.
+- Congaroo (Conga product knowledge: KB articles, cases, JIRAs): turn it on with the "Congaroo" pill in the chat header or in Chat settings (gear icon), then sign in once with your Conga identity. Off by default, per user.

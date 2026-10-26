@@ -30,6 +30,8 @@ const CHAT = {
   abort: null,
   pendingConfirm: null,
   liveMsg: null,          // the assistant turn currently streaming, if any
+  congaroo: null,         // GET /api/congaroo/status: {available, enabled, connected, account}
+  congarooConnecting: null, // the sign-in in progress, if any: {win, stop}
   el: {},
   open: false,
 };
@@ -99,6 +101,156 @@ async function loadKeyState() {
   CHAT.keyState = await apiJson("/api/chat/key", {}, null);
   if (CHAT.keyState && !CHAT.model) CHAT.model = CHAT.keyState.default_model;
   return CHAT.keyState;
+}
+
+// ---------- Congaroo (Conga product knowledge) ----------
+
+async function loadCongarooState() {
+  CHAT.congaroo = await apiJson("/api/congaroo/status", {}, null);
+  renderCongarooPill();
+  return CHAT.congaroo;
+}
+
+function congarooMode() {
+  const c = CHAT.congaroo;
+  if (!c || !c.available) return "hidden";
+  if (!c.enabled) return "off";
+  return c.connected ? "on" : "connect";
+}
+
+function renderCongarooPill() {
+  document.querySelectorAll('[data-act="congaroo"]').forEach(b => {
+    const mode = congarooMode();
+    b.style.display = mode === "hidden" ? "none" : "";
+    b.className = `cg-pill cg-${mode}`;
+    b.setAttribute("aria-pressed", mode === "on" || mode === "connect" ? "true" : "false");
+    b.textContent = mode === "connect" ? "Congaroo: connect" : `Congaroo ${mode === "on" ? "on" : "off"}`;
+    b.title = mode === "on"
+      ? `Answers also search Conga product knowledge (KB, cases, JIRAs)` +
+        (CHAT.congaroo.account ? ` as ${CHAT.congaroo.account}` : "") + ". Click to turn off."
+      : mode === "connect"
+        ? "Congaroo is on but not signed in. Click to connect."
+        : "Click to also search Conga product knowledge (KB, cases, JIRAs) when answering.";
+  });
+}
+
+async function setCongarooEnabled(on) {
+  // Open the sign-in popup FIRST, while the click still counts as a user
+  // gesture -- awaiting the pref save before window.open risks the browser
+  // treating the popup as unsolicited and blocking it.
+  const needsSignIn = on && CHAT.congaroo && !CHAT.congaroo.connected;
+  const signIn = needsSignIn ? connectCongaroo() : null;
+  if (CHAT.congaroo) CHAT.congaroo.enabled = !!on;
+  renderCongarooPill();
+  if (typeof savePrefs === "function") await savePrefs({ congaroo_enabled: on ? true : null });
+  if (signIn) return signIn;
+  if (typeof toast === "function") toast(on ? "Congaroo on." : "Congaroo off.", "ok");
+}
+
+/** What the popup shows while the server prepares the sign-in. Without it
+ *  the popup is an empty about:blank page for as long as discovery and
+ *  client registration take -- 15 s the first time -- which reads as broken
+ *  and invites a second click. */
+function congarooPopupMessage(win, title, detail, isError) {
+  try {
+    win.document.open();
+    win.document.write(`<!doctype html><meta charset="utf-8"><title>${title}</title>
+      <body style="font:14px/1.5 system-ui,sans-serif;margin:0;display:grid;place-items:center;
+        min-height:100vh;background:#f6f7f9;color:#1d2330">
+      <main style="max-width:380px;padding:28px;background:#fff;border-radius:10px;
+        box-shadow:0 1px 4px rgba(0,0,0,.08);text-align:center">
+        ${isError ? "" : `<div style="width:26px;height:26px;margin:0 auto 14px;border:3px solid #d9dee7;
+          border-top-color:#1f9d55;border-radius:50%;animation:s 0.9s linear infinite"></div>
+          <style>@keyframes s{to{transform:rotate(360deg)}}</style>`}
+        <h1 style="font-size:16px;margin:0 0 6px;color:${isError ? "#b42318" : "#1d2330"}">${title}</h1>
+        <p style="margin:0;color:#5b6475">${detail}</p></main></body>`);
+    win.document.close();
+  } catch (e) { /* the popup already navigated away */ }
+}
+
+/** Opens the Workato sign-in in a popup. The popup is opened BEFORE the
+ *  request so the browser treats it as a direct result of the click and does
+ *  not block it. Completion is detected by polling status rather than by
+ *  trusting postMessage alone: the identity provider's cross-origin isolation
+ *  usually severs window.opener, and then the message never arrives. */
+async function connectCongaroo() {
+  // One sign-in at a time. A second click while the first is still being
+  // prepared used to start a second, competing flow in the same popup.
+  if (CHAT.congarooConnecting) {
+    const w = CHAT.congarooConnecting.win;
+    if (w && !w.closed) { try { w.focus(); } catch (e) { /* ignore */ } return; }
+    CHAT.congarooConnecting.stop();
+  }
+  let win = null;
+  try { win = window.open("about:blank", "congaroo-oauth", "width=520,height=720"); } catch (e) { win = null; }
+  if (win) congarooPopupMessage(win, "Connecting to Congaroo&hellip;",
+    "Preparing the Conga sign-in. This can take a few seconds the first time.");
+  const flow = { win, stop: () => {} };
+  CHAT.congarooConnecting = flow;
+  const res = await api("/api/congaroo/connect", { method: "POST" }).catch(() => null);
+  if (!res || !res.ok) {
+    CHAT.congarooConnecting = null;
+    const msg = res ? await errorText(res) : "Could not reach the server.";
+    if (win && !win.closed) congarooPopupMessage(win, "Could not start the Congaroo sign-in", escapeHtml(msg), true);
+    if (typeof toast === "function") toast(`Congaroo: ${msg}`, "error");
+    return;
+  }
+  const { authorize_url } = await res.json();
+  if (win && win.closed) { CHAT.congarooConnecting = null; return; }   // the user closed it: cancelled
+  if (win) win.location.href = authorize_url;
+  else { window.location.href = authorize_url; return; }   // popup blocked: use this tab
+  const started = Date.now();
+  let finished = false;
+  const done = async () => {
+    if (finished) return;
+    finished = true;
+    if (CHAT.congarooConnecting === flow) CHAT.congarooConnecting = null;
+    window.removeEventListener("message", onMsg);
+    clearInterval(timer);
+    await loadCongarooState();
+    if (CHAT.congaroo && CHAT.congaroo.connected && typeof toast === "function") {
+      toast("Congaroo connected.", "ok");
+    }
+    const modal = document.getElementById("chatSettingsTitle");
+    if (modal) { modal.closest(".modal-backdrop").remove(); openChatSettings(); }
+  };
+  const onMsg = e => {
+    if (e.origin === location.origin && e.data && e.data.type === "congaroo-oauth") done();
+  };
+  window.addEventListener("message", onMsg);
+  const timer = setInterval(async () => {
+    const s = await apiJson("/api/congaroo/status", {}, null);
+    if ((s && s.connected) || Date.now() - started > 5 * 60 * 1000) done();
+  }, 2000);
+  flow.stop = () => { finished = true; window.removeEventListener("message", onMsg); clearInterval(timer); };
+}
+
+async function disconnectCongaroo() {
+  const res = await api("/api/congaroo/disconnect", { method: "POST" }).catch(() => null);
+  if (res && res.ok) CHAT.congaroo = await res.json();
+  renderCongarooPill();
+  if (typeof toast === "function") toast("Congaroo disconnected.", "ok");
+}
+
+function congarooSettingsHtml() {
+  const c = CHAT.congaroo;
+  if (!c || !c.available) return "";
+  const status = c.connected
+    ? `Connected${c.account ? ` as <b>${escapeHtml(c.account)}</b>` : ""}.
+       <button type="button" class="link-btn" data-cg="disconnect">Disconnect</button>`
+    : `Not connected. <button type="button" class="link-btn" data-cg="connect">Connect with your Conga sign-in</button>`;
+  return `
+      <label class="chat-setting" style="margin-top:14px;">
+        <input type="checkbox" id="chatCongaroo" ${c.enabled ? "checked" : ""}>
+        <span>
+          <b>Use Conga product knowledge (Congaroo)</b>
+          <span class="muted">Also search Conga's KB articles, documentation, past cases and
+            JIRAs when a question depends on how Conga behaves out of the box &mdash; so an
+            answer can separate product behaviour from this org's customization. Searches run
+            with your own Congaroo access; nothing from the org is sent except the search terms.</span>
+          <span class="muted cg-status">${status}</span>
+        </span>
+      </label>`;
 }
 
 function llmReady() {
@@ -734,7 +886,9 @@ function liveActivity(m, showTools) {
   const running = calls.filter(c => c.ok === null || c.ok === undefined);
   if (running.length) {
     if (showTools) return null;                  // the running row already says so
-    return TOOL_ACTIVITY[running[running.length - 1].name] || "Working";
+    const name = running[running.length - 1].name || "";
+    if (name.startsWith("congaroo_")) return "Searching Conga product knowledge (Congaroo)";
+    return TOOL_ACTIVITY[name] || "Working";
   }
   if (m.content) return null;
   if (calls.length) return "Analyzing what it found";
@@ -763,6 +917,7 @@ function openChatSettings() {
             ask you to confirm either way.</span>
         </span>
       </label>
+      ${congarooSettingsHtml()}
       <div class="modal-actions">
         <button type="button" class="primary" data-cancel>Done</button>
       </div>
@@ -776,10 +931,30 @@ function openChatSettings() {
     renderTranscript();
     if (typeof toast === "function") toast(on ? "Tool calls will be shown." : "Tool calls hidden.", "ok");
   };
+  const cg = back.querySelector("#chatCongaroo");
+  if (cg) cg.onchange = e => setCongarooEnabled(e.target.checked);
+  back.querySelectorAll("[data-cg]").forEach(b => {
+    b.onclick = async e => {
+      e.preventDefault();
+      if (b.dataset.cg === "connect") return connectCongaroo();
+      await disconnectCongaroo();
+      close();
+      openChatSettings();
+    };
+  });
   back.querySelector("[data-cancel]").onclick = close;
   back.onclick = e => { if (e.target === back) close(); };
   document.addEventListener("keydown", onKey);
   document.body.appendChild(back);
+  // Refresh in place: the status may have changed in another tab or popup.
+  if (!back.dataset.cgRefreshed) {
+    loadCongarooState().then(() => {
+      const sec = back.querySelector(".cg-status");
+      if (!sec && CHAT.congaroo && CHAT.congaroo.available && document.body.contains(back)) {
+        close(); openChatSettings();
+      }
+    });
+  }
 }
 
 /** Tool rows are the trust surface of this whole feature. Collapsed by
@@ -1277,7 +1452,8 @@ function mountChat(container, mode = "dock") {
   CHAT.mode = mode;
   container.innerHTML = `
     <div class="chat-head">
-      <span class="chat-title">${full ? "Ask" : "Ask"}</span>
+      <span class="chat-title">${full ? "Ask" : "Ask"}
+        <button type="button" class="cg-pill cg-off" data-act="congaroo" style="display:none;">Congaroo off</button></span>
       <div class="chat-head-actions">
         ${full
           ? `<button type="button" class="icon-btn" data-act="collapse" title="Open in the side panel instead">&#8600;</button>`
@@ -1323,6 +1499,11 @@ function mountChat(container, mode = "dock") {
       if (act === "share") (CHAT.meta && CHAT.meta.share_token) ? unshareChat() : shareChat();
       if (act === "new") newChat();
       if (act === "settings") openChatSettings();
+      if (act === "congaroo") {
+        const mode = congarooMode();
+        if (mode === "connect") connectCongaroo();
+        else setCongarooEnabled(mode !== "on");
+      }
       // enterChatFull, NOT openChatFull. openChatFull is the nav button's
       // entry point and honours the remembered preference -- and opening the
       // dock sets that preference to "dock", so routing this button through
@@ -1374,6 +1555,7 @@ function mountChat(container, mode = "dock") {
   renderDock();
   renderTranscript();
   loadKeyState().then(() => { renderDock(); renderTranscript(); });
+  if (CHAT.congaroo) renderCongarooPill(); else loadCongarooState();
 }
 
 function updateJumpButton() {

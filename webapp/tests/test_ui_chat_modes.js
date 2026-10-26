@@ -108,6 +108,7 @@ const routes = {
   } } },
   "/api/llm": { json: { configured: true, provider: "azure", ready: true, can_manage: false } },
   "/api/llm/state": { json: { ready: true, using: "shared", can_manage: false } },
+  "/api/congaroo/status": { json: { available: true, enabled: false, connected: false } },
 };
 window.fetch = async (url) => {
   const key = Object.keys(routes).find(k => String(url).startsWith(k));
@@ -326,6 +327,35 @@ check("turning it off clears the pref back to the default", !("chat_show_tools" 
 check("...and hides the rows again", !tx().querySelector(".tool-row"));
 document.querySelector(".modal-backdrop [data-cancel]").click();
 check("Done closes the dialog", !document.getElementById("chatShowTools"));
+
+// ---- Congaroo toggle (build 34) ----
+const pill = () => document.querySelector('[data-act="congaroo"]');
+check("the chat head has a Congaroo toggle", !!pill());
+CHAT.congaroo = { available: false };
+renderCongarooPill();
+check("...hidden when the server has Congaroo switched off", pill().style.display === "none");
+CHAT.congaroo = { available: true, enabled: false, connected: true, account: "manshah@conga.com" };
+renderCongarooPill();
+check("...visible and OFF by default", pill().style.display !== "none" && /off/.test(pill().textContent));
+setCongarooEnabled(true);
+check("turning it on saves the per-user pref", TEST_PREFS.congaroo_enabled === true);
+CHAT.congaroo.enabled = true; renderCongarooPill();
+check("...and the pill says on", /on$/.test(pill().textContent) && pill().classList.contains("cg-on"));
+CHAT.congaroo.connected = false; renderCongarooPill();
+check("enabled but not signed in asks to connect", /connect/.test(pill().textContent));
+CHAT.congaroo.connected = true;
+document.querySelector('[data-act="settings"]').click();
+const cgBox = document.getElementById("chatCongaroo");
+check("Chat settings has the Congaroo switch, reflecting the pref", !!cgBox && cgBox.checked === true);
+check("...and shows who is connected, with a Disconnect",
+  document.querySelector(".cg-status").textContent.includes("manshah@conga.com") &&
+  !!document.querySelector('[data-cg="disconnect"]'));
+cgBox.checked = false; cgBox.dispatchEvent(new window.Event("change"));
+check("unticking clears the pref back to the default (off)", !("congaroo_enabled" in TEST_PREFS));
+document.querySelector(".modal-backdrop [data-cancel]").click();
+check("a running Congaroo call has a plain-words status",
+  liveActivity({ tool_calls: [{ id: "k", name: "congaroo_search_conga_s_knowledgebase" }] }, false)
+    .includes("Congaroo"));
 `;
 
 window.eval(read("app.js") + "\n;\n" + read("chat.js") + "\n;\n" + CHECKS);

@@ -1290,6 +1290,66 @@ Org-scoped tools appear only once an org is selected -- 21 tool definitions cost
 3-5k tokens on *every* request inside the loop, so gating them roughly halves the
 floor and sharpens the model's choices.
 
+### Conga product knowledge (Congaroo)
+
+The org tools describe one customer's *customization*. Many RCAs also need
+Conga's *out-of-the-box* behaviour: is this how the managed package works, is
+there a KB article or JIRA for this error, has another customer hit it?
+Congaroo -- Conga's internal knowledgebase (KB articles, documentation, support
+cases, JIRAs), served by Workato as a remote MCP server -- answers that, and the
+chat can now use it alongside the org knowledgebase.
+
+**Turning it on (per user, off by default).** Click the **Congaroo off** pill
+in the chat header (or Chat settings, the gear icon) and sign in with your own
+Conga identity in the popup. The pill turns green (**Congaroo on**). From then
+on the model is offered Congaroo's tools in every turn, with or without an org
+selected, and is told to keep *"this org's customization"* and *"Conga product
+behaviour"* apart in the answer and to cite each KB/case/JIRA url. Searches
+run with your own Congaroo permissions; the only thing sent is the search
+terms (the model is told never to put customer record data or IDs in them).
+
+**How the sign-in works** (`app/congaroo.py`). Everything is discovered from
+the MCP URL, nothing about Workato is hard-coded: protected-resource metadata
+-> authorization-server metadata -> dynamic client registration as a public
+client (cached in `data/auth/congaroo_clients.json`) -> authorization code +
+PKCE S256 with `resource=` -> refresh-token rotation. A refused refresh shows
+"reconnect from Chat settings" in the chat instead of failing the turn.
+Congaroo tools that declare themselves as writing (`readOnlyHint: false`) are
+never offered.
+
+**Where tokens live.** In server memory by default: a restart means clicking
+Connect again (usually one click -- Workato remembers the SSO session). Set
+`TS_CONGAROO_TOKEN_KEY` to persist them AES-GCM-encrypted in
+`data/auth/congaroo_tokens.json` under that key. Like the LLM keys, this
+assumes a single uvicorn worker.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `TS_CONGAROO_ENABLED` | `1` | `0` hides the feature for everyone. |
+| `TS_CONGAROO_URL` | `https://16406.apim.mcp.workato.com/` | The Congaroo MCP endpoint. |
+| `TS_CONGAROO_REDIRECT_URI` | *(derived)* | Exact OAuth callback URL. Otherwise `TS_PUBLIC_URL` + `/api/congaroo/oauth/callback`, otherwise the host the browser used. Set one of the two behind nginx/TLS. |
+| `TS_CONGAROO_SCOPES` | *(all advertised)* | Space-separated scopes to request. |
+| `TS_CONGAROO_CLIENT_ID` / `_SECRET` | *(dynamic registration)* | Use a pre-registered Workato client instead, if dynamic registration or the redirect URI is refused. |
+| `TS_CONGAROO_TOKEN_KEY` | *(unset = memory only)* | Persist tokens encrypted under this key. Use a long random value. |
+| `TS_CONGAROO_TIMEOUT` | `60` | Seconds per Congaroo request. |
+
+**Result shaping.** Congaroo answers are large for what they carry (a search
+hit is ~2.8 KB with a duplicate HTML caption and many "No Information
+Available" lines; the filter catalogue is ~27 KB, mostly empty fields), and all
+of it sits under one `result` key -- so the generic whole-section trimmer used
+for component cards would drop the entire answer. `congaroo.shape_result`
+instead: unwraps the envelope, keeps each hit's title, url, document number,
+source, category and score, merges duplicates across queries, strips the empty
+lines, then cuts body text in steps and only as a last resort drops the
+lowest-ranked hits (listed by title and url). A `_trimmed` note tells the model
+how to read one hit in full (narrow re-search, or the similar-document tool).
+
+**Verified live 2026-10-26** (build 34): sign-in, registration and chat use
+against the real Workato server. Build 35 fixed the blank sign-in popup (a
+spinner page while the server prepares; preparation is also started in the
+background when Chat settings shows "not connected", and serialized so a double
+click cannot register two clients) and the result shaping above.
+
 ### Limits on a turn
 
 These are **this app's** limits, not OpenRouter's. All three are env-tunable:

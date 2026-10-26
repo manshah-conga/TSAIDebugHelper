@@ -1978,3 +1978,15 @@ button.secondary.danger-outline:hover { background: var(--conga-color-status-err
 .chat-setting { display: flex; gap: 10px; align-items: flex-start; cursor: pointer; font-size: 13px; line-height: 1.45; }
 .chat-setting input { margin-top: 3px; flex: 0 0 auto; width: auto; }
 .chat-setting > span { display: flex; flex-direction: column; gap: 3px; }
+
+/* Congaroo toggle in the chat head (build 34) */
+.chat-title { display: inline-flex; align-items: center; gap: 8px; }
+.cg-pill {
+  font: 600 10.5px/1 inherit; letter-spacing: 0.02em; text-transform: none;
+  border-radius: 999px; padding: 4px 9px; cursor: pointer; border: 1px solid rgba(255,255,255,0.35);
+  background: transparent; color: #c6d0e0;
+}
+.cg-pill:hover { background: rgba(255,255,255,0.12); color: white; }
+.cg-pill.cg-on { background: #1f9d55; border-color: #1f9d55; color: white; }
+.cg-pill.cg-connect { background: #b7791f; border-color: #b7791f; color: white; }
+.cg-status { margin-top: 4px; }

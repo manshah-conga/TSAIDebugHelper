@@ -11,14 +11,16 @@ Run with:  python -m uvicorn app.main:app --reload --port 8000
            (from inside webapp/ -- see README section 1; add --host 0.0.0.0
             to make it reachable from other machines)
 """
+import asyncio
 import copy
+import json
 import os
 import time
 from contextlib import asynccontextmanager
 from typing import Optional
 
 from fastapi import FastAPI, BackgroundTasks, UploadFile, File, Form, HTTPException, Depends, Request, Response
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -32,6 +34,7 @@ from . import log_library
 from . import secrets_store
 from . import chat_store
 from . import chat as chat_agent
+from . import congaroo
 from . import env_file
 from . import llm
 from . import llm_config
@@ -251,7 +254,7 @@ def change_own_password(req: ChangePasswordRequest, ident=Depends(auth.require_r
 # after an update a browser can be running new UI against an old server that
 # silently ignores the new fields (log tags were dropped exactly this way).
 # The page compares the two and tells the person to restart the server.
-APP_BUILD = 33
+APP_BUILD = 35
 
 
 @app.get("/api/build")
@@ -452,6 +455,7 @@ def admin_delete_user(username: str, request: Request):
     usage_ledger.forget_user(username)
     activity.forget_user(username)
     storage.forget_guide(username)
+    congaroo._forget_tokens(username)
     return {"ok": True}
 
 
@@ -1764,6 +1768,89 @@ async def send_message(chat_id: str, req: SendMessageRequest, request: Request,
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# ---------- Congaroo (Conga product knowledge for chat) ----------
+#
+# See app/congaroo.py. Per user: the toggle is the `congaroo_enabled` pref
+# (Chat settings), the sign-in is the user's own Conga identity via OAuth.
+# Any signed-in role may connect -- it grants nothing inside this app.
+
+def _congaroo_payload(ident):
+    st = congaroo.status(ident["username"])
+    prefs = (storage.load_guide(ident["username"]) or {}).get("prefs") or {}
+    st["enabled"] = bool(prefs.get("congaroo_enabled")) and st["available"]
+    return st
+
+
+_CONGAROO_WARMUPS = set()
+
+
+@app.get("/api/congaroo/status", dependencies=Dep_reader)
+async def congaroo_status(request: Request, ident=Depends(auth.require_reader)):
+    payload = _congaroo_payload(ident)
+    if payload["available"] and not payload["connected"]:
+        # Get discovery + client registration out of the way while the user
+        # is still reading the settings, so the Connect popup is not left on
+        # a blank page for the ~15 s the first one took.
+        task = asyncio.create_task(congaroo.warm(str(request.base_url)))
+        _CONGAROO_WARMUPS.add(task)
+        task.add_done_callback(_CONGAROO_WARMUPS.discard)
+    return payload
+
+
+@app.post("/api/congaroo/connect", dependencies=Dep_reader)
+async def congaroo_connect(request: Request, ident=Depends(auth.require_reader)):
+    """Start the sign-in. Returns the URL the browser should open."""
+    try:
+        url = await congaroo.start_authorization(ident["username"], str(request.base_url))
+    except congaroo.CongarooError as e:
+        raise HTTPException(403 if e.code == "congaroo_disabled" else 502, str(e))
+    return {"authorize_url": url, "redirect_uri": congaroo.redirect_uri(str(request.base_url))}
+
+
+@app.post("/api/congaroo/disconnect", dependencies=Dep_reader)
+async def congaroo_disconnect(ident=Depends(auth.require_reader)):
+    await congaroo.disconnect(ident["username"])
+    return _congaroo_payload(ident)
+
+
+def _congaroo_done_page(ok, message):
+    import html as _html
+    title = "Congaroo connected" if ok else "Congaroo sign-in failed"
+    payload = json.dumps({"type": "congaroo-oauth", "ok": ok})
+    return f"""<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>{title}</title>
+<style>body{{font:14px/1.5 system-ui,sans-serif;margin:0;display:grid;place-items:center;min-height:100vh;
+background:#f6f7f9;color:#1d2330}}main{{max-width:420px;padding:28px;background:#fff;border-radius:10px;
+box-shadow:0 1px 4px rgba(0,0,0,.08)}}h1{{font-size:17px;margin:0 0 8px;color:{'#137a3a' if ok else '#b42318'}}}
+a{{color:#2563eb}}</style></head><body><main><h1>{_html.escape(title)}</h1>
+<p>{_html.escape(message)}</p><p><a href="/">Back to the TS Intelligent Debug Helper</a></p></main>
+<script>
+try {{ if (window.opener) window.opener.postMessage({payload}, location.origin); }} catch (e) {{}}
+{"setTimeout(function(){ if (window.opener) window.close(); else location.href = '/'; }, 1200);" if ok else ""}
+</script></body></html>"""
+
+
+@app.get("/api/congaroo/oauth/callback")
+async def congaroo_callback(request: Request, code: Optional[str] = None, state: Optional[str] = None,
+                            error: Optional[str] = None, error_description: Optional[str] = None):
+    """Where Workato sends the browser back. Deliberately carries no auth
+    dependency: it is reached by a cross-site redirect, and the single-use
+    `state` -- issued only to a signed-in user -- is what identifies them."""
+    if error:
+        return HTMLResponse(_congaroo_done_page(False, f"{error}: {error_description or ''}".strip()),
+                            status_code=400)
+    if not code or not state:
+        return HTMLResponse(_congaroo_done_page(False, "The sign-in response was incomplete."),
+                            status_code=400)
+    ident = auth.current_identity(request)
+    try:
+        await congaroo.complete_authorization(state, code, (ident or {}).get("username"))
+    except congaroo.CongarooError as e:
+        return HTMLResponse(_congaroo_done_page(False, str(e)), status_code=400)
+    return HTMLResponse(_congaroo_done_page(
+        True, "You can close this window. Chat can now look up Conga product knowledge."))
 
 
 # ---------- shared transcripts ----------
