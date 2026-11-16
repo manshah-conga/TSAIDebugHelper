@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <title>TS Intelligent Debug Helper</title>
-<link rel="stylesheet" href="/static/style.css?v=35">
+<link rel="stylesheet" href="/static/style.css?v=36">
 </head>
 <body>
 
@@ -84,7 +84,7 @@
       <div class="sub" id="userInfo"></div>
     </div>
     <button type="button" id="quotaChip" class="quota-chip" data-tour-anchor="quota" style="display:none;"
-            onclick="showView('usage')" title="Your LLM allowance -- click for details"></button>
+            onclick="openUsagePane('tokens')" title="Your LLM allowance -- click for details"></button>
     <button type="button" id="helpBtn" class="help-btn" data-tour-anchor="help" onclick="openHelp()"
             aria-label="Help, tours and what's new" title="Help, tours and what's new">
       <span aria-hidden="true">?</span><span class="help-dot" id="helpDot" style="display:none;"></span>
@@ -498,16 +498,109 @@
        from the same credential, so "who spent this" can only be answered
        here, from what the app recorded at the point of use. -->
   <section id="view-usage" class="view">
-    <!-- Two ledgers, two panes. "Activity" counts actions on every channel
-         (web UI, in-app chat, remote + stdio MCP, API scripts), so people who
-         never touch the in-app LLM -- MCP-only, log-parser-only -- are
-         visible. "AI tokens" is the original LLM spend/quota view. -->
+    <!-- Three panes. "Executive summary" (the default) reads both ledgers
+         plus the org registry for one period beside the period before it --
+         the numbers a lead asks for first. "Activity" counts actions on every
+         channel (web UI, in-app chat, remote + stdio MCP, API scripts), so
+         people who never touch the in-app LLM are visible. "AI tokens" is the
+         original LLM spend/quota view. -->
     <div class="usage-switch" id="usageSwitch" role="tablist" aria-label="Usage view">
-      <button type="button" role="tab" data-usage-pane="activity" class="active" onclick="showUsagePane('activity')">Activity &middot; all channels</button>
-      <button type="button" role="tab" data-usage-pane="tokens" onclick="showUsagePane('tokens')">AI chat tokens</button>
+      <button type="button" role="tab" data-usage-pane="summary" class="active" aria-selected="true" onclick="showUsagePane('summary')">Executive summary</button>
+      <button type="button" role="tab" data-usage-pane="activity" aria-selected="false" onclick="showUsagePane('activity')">Activity &middot; all channels</button>
+      <button type="button" role="tab" data-usage-pane="tokens" aria-selected="false" onclick="showUsagePane('tokens')">AI chat tokens</button>
     </div>
 
-    <div class="usage-pane" id="usagePaneActivity">
+    <div class="usage-pane" id="usagePaneSummary">
+      <div class="card exec-hero" data-tour="usage-summary">
+        <div class="act-head">
+          <div>
+            <h2 id="execTitle">Executive summary</h2>
+            <div class="exec-range" id="execRange"></div>
+          </div>
+          <div class="usage-controls act-controls">
+            <div>
+              <label for="execDays">Period</label>
+              <select id="execDays" onchange="loadExecSummary()">
+                <option value="1">Today</option>
+                <option value="7">Last 7 days</option>
+                <option value="14">Last 14 days</option>
+                <option value="30" selected>Last 30 days</option>
+                <option value="90">Last 90 days</option>
+                <option value="180">Last 6 months</option>
+                <option value="365">Last 12 months</option>
+              </select>
+            </div>
+            <div data-admin-only>
+              <label for="execUser">Account</label>
+              <select id="execUser" onchange="loadExecSummary()"><option value="">Everyone</option></select>
+            </div>
+            <button class="secondary" onclick="loadExecSummary()">Refresh</button>
+            <button class="secondary" onclick="copyExecSummary()" title="Plain text, ready to paste into Teams or an email">Copy summary</button>
+          </div>
+        </div>
+        <p class="exec-headline" id="execHeadline"></p>
+        <div id="execKpis" class="exec-kpis"></div>
+        <p class="muted exec-foot" id="execFoot"></p>
+      </div>
+
+      <div class="grid2 act-grid exec-grid">
+        <div class="card">
+          <div class="act-head">
+            <h2>Trend</h2>
+            <div class="exec-metric-switch" id="execTrendSwitch" role="tablist" aria-label="Trend metric">
+              <button type="button" data-metric="questions" class="active" onclick="setExecTrendMetric('questions')">Questions</button>
+              <button type="button" data-metric="tokens" onclick="setExecTrendMetric('tokens')">Tokens</button>
+              <button type="button" data-metric="actions" onclick="setExecTrendMetric('actions')">Actions</button>
+              <button type="button" data-metric="active_users" onclick="setExecTrendMetric('active_users')">People</button>
+            </div>
+          </div>
+          <div id="execTrend"></div>
+        </div>
+        <div class="card">
+          <h2>How it's used</h2>
+          <div class="act-sub">Channels</div>
+          <div id="execChannels"></div>
+          <div class="act-sub" style="margin-top:16px;">Most used features</div>
+          <div id="execFeatures"></div>
+          <div class="act-sub" style="margin-top:16px;">Models</div>
+          <div id="execModels"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>This period vs. the last</h2>
+        <div id="execCompare"></div>
+      </div>
+
+      <div class="grid2 act-grid exec-grid">
+        <div class="card">
+          <h2>Where the effort went</h2>
+          <p class="muted">Customer accounts ranked by AI questions plus actions against their orgs.</p>
+          <div class="table-scroll"><table><thead><tr><th>Account</th><th class="num">Orgs</th><th class="num">Questions</th>
+            <th class="num">Tokens</th><th class="num">Actions</th><th class="num">Incid.</th></tr></thead>
+            <tbody id="execAccounts"></tbody></table></div>
+        </div>
+        <div class="card">
+          <h2>Top orgs</h2>
+          <p class="muted">The orgs most of the work was done against.</p>
+          <div class="table-scroll"><table><thead><tr><th>Org</th><th class="num">Questions</th><th class="num">Tokens</th>
+            <th class="num">Actions</th><th class="num">People</th></tr></thead>
+            <tbody id="execOrgs"></tbody></table></div>
+        </div>
+      </div>
+
+      <div class="card" data-admin-only id="execPeopleCard">
+        <h2>Top people</h2>
+        <p class="muted">Ranked by AI questions plus actions. Click a row to narrow the summary to that account.</p>
+        <div class="table-scroll">
+        <table><thead><tr><th>User</th><th class="num">Questions</th><th class="num">Tokens</th>
+          <th class="num">Actions</th><th class="num">Logs</th><th class="num">Incid.</th>
+          <th class="num">Days active</th><th>Channels</th></tr></thead>
+          <tbody id="execPeople"></tbody></table></div>
+      </div>
+    </div>
+
+    <div class="usage-pane" id="usagePaneActivity" hidden>
       <div class="card">
         <div class="act-head">
           <h2>Your activity</h2>
@@ -796,13 +889,13 @@
 </aside>
 
 </div>
-<script src="/static/app.js?v=35"></script>
-<script src="/static/chat.js?v=35"></script>
-<script src="/static/activity.js?v=35"></script>
+<script src="/static/app.js?v=36"></script>
+<script src="/static/chat.js?v=36"></script>
+<script src="/static/activity.js?v=36"></script>
 <!-- Home page + command palette, then onboarding/help. Both are optional
      layers over app.js: every call into them from app.js is guarded, so a
      cached page that loads without them still works. -->
-<script src="/static/home.js?v=35"></script>
-<script src="/static/guide.js?v=35"></script>
+<script src="/static/home.js?v=36"></script>
+<script src="/static/guide.js?v=36"></script>
 </body>
 </html>

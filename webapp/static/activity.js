@@ -101,36 +101,51 @@ if (typeof document !== "undefined" && document.addEventListener) {
 }
 
 // =====================================================================
-// 2. the Usage tab's two panes
+// 2. the Usage tab's three panes
 // =====================================================================
 
-let USAGE_PANE = "activity";
+// The Usage tab always opens on the executive summary. Anything that wants a
+// different pane -- the quota chip wants the token pane -- asks for it with
+// openUsagePane() rather than remembering the last pane, so the nav button is
+// predictable: Usage means "the summary".
+let USAGE_PANE = "summary";
+let USAGE_NEXT_PANE = null;
+const USAGE_PANES = { summary: "usagePaneSummary", activity: "usagePaneActivity", tokens: "usagePaneTokens" };
 
-function showUsagePane(name) {
+function openUsagePane(name) {
+  USAGE_NEXT_PANE = USAGE_PANES[name] ? name : null;
+  showView("usage");
+}
+
+function showUsagePane(name, opts = {}) {
+  if (!USAGE_PANES[name]) name = "summary";
   USAGE_PANE = name;
   document.querySelectorAll("#usageSwitch [data-usage-pane]").forEach(b => {
     const on = b.dataset.usagePane === name;
     b.classList.toggle("active", on);
     b.setAttribute("aria-selected", on ? "true" : "false");
   });
-  const a = document.getElementById("usagePaneActivity");
-  const t = document.getElementById("usagePaneTokens");
-  if (a) a.hidden = name !== "activity";
-  if (t) t.hidden = name !== "tokens";
-  trackUi("ui.view", { view: `usage-${name}` });
+  for (const [pane, id] of Object.entries(USAGE_PANES)) {
+    const el = document.getElementById(id);
+    if (el) el.hidden = pane !== name;
+  }
+  if (!opts.silent) trackUi("ui.view", { view: `usage-${name}` });
   if (name === "activity") loadActivityView();
+  if (name === "summary" && typeof loadExecSummary === "function") loadExecSummary();
 }
 
-// The Usage tab still loads the token pane via app.js's loadUsageView; the
-// activity pane loads alongside it so the default pane is never empty.
+// app.js's loadUsageView still fills the token pane (quota, LLM connection,
+// token tables). The wrapper picks the pane first, so the one on screen
+// starts loading immediately and is never blank while the token pane loads.
 if (typeof window !== "undefined") {
   const wrapUsage = () => {
     const orig = window.loadUsageView;
     if (typeof orig !== "function" || orig.__actWrapped) return;
     const w = async function (...args) {
-      const p = orig.apply(this, args);
-      if (USAGE_PANE === "activity") loadActivityView();
-      return p;
+      const pane = USAGE_NEXT_PANE || "summary";
+      USAGE_NEXT_PANE = null;
+      showUsagePane(pane, { silent: true });
+      return orig.apply(this, args);
     };
     w.__actWrapped = true;
     window.loadUsageView = w;
@@ -442,4 +457,354 @@ function renderAdminActivity(r) {
       <td class="num">${e.count}</td><td class="num">${e.users}</td></tr>`);
 
   renderActFeed("actRecent", (r.recent || []).slice(0, 60), true);
+}
+
+// =====================================================================
+// 4. executive summary (the Usage tab's default pane)
+// =====================================================================
+//
+// One call to /api/usage/summary: the period's headline figures, the same
+// figures for the period immediately before it, point-in-time inventory
+// (orgs, accounts, components indexed) and the breakdowns underneath. The
+// server scopes it -- an admin sees everyone, anyone else sees themselves --
+// so this code renders whatever comes back and only hides the people table.
+
+let EXEC_LAST = null;
+let EXEC_SEQ = 0;
+let EXEC_TREND_METRIC = "questions";
+let EXEC_USERS_LOADED = false;
+
+const EXEC_TREND_LABELS = { questions: "AI questions", tokens: "Tokens", actions: "Actions", active_users: "People active" };
+
+function execIsAdmin() {
+  return typeof CURRENT_USER !== "undefined" && !!CURRENT_USER && CURRENT_USER.role === "admin";
+}
+
+/** Change vs the previous period, as {html, text}. `lowerIsBetter` flips the
+ *  colour (failures, answer time); `neutral` never colours (tokens, cost --
+ *  more is not good or bad by itself). */
+function execDelta(cur, prev, hasPrev, opts = {}) {
+  const flat = (t, title = "") => ({ html: `<span class="exec-delta flat"${title ? ` title="${actEsc(title)}"` : ""}>${t}</span>`, text: t });
+  if (!hasPrev) return flat("no prior data", "Nothing was recorded in the previous period");
+  cur = cur || 0; prev = prev || 0;
+  if (!cur && !prev) return flat("no change");
+  const prevTxt = opts.fmt ? opts.fmt(prev) : actNum(prev);
+  if (!prev) {
+    return { html: `<span class="exec-delta up ${opts.neutral ? "neutral" : (opts.lowerIsBetter ? "bad" : "good")}"
+      title="None in the previous period">new</span>`, text: "new (none in previous period)" };
+  }
+  const pct = Math.round(((cur - prev) / prev) * 100);
+  if (pct === 0) return flat("no change", `Previous period: ${prevTxt}`);
+  const up = pct > 0;
+  const tone = opts.neutral ? "neutral" : (up !== !!opts.lowerIsBetter ? "good" : "bad");
+  const arrow = up ? "&#9650;" : "&#9660;";
+  return { html: `<span class="exec-delta ${up ? "up" : "down"} ${tone}" title="Previous period: ${actEsc(prevTxt)}">${arrow} ${Math.abs(pct)}%</span>`,
+           text: `${up ? "up" : "down"} ${Math.abs(pct)}% vs previous (${prevTxt})` };
+}
+
+function execRangeLabel(r) {
+  return Number(r.days) === 1 ? "Today" : `In the last ${r.days} days`;
+}
+
+function execScope(r) {
+  if (!execIsAdmin()) return { self: true, label: "you" };
+  if (r.scope && r.scope !== "all users") return { self: true, label: r.scope };
+  return { self: false, label: "all users" };
+}
+
+/** The tiles, as data, so the page and "Copy summary" say the same thing. */
+function execTiles(r) {
+  const c = r.current || {}, p = r.previous || {}, inv = r.inventory || {};
+  const has = !!r.previous_has_data;
+  const scope = execScope(r);
+  const d = (k, o) => execDelta(c[k], p[k], has, o);
+  const none = { html: "", text: "" };
+  const n = (v, one, many) => `${actNum(v || 0)} ${(v || 0) === 1 ? one : many}`;
+  const tiles = [
+    { key: "questions", label: "AI questions asked", value: actNum(c.questions), delta: d("questions"),
+      note: c.failed_questions ? `${actNum(c.failed_questions)} failed` : (c.questions ? `${c.answer_rate}% answered` : "") },
+    { key: "tokens", label: "Tokens consumed", value: actNum(c.tokens), delta: d("tokens", { neutral: true }),
+      note: c.tokens ? `${actNum(c.prompt_tokens)} in · ${actNum(c.completion_tokens)} out` : "" },
+    { key: "orgs", label: scope.self && !execIsAdmin() ? "Orgs you can see" : "Orgs connected", value: actNum(inv.orgs_total),
+      delta: c.orgs_connected
+        ? { html: `<span class="exec-delta up good">+${c.orgs_connected} new</span>`, text: `+${c.orgs_connected} new in period` }
+        : { html: `<span class="exec-delta flat">none new</span>`, text: "none new in period" },
+      note: `${c.orgs_worked_on || 0} worked on` },
+    scope.self
+      ? { key: "days", label: "Days active", value: actNum(c.active_days), delta: d("active_days"),
+          note: n(c.actions, "action", "actions") }
+      : { key: "people", label: "Active people", value: actNum(c.active_users), delta: d("active_users"),
+          note: inv.users_total != null ? `of ${inv.users_total} accounts` : "" },
+    { key: "accounts", label: "Customer accounts", value: actNum(inv.accounts_total),
+      delta: none, note: `${c.accounts_worked_on || 0} worked on` },
+    { key: "lookups", label: "Org lookups", value: actNum(c.kb_lookups), delta: d("kb_lookups"),
+      note: c.mcp_calls ? n(c.mcp_calls, "MCP tool call", "MCP tool calls") : "" },
+    { key: "logs", label: "Debug logs parsed", value: actNum(c.logs_parsed), delta: d("logs_parsed"),
+      note: c.exceptions_found ? n(c.exceptions_found, "exception found", "exceptions found") : "" },
+    { key: "incidents", label: "Incidents filed", value: actNum(c.incidents_filed), delta: d("incidents_filed"),
+      note: n(c.resolutions, "fix recorded", "fixes recorded") },
+  ];
+  if (c.cost_available) {
+    tiles.push({ key: "cost", label: "AI cost", value: typeof fmtMoney === "function" ? fmtMoney(c.cost) : String(c.cost),
+                 delta: d("cost", { neutral: true, fmt: v => (typeof fmtMoney === "function" ? fmtMoney(v) : String(v)) }),
+                 note: "as reported by the provider" });
+  }
+  return tiles;
+}
+
+/** One sentence a manager can read without looking at a single tile. */
+function execHeadline(r, asText = false) {
+  const c = r.current || {};
+  const b = s => (asText ? s : `<b>${s}</b>`);
+  const plural = (n, one, many) => `${actNum(n)} ${n === 1 ? one : many}`;
+  if (!c.actions && !c.questions) return `${execRangeLabel(r)}: no activity recorded.`;
+  const scope = execScope(r);
+  const who = scope.self ? (scope.label === "you" ? "you" : (asText ? scope.label : actEsc(scope.label)))
+                         : plural(c.active_users, "person", "people");
+  const parts = [];
+  if (c.questions) parts.push(`asked ${b(plural(c.questions, "AI question", "AI questions"))} (${b(actNum(c.tokens) + " tokens")})`);
+  if (c.orgs_worked_on) {
+    parts.push(`worked across ${b(plural(c.orgs_worked_on, "org", "orgs"))}` +
+      (c.accounts_worked_on ? ` in ${b(plural(c.accounts_worked_on, "customer account", "customer accounts"))}` : ""));
+  }
+  const extras = [];
+  if (c.kb_lookups) extras.push(plural(c.kb_lookups, "org lookup", "org lookups"));
+  if (c.mcp_calls) extras.push(plural(c.mcp_calls, "MCP tool call", "MCP tool calls"));
+  if (c.logs_parsed) extras.push(plural(c.logs_parsed, "log parsed", "logs parsed"));
+  if (c.incidents_filed) extras.push(plural(c.incidents_filed, "incident filed", "incidents filed"));
+  if (c.resolutions) extras.push(plural(c.resolutions, "fix recorded", "fixes recorded"));
+  if (c.orgs_connected) extras.push(plural(c.orgs_connected, "new org connected", "new orgs connected"));
+  if (!parts.length) parts.push(`took ${b(plural(c.actions, "action", "actions"))}`);
+  let s = `${execRangeLabel(r)}, ${who} ${parts.join(" and ")}`;
+  if (extras.length) s += ` &mdash; ${extras.join(", ")}`;
+  s += ".";
+  if (asText) s = s.replace(/&mdash;/g, "-");
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
+async function populateExecUserPicker() {
+  const sel = document.getElementById("execUser");
+  if (!sel || !execIsAdmin() || EXEC_USERS_LOADED) return;
+  const users = await apiJson("/api/admin/users", {}, null);
+  if (!users) return;
+  const current = sel.value;
+  sel.innerHTML = `<option value="">Everyone</option>` + Object.keys(users).sort()
+    .map(u => `<option value="${actEsc(u)}">${actEsc(u)}</option>`).join("");
+  sel.value = current;
+  EXEC_USERS_LOADED = true;
+}
+
+async function loadExecSummary() {
+  const kpis = document.getElementById("execKpis");
+  if (!kpis) return;
+  const seq = ++EXEC_SEQ;
+  const days = (document.getElementById("execDays") || {}).value || 30;
+  const user = execIsAdmin() ? ((document.getElementById("execUser") || {}).value || "") : "";
+  if (typeof setBusy === "function") setBusy(kpis);
+  populateExecUserPicker();
+  const r = await apiJson(`/api/usage/summary?days=${encodeURIComponent(days)}${
+    user ? `&username=${encodeURIComponent(user)}` : ""}`, {}, null);
+  if (seq !== EXEC_SEQ) return;   // a newer period was picked while this one loaded
+  if (!r) { kpis.innerHTML = `<p class="status-line error">Could not load the summary.</p>`; return; }
+  EXEC_LAST = r;
+  renderExecSummary(r);
+}
+
+function renderExecSummary(r) {
+  const c = r.current || {}, p = r.previous || {};
+  const has = !!r.previous_has_data;
+  const scope = execScope(r);
+
+  const title = document.getElementById("execTitle");
+  if (title) title.textContent = scope.self && scope.label !== "you"
+    ? `Executive summary · ${scope.label}` : (scope.self ? "Your summary" : "Executive summary");
+  const range = document.getElementById("execRange");
+  if (range) range.innerHTML = `${actEsc(r.from)} &rarr; ${actEsc(r.to)} UTC
+    <span class="muted">&middot; compared with ${actEsc(r.previous_from)} &rarr; ${actEsc(r.previous_to)}</span>`;
+  document.getElementById("execHeadline").innerHTML = execHeadline(r);
+
+  document.getElementById("execKpis").innerHTML = execTiles(r).map(t => `<div class="exec-kpi" data-kpi="${t.key}">
+      <div class="exec-kpi-label">${actEsc(t.label)}</div>
+      <div class="exec-kpi-value">${t.value}</div>
+      <div class="exec-kpi-meta">${t.delta.html}${t.note ? `<span class="exec-kpi-note">${actEsc(t.note)}</span>` : ""}</div>
+    </div>`).join("");
+
+  const foot = document.getElementById("execFoot");
+  if (foot) foot.innerHTML = `AI questions and tokens are the in-app assistant. Claude/Copilot over MCP runs on
+    the client's own model, so it shows as MCP tool calls and org lookups, not tokens.
+    ${c.cost_available ? "" : "Cost is not reported by this provider (Azure bills the subscription, not the call). "}
+    Counts only &mdash; no question text, log content or customer data is kept.`;
+
+  renderExecTrend(r);
+
+  // --- this period vs the last
+  const sec = v => `${v || 0}s`;
+  const pctf = v => (v == null ? "-" : `${v}%`);
+  const rows = [
+    ["AI questions", "questions"],
+    ["Tokens", "tokens", { neutral: true }],
+    ["Avg tokens per question", "avg_tokens_per_question", { neutral: true }],
+    ["Avg answer time", "avg_answer_seconds", { lowerIsBetter: true, fmt: sec }],
+    ["Questions answered", "answer_rate", { fmt: pctf }],
+    !scope.self ? ["Active people", "active_users"] : null,
+    ["Days with activity", "active_days"],
+    ["Actions, all channels", "actions"],
+    ["MCP tool calls", "mcp_calls"],
+    ["Org lookups", "kb_lookups"],
+    ["Debug logs parsed", "logs_parsed"],
+    ["Incidents filed", "incidents_filed"],
+    ["Fixes recorded", "resolutions"],
+    ["Orgs worked on", "orgs_worked_on"],
+    ["Customer accounts worked on", "accounts_worked_on"],
+    ["New orgs connected", "orgs_connected"],
+    ["Org refreshes", "org_refreshes"],
+    (c.new_users != null) ? ["New user accounts", "new_users"] : null,
+    ["Failed actions", "errors", { lowerIsBetter: true }],
+    c.cost_available ? ["AI cost", "cost", { neutral: true, fmt: v => fmtMoney(v) }] : null,
+  ].filter(Boolean);
+  // Two side-by-side tables rather than one long one: twenty rows in a
+  // single column left the card beside it mostly empty.
+  const half = Math.ceil(rows.length / 2);
+  const table = part => `<table class="exec-compare"><thead><tr><th>Measure</th>
+      <th class="num">This period</th><th class="num">Previous</th><th class="num">Change</th></tr></thead><tbody>${
+    part.map(([label, k, o = {}]) => {
+      const f = o.fmt || actNum;
+      return `<tr><td>${actEsc(label)}</td><td class="num"><b>${f(c[k])}</b></td>
+        <td class="num muted">${has ? f(p[k]) : "-"}</td><td class="num">${execDelta(c[k], p[k], has, o).html}</td></tr>`;
+    }).join("")}</tbody></table>`;
+  document.getElementById("execCompare").innerHTML =
+    `<div class="exec-compare-grid">${table(rows.slice(0, half))}${table(rows.slice(half))}</div>`;
+
+  // --- where the effort went
+  actFill("execAccounts", r.top_accounts, 6, "No org-scoped activity in this period.", a => `<tr>
+      <td>${a.account === "(unassigned)" ? "<span class='muted'>unassigned</span>" : actEsc(a.account)}</td>
+      <td class="num">${a.orgs}</td><td class="num">${actNum(a.questions)}</td><td class="num">${actNum(a.tokens)}</td>
+      <td class="num">${actNum(a.actions)}</td><td class="num">${a.incidents || "-"}</td></tr>`);
+  actFill("execOrgs", r.top_orgs, 5, "No org-scoped activity in this period.", o => `<tr>
+      <td>${actEsc(o.org_name || o.org_id)}${o.account ? ` <span class="muted">· ${actEsc(o.account)}</span>` : ""}</td>
+      <td class="num">${actNum(o.questions)}</td><td class="num">${actNum(o.tokens)}</td>
+      <td class="num">${actNum(o.actions)}</td><td class="num">${o.users}</td></tr>`);
+
+  // --- how it's used
+  const ch = r.channels || {};
+  const chTotal = Object.values(ch).reduce((a, b) => a + b, 0);
+  document.getElementById("execChannels").innerHTML = chTotal
+    ? `${actStack(ch)}${actLegend()}<div class="exec-chips">${Object.entries(ch).sort((a, b) => b[1] - a[1]).map(([k, v]) =>
+        `${actChannelChip(k)} <span class="muted">${Math.round(v / chTotal * 100)}%</span>`).join(" &nbsp; ")}</div>`
+    : `<p class="muted">No actions in this period.</p>`;
+  const feats = r.top_features || [];
+  const fTop = Math.max(1, ...feats.map(f => f.count));
+  document.getElementById("execFeatures").innerHTML = feats.length ? feats.map(f => `<div class="exec-bar-row">
+      <div class="exec-bar-label">${actEsc(f.label)}</div>
+      <div class="ladder-track"><div class="ladder-fill" style="width:${Math.max(3, Math.round(f.count / fTop * 100))}%"></div></div>
+      <div class="exec-bar-num">${actNum(f.count)}</div></div>`).join("")
+    : `<p class="muted">Nothing yet.</p>`;
+  const models = r.top_models || [];
+  document.getElementById("execModels").innerHTML = models.length ? models.map(m => `<div class="exec-bar-row">
+      <div class="exec-bar-label mono">${actEsc(m.model)}</div>
+      <div class="exec-bar-num wide">${actNum(m.questions)} Qs · ${actNum(m.tokens)} tokens</div></div>`).join("")
+    : `<p class="muted">No AI questions in this period.</p>`;
+
+  // --- people (admin, everyone)
+  const card = document.getElementById("execPeopleCard");
+  if (card) card.style.display = execIsAdmin() && r.top_users ? "" : "none";
+  if (execIsAdmin() && r.top_users) {
+    const me = typeof currentUsername === "function" ? currentUsername() : null;
+    actFill("execPeople", r.top_users, 8, "No active accounts in this period.", u => `<tr class="act-user-row"
+        data-user="${actEsc(u.username)}" title="Narrow the summary to ${actEsc(u.username)}">
+      <td>${actEsc(u.username)}${u.username === me ? " <span class='badge'>you</span>" : ""}</td>
+      <td class="num">${actNum(u.questions)}</td><td class="num">${actNum(u.tokens)}</td>
+      <td class="num">${actNum(u.actions)}</td><td class="num">${u.logs || "-"}</td>
+      <td class="num">${u.incidents || "-"}</td><td class="num">${u.active_days}</td>
+      <td>${(u.channels || []).map(actChannelChip).join(" ")}</td></tr>`);
+    document.getElementById("execPeople").onclick = e => {
+      const tr = e.target.closest && e.target.closest("tr[data-user]");
+      if (tr) focusExecUser(tr.dataset.user);
+    };
+  }
+}
+
+function focusExecUser(username) {
+  const sel = document.getElementById("execUser");
+  if (!sel) return;
+  if (![...sel.options].some(o => o.value === username)) {
+    const opt = document.createElement("option");
+    opt.value = username; opt.textContent = username;
+    sel.appendChild(opt);
+  }
+  sel.value = username;
+  loadExecSummary();
+  const hero = document.getElementById("execKpis");
+  if (hero && hero.scrollIntoView) hero.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function setExecTrendMetric(metric) {
+  if (!EXEC_TREND_LABELS[metric]) return;
+  EXEC_TREND_METRIC = metric;
+  document.querySelectorAll("#execTrendSwitch [data-metric]").forEach(b =>
+    b.classList.toggle("active", b.dataset.metric === metric));
+  if (EXEC_LAST) renderExecTrend(EXEC_LAST);
+}
+
+function renderExecTrend(r) {
+  const host = document.getElementById("execTrend");
+  if (!host) return;
+  const days = r.trend || [];
+  if (!days.length) { host.innerHTML = ""; return; }
+  const k = EXEC_TREND_METRIC;
+  const peak = Math.max(1, ...days.map(d => d[k] || 0));
+  const total = days.reduce((a, d) => a + (d[k] || 0), 0);
+  const bars = days.map(d => {
+    const v = d[k] || 0;
+    const h = v ? Math.max(2, Math.round((v / peak) * 100)) : 0;
+    const title = `${d.date}: ${d.questions} question(s), ${actNum(d.tokens)} tokens, ${d.actions} action(s), ${d.active_users} active`;
+    return `<div class="usage-bar-wrap" title="${actEsc(title)}"><div class="usage-bar ${v ? "" : "empty"}" style="height:${h}%"></div></div>`;
+  }).join("");
+  const label = EXEC_TREND_LABELS[k];
+  const summary = k === "active_users"
+    ? `Peak: ${peak} people in a day.`
+    : `${actNum(total)} in the period · peak ${actNum(peak)} in a day.`;
+  host.innerHTML = `<div class="usage-chart">${bars}</div>
+    <div class="usage-axis"><span>${actEsc(r.from)}</span><span>${actEsc(r.to)}</span></div>
+    <div class="usage-legend">${actEsc(label)} per day. ${summary} Hover a bar for that day.</div>`;
+}
+
+/** Plain text for Teams / email. Same tiles and sentence as the page. */
+function execSummaryText(r) {
+  const scope = execScope(r);
+  const lines = [
+    `TS Intelligent Debug Helper - usage summary`,
+    `${execRangeLabel(r)} (${r.from} to ${r.to} UTC), ${scope.label === "you" ? currentUsername() || "you" : scope.label}`,
+    "",
+    execHeadline(r, true),
+    "",
+    ...execTiles(r).map(t => `- ${t.label}: ${t.value.replace(/&[a-z]+;/g, "")}` +
+      (t.delta.text ? ` (${t.delta.text})` : "") + (t.note ? ` - ${t.note}` : "")),
+  ];
+  const accts = (r.top_accounts || []).filter(a => a.account !== "(unassigned)").slice(0, 5);
+  if (accts.length) {
+    lines.push("", "Top customer accounts:");
+    accts.forEach(a => lines.push(`- ${a.account}: ${a.questions} questions, ${actNum(a.tokens)} tokens, ${a.actions} actions`));
+  }
+  return lines.join("\n");
+}
+
+async function copyExecSummary() {
+  if (!EXEC_LAST) return;
+  const text = execSummaryText(EXEC_LAST);
+  trackUi("ui.copy", { target: "exec-summary" });
+  try {
+    await navigator.clipboard.writeText(text);
+    if (typeof toast === "function") toast("Summary copied - paste it into Teams or an email.", "ok", 3000);
+  } catch (e) {
+    // Clipboard API needs a secure context (https or localhost). Fall back to
+    // a selectable textarea rather than failing silently.
+    const ta = document.createElement("textarea");
+    ta.value = text; ta.setAttribute("readonly", ""); ta.style.position = "fixed"; ta.style.opacity = "0";
+    document.body.appendChild(ta); ta.select();
+    let ok = false;
+    try { ok = document.execCommand("copy"); } catch (e2) { ok = false; }
+    ta.remove();
+    if (typeof toast === "function") toast(ok ? "Summary copied." : "Could not copy - your browser blocked clipboard access.", ok ? "ok" : "error", 4000);
+  }
 }

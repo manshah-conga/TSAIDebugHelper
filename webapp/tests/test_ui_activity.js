@@ -27,6 +27,8 @@ try {
 const STATIC = path.join(__dirname, "..", "static");
 const read = f => fs.readFileSync(path.join(STATIC, f), "utf8");
 const FIXTURE = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures", "activity_report.json"), "utf8"));
+// Written by tests/test_usage_summary.py from the real /api/usage/summary payload.
+const SUMMARY = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures", "usage_summary.json"), "utf8"));
 
 const dom = new JSDOM(read("index.html"), { runScripts: "outside-only", url: "http://localhost/" });
 const { window } = dom;
@@ -39,6 +41,10 @@ window.fetch = async (url, opts = {}) => {
   let json = {};
   if (url.startsWith("/api/activity/events")) { posted.push(JSON.parse(opts.body)); json = { accepted: 1 }; }
   else if (url.startsWith("/api/activity/me")) json = FIXTURE.me;
+  else if (url.startsWith("/api/usage/summary")) {
+    json = url.includes("username=") ? SUMMARY.admin_user
+         : (window.__summaryAs === "user" ? SUMMARY.user : SUMMARY.admin);
+  }
   else if (url.startsWith("/api/admin/activity")) json = FIXTURE.admin;
   else if (url.startsWith("/api/admin/users")) json = { dana: {}, sam: {}, priya: {} };
   else if (url.startsWith("/api/usage/me")) json = { totals: {}, by_day: [], quota: { unlimited: true } };
@@ -56,6 +62,8 @@ window.__log = msg => console.log(msg);
 window.__posted = posted;
 window.__requested = requested;
 window.__FIXTURE = FIXTURE;
+window.__SUMMARY = SUMMARY;
+window.navigator.clipboard = { writeText: async t => { window.__copied = t; } };
 
 const CHECKS = `
 const check = window.__check, log = window.__log;
@@ -65,8 +73,15 @@ const FIXTURE = window.__FIXTURE;
 
 (async () => {
   log("\\n-- page structure --");
-  check("usage switch exists with two panes", !!$("usageSwitch") && !!$("usagePaneActivity") && !!$("usagePaneTokens"));
-  check("token pane starts hidden, activity pane visible", $("usagePaneTokens").hidden && !$("usagePaneActivity").hidden);
+  check("usage switch exists with three panes", !!$("usageSwitch") && !!$("usagePaneSummary")
+        && !!$("usagePaneActivity") && !!$("usagePaneTokens"));
+  check("executive summary is the first tab", $("usageSwitch").querySelector("[data-usage-pane]").dataset.usagePane === "summary");
+  check("summary pane visible by default, the others hidden",
+        !$("usagePaneSummary").hidden && $("usagePaneActivity").hidden && $("usagePaneTokens").hidden);
+  for (const id of ["execKpis","execHeadline","execRange","execTrend","execCompare","execAccounts","execOrgs",
+                    "execChannels","execFeatures","execModels","execPeople","execDays","execUser"]) {
+    if (!$(id)) check("element #" + id + " exists", false);
+  }
   for (const id of ["myActivityKpis","myActivityChannels","myActivityFeatures","myActivityRecent","actKpis","actTrend",
                     "actSegments","actLadder","actChannels","actFeatures","actTools","actClients","actLogParser",
                     "actUsers","actAccounts","actOrgs","actHours","actErrors","actRecent","actDays","actUser"]) {
@@ -119,7 +134,72 @@ const FIXTURE = window.__FIXTURE;
   showUsagePane("tokens");
   check("tokens pane shows", !$("usagePaneTokens").hidden && $("usagePaneActivity").hidden);
   showUsagePane("activity");
-  check("and back", $("usagePaneTokens").hidden && !$("usagePaneActivity").hidden);
+  check("and back", $("usagePaneTokens").hidden && !$("usagePaneActivity").hidden && $("usagePaneSummary").hidden);
+
+  log("\\n-- executive summary: admin --");
+  const S = window.__SUMMARY;
+  CURRENT_USER = { username: "admin", role: "admin" };
+  applyRole();
+  showUsagePane("tokens");
+  showView("usage");
+  await tick(10);
+  check("opening Usage always lands on the summary", !$("usagePaneSummary").hidden && $("usagePaneTokens").hidden);
+  check("summary endpoint requested", window.__requested.some(u => u.startsWith("/api/usage/summary?days=30")));
+  const k = $("execKpis").innerHTML;
+  check("questions tile", k.includes("AI questions asked") && k.includes(">" + S.admin.current.questions + "<"));
+  check("tokens tile", k.includes("Tokens consumed") && k.includes(fmtCompact(S.admin.current.tokens)));
+  check("orgs tile shows the total connected", k.includes("Orgs connected") && k.includes(">" + S.admin.inventory.orgs_total + "<"));
+  check("orgs tile shows new in period", k.includes("+" + S.admin.current.orgs_connected + " new"));
+  check("people tile for everyone-scope", k.includes("Active people") && k.includes("of " + S.admin.inventory.users_total + " accounts"));
+  check("incidents + logs tiles", k.includes("Incidents filed") && k.includes("Debug logs parsed"));
+  check("period-over-period deltas render", /exec-delta (up|down|flat)/.test(k));
+  check("no cost tile when Azure reports none", !k.includes("AI cost"));
+  check("headline names people, questions and orgs", $("execHeadline").textContent.includes("people asked")
+        && $("execHeadline").textContent.includes("AI questions"));
+  check("range shows both windows", $("execRange").textContent.includes(S.admin.from) && $("execRange").textContent.includes(S.admin.previous_from));
+  check("trend: one bar per day", ($("execTrend").innerHTML.match(/usage-bar-wrap/g) || []).length === S.admin.trend.length);
+  setExecTrendMetric("tokens");
+  check("trend metric switches", $("execTrend").textContent.includes("Tokens per day"));
+  check("comparison table has new user accounts row (admin)", $("execCompare").textContent.includes("New user accounts"));
+  check("accounts table", $("execAccounts").textContent.includes("Acme"));
+  check("orgs table uses registry names", $("execOrgs").textContent.includes("Acme Prod"));
+  check("channels render", $("execChannels").innerHTML.includes("ch-stack"));
+  check("people table visible for admin", $("execPeopleCard").style.display !== "none"
+        && $("execPeople").querySelectorAll("tr").length === S.admin.top_users.length);
+  $("execPeople").querySelector("tr").click();
+  await tick(10);
+  check("clicking a person narrows the summary", $("execUser").value !== ""
+        && window.__requested.some(u => u.startsWith("/api/usage/summary") && u.includes("username=")));
+  check("narrowed: title names the account", $("execTitle").textContent.includes(S.admin_user.scope));
+  check("narrowed: people table hidden", $("execPeopleCard").style.display === "none");
+  await copyExecSummary();
+  check("copy produces plain text with the headline and tiles", (window.__copied || "").includes("usage summary")
+        && window.__copied.includes("- AI questions asked:") && !/<[a-z]/.test(window.__copied));
+
+  log("\\n-- executive summary: a writer --");
+  window.__summaryAs = "user";
+  CURRENT_USER = { username: "dana", role: "user" };
+  applyRole();
+  $("execUser").value = "";
+  await loadExecSummary();
+  await tick(5);
+  check("writer gets 'Your summary'", $("execTitle").textContent === "Your summary");
+  check("writer sees Days active, not Active people", $("execKpis").innerHTML.includes("Days active")
+        && !$("execKpis").innerHTML.includes("Active people"));
+  check("writer's headline says 'you'", $("execHeadline").textContent.includes(", you "));
+  check("writer: account picker hidden", $("execUser").parentElement.style.display === "none");
+  check("writer: people table hidden", $("execPeopleCard").style.display === "none");
+  check("writer never asked for another account",
+        !window.__requested.filter(u => u.startsWith("/api/usage/summary")).slice(-1)[0].includes("username="));
+
+  log("\\n-- openUsagePane --");
+  openUsagePane("tokens");
+  await tick(5);
+  check("the quota chip's route opens the token pane", !$("usagePaneTokens").hidden && $("usagePaneSummary").hidden);
+  showView("usage");
+  await tick(5);
+  check("...and the next plain open is the summary again", !$("usagePaneSummary").hidden);
+  window.__summaryAs = null;
 
   log("\\n-- beacon --");
   window.__posted.length = 0;

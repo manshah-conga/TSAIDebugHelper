@@ -1990,3 +1990,69 @@ button.secondary.danger-outline:hover { background: var(--conga-color-status-err
 .cg-pill.cg-on { background: #1f9d55; border-color: #1f9d55; color: white; }
 .cg-pill.cg-connect { background: #b7791f; border-color: #b7791f; color: white; }
 .cg-status { margin-top: 4px; }
+
+/* ===================================================================
+   Usage -> Executive summary (static/activity.js section 4)
+   =================================================================== */
+.exec-hero { border-top: 4px solid var(--conga-color-brand); }
+.exec-range { font-size: var(--conga-font-size-sm); color: var(--conga-color-text); margin-top: -6px; }
+.exec-headline {
+  font-size: 16px; line-height: 1.5; color: var(--conga-color-text);
+  background: var(--conga-color-surface-brand-subtle); border-radius: var(--conga-radius-md);
+  padding: var(--conga-space-4) var(--conga-space-5); margin: var(--conga-space-2) 0 var(--conga-space-5);
+}
+.exec-headline b { color: var(--conga-color-brand); }
+.exec-kpis {
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--conga-space-4);
+}
+.exec-kpi {
+  background: var(--conga-color-surface); border: 1px solid var(--conga-color-border);
+  border-radius: var(--conga-radius-md); padding: var(--conga-space-4) var(--conga-space-5);
+  border-left: 4px solid var(--conga-color-brand-accent); min-width: 0;
+}
+.exec-kpi-label {
+  font-size: var(--conga-font-size-xs); color: var(--conga-color-text-muted);
+  text-transform: uppercase; letter-spacing: 0.05em; font-weight: var(--conga-font-weight-medium);
+}
+.exec-kpi-value {
+  font-family: var(--conga-font-family-heading); font-size: 30px; line-height: 1.15;
+  font-weight: var(--conga-font-weight-medium); color: var(--conga-color-brand);
+  font-variant-numeric: tabular-nums; margin: var(--conga-space-1) 0 var(--conga-space-2);
+}
+.exec-kpi-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: var(--conga-font-size-xs); }
+.exec-kpi-note { color: var(--conga-color-text-muted); }
+.exec-delta {
+  display: inline-block; padding: 1px 7px; border-radius: var(--conga-radius-pill);
+  font-size: var(--conga-font-size-xs); font-weight: var(--conga-font-weight-medium);
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.exec-delta.good { background: var(--conga-color-status-success-surface); color: var(--conga-color-status-success); }
+.exec-delta.bad { background: var(--conga-color-status-error-surface); color: var(--conga-color-status-error); }
+.exec-delta.neutral { background: var(--conga-color-surface-brand-subtle); color: var(--conga-color-purple-400); }
+.exec-delta.flat { background: var(--conga-color-surface-subtle); color: var(--conga-color-text-muted); }
+.exec-foot { margin: var(--conga-space-4) 0 0; font-size: var(--conga-font-size-xs); }
+.exec-grid { margin-bottom: var(--conga-space-5); }
+.exec-metric-switch { display: inline-flex; gap: 2px; padding: 2px; margin-bottom: var(--conga-space-3);
+  background: var(--conga-color-surface-subtle); border-radius: var(--conga-radius-pill);
+  border: 1px solid var(--conga-color-border); flex-wrap: wrap; }
+.exec-metric-switch button {
+  margin: 0; border: 0; background: transparent; color: var(--conga-color-text-muted);
+  padding: 3px 10px; border-radius: var(--conga-radius-pill); font-size: var(--conga-font-size-xs); cursor: pointer;
+}
+.exec-metric-switch button.active { background: var(--conga-color-brand); color: var(--conga-color-text-inverse); }
+.exec-compare td, .exec-compare th { padding-top: 5px; padding-bottom: 5px; }
+.exec-compare-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 var(--conga-space-6); align-items: start; }
+.exec-hero + .exec-grid, .exec-grid + .card { margin-top: 0; }
+.exec-bar-row { display: grid; grid-template-columns: minmax(110px, 42%) 1fr 56px; gap: var(--conga-space-3); align-items: center; margin: 6px 0; }
+.exec-bar-label { font-size: var(--conga-font-size-md); overflow-wrap: anywhere; }
+.exec-bar-num { text-align: right; font-variant-numeric: tabular-nums; font-size: var(--conga-font-size-sm); }
+.exec-bar-num.wide { grid-column: span 2; color: var(--conga-color-text-muted); }
+.exec-chips { margin-top: var(--conga-space-3); font-size: var(--conga-font-size-sm); }
+@media (max-width: 900px) {
+  .grid2.exec-grid, .exec-compare-grid { grid-template-columns: minmax(0, 1fr); }
+  .exec-grid > .card { min-width: 0; }
+  .exec-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--conga-space-3); }
+  .exec-kpi { padding: var(--conga-space-3) var(--conga-space-4); }
+  .exec-kpi-value { font-size: 24px; }
+}

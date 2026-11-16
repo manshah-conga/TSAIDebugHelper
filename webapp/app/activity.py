@@ -182,6 +182,12 @@ CATALOG = {
     ("POST", "/api/me/guide"): ("guide.post", "Account", "", "never"),
     ("GET", "/api/home"): ("home.view", "Account", "", "never"),
     ("GET", "/api/activity/me"): ("activity.me", "Account", "", "never"),
+    ("GET", "/api/usage/summary"): ("usage.summary", "Account", "", "never"),
+    # Congaroo knowledgebase connection
+    ("GET", "/api/congaroo/status"): ("congaroo.status", "Knowledgebase", "", "never"),
+    ("POST", "/api/congaroo/connect"): ("congaroo.connect", "Knowledgebase", "Connected Congaroo", "always"),
+    ("POST", "/api/congaroo/disconnect"): ("congaroo.disconnect", "Knowledgebase", "Disconnected Congaroo", "always"),
+    ("GET", "/api/congaroo/oauth/callback"): ("congaroo.oauth_callback", "Knowledgebase", "", "never"),
     ("POST", "/api/activity/events"): ("activity.ui", "UI", "", "never"),
 }
 
@@ -784,7 +790,10 @@ def report(days=DEFAULT_DAYS, username=None, llm_records=None, registry=None):
         if not o:
             continue
         x = orgs.setdefault(o, {"org_id": o, "account": (registry.get(o) or {}).get("account"),
-                                "org_name": (registry.get(o) or {}).get("org_name"),
+                                # The registry calls it "name"; "org_name" is accepted for
+                                # callers that pass an already-renamed entry.
+                                "org_name": (registry.get(o) or {}).get("name")
+                                            or (registry.get(o) or {}).get("org_name"),
                                 "events": 0, "users": set(), "channels": {}, "actions": {}, "last_seen": None})
         x["events"] += 1
         if r.get("username"):

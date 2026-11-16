@@ -40,6 +40,7 @@ from . import llm
 from . import llm_config
 from . import usage as usage_ledger
 from . import activity
+from . import usage_summary
 from . import guide as guide_mod
 from . import kb_lookup
 from . import desktop_ext
@@ -139,6 +140,32 @@ def signup_config():
             "min_password_length": auth.MIN_PASSWORD_LENGTH}
 
 
+def _cookie_secure(request: Request) -> bool:
+    """Whether the session cookie should carry the Secure attribute.
+
+    TS_COOKIE_SECURE=auto (default) sets Secure exactly when this request
+    arrived over HTTPS -- either uvicorn terminated TLS itself, or a reverse
+    proxy said so via X-Forwarded-Proto (honoured only while
+    TS_TRUST_FORWARDED_FOR is on, because the header is attacker-controlled
+    when the app is exposed directly). Plain-HTTP deployments are therefore
+    unchanged: a Secure cookie over http:// would never be sent back and
+    every login would silently fail.
+
+    TS_COOKIE_SECURE=1 forces it on, 0 forces it off.
+    """
+    mode = (os.environ.get("TS_COOKIE_SECURE") or "auto").strip().lower()
+    if mode in ("1", "true", "yes", "on"):
+        return True
+    if mode in ("0", "false", "no", "off"):
+        return False
+    if request.url.scheme == "https":
+        return True
+    if rate_limit._trust_forwarded():
+        proto = request.headers.get("x-forwarded-proto", "").split(",")[0].strip().lower()
+        return proto == "https"
+    return False
+
+
 @app.post("/api/auth/signup")
 def signup(req: SignupRequest, request: Request, response: Response):
     """Self-service registration, then straight in.
@@ -174,7 +201,7 @@ def signup(req: SignupRequest, request: Request, response: Response):
                                  label="web signup", ttl_days=auth.SESSION_TTL_DAYS)
     response.set_cookie(
         auth.SESSION_COOKIE, raw, httponly=True, samesite="lax",
-        max_age=auth.SESSION_TTL_DAYS * 86400,
+        secure=_cookie_secure(request), max_age=auth.SESSION_TTL_DAYS * 86400,
     )
     quota = limits_policy.quota_status(created["username"], auth.get_user(created["username"]))
     activity.note(request, username=created["username"], role=created["role"])
@@ -192,7 +219,7 @@ def login(req: LoginRequest, request: Request, response: Response):
                                  label="web login", ttl_days=auth.SESSION_TTL_DAYS)
     response.set_cookie(
         auth.SESSION_COOKIE, raw, httponly=True, samesite="lax",
-        max_age=auth.SESSION_TTL_DAYS * 86400,
+        secure=_cookie_secure(request), max_age=auth.SESSION_TTL_DAYS * 86400,
     )
     # This is the one moment the plaintext password is in hand, so it is the
     # only moment a password-wrapped LLM key can be unwrapped without asking
@@ -214,7 +241,8 @@ def logout(request: Request, response: Response):
             activity.note(request, username=ident["username"], role=ident["role"])
             secrets_store.evict(ident["token_id"])
             auth.revoke_token(ident["token_id"])
-    response.delete_cookie(auth.SESSION_COOKIE)
+    response.delete_cookie(auth.SESSION_COOKIE, httponly=True, samesite="lax",
+                           secure=_cookie_secure(request))
     return {"ok": True}
 
 
@@ -254,7 +282,7 @@ def change_own_password(req: ChangePasswordRequest, ident=Depends(auth.require_r
 # after an update a browser can be running new UI against an old server that
 # silently ignores the new fields (log tags were dropped exactly this way).
 # The page compares the two and tells the person to restart the server.
-APP_BUILD = 35
+APP_BUILD = 36
 
 
 @app.get("/api/build")
@@ -1536,6 +1564,25 @@ def my_usage(days: int = usage_ledger.DEFAULT_DAYS, ident=Depends(auth.require_r
     summary["quota"] = limits_policy.quota_status(ident["username"],
                                                   auth.get_user(ident["username"]))
     return summary
+
+
+@app.get("/api/usage/summary", dependencies=Dep_reader)
+def usage_summary_view(days: int = usage_summary.DEFAULT_DAYS, username: Optional[str] = None,
+                       ident=Depends(auth.require_reader)):
+    """The Usage tab's executive summary: questions, tokens, orgs, people,
+    incidents and logs for the period, beside the period before it.
+
+    One route for every role. An admin sees everyone (or one account via
+    `username`); anyone else is pinned to themselves and the orgs they can
+    see, whatever `username` they pass -- so the same screen works for both
+    without a second, admin-only endpoint to keep in step."""
+    if ident["role"] == "admin":
+        return usage_summary.summary(days=days, username=username or None,
+                                     registry=storage.load_registry(),
+                                     users=auth.list_users(), include_people=not username)
+    return usage_summary.summary(days=days, username=ident["username"],
+                                 registry=org_access.visible_orgs(ident),
+                                 users=None, include_people=False)
 
 
 # ---------- activity analytics (app/activity.py) ----------

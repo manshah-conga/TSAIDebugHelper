@@ -1,0 +1,704 @@
+{
+ "admin": {
+  "days": 7,
+  "from": "2026-11-10",
+  "to": "2026-11-16",
+  "previous_from": "2026-11-03",
+  "previous_to": "2026-11-09",
+  "previous_has_data": true,
+  "scope": "all users",
+  "current": {
+   "questions": 4,
+   "failed_questions": 1,
+   "answer_rate": 75.0,
+   "tokens": 6500,
+   "prompt_tokens": 6100,
+   "completion_tokens": 400,
+   "avg_tokens_per_question": 1625,
+   "avg_answer_seconds": 4.0,
+   "chat_tool_calls": 8,
+   "cost": 0.0,
+   "cost_available": false,
+   "active_users": 3,
+   "active_days": 4,
+   "actions": 9,
+   "errors": 1,
+   "mcp_calls": 1,
+   "mcp_users": 1,
+   "kb_lookups": 3,
+   "logs_parsed": 2,
+   "exceptions_found": 2,
+   "incidents_filed": 1,
+   "resolutions": 1,
+   "orgs_worked_on": 3,
+   "accounts_worked_on": 2,
+   "orgs_connected": 2,
+   "org_refreshes": 0,
+   "new_users": 3
+  },
+  "previous": {
+   "questions": 1,
+   "failed_questions": 0,
+   "answer_rate": 100.0,
+   "tokens": 4000,
+   "prompt_tokens": 3900,
+   "completion_tokens": 100,
+   "avg_tokens_per_question": 4000,
+   "avg_answer_seconds": 4.0,
+   "chat_tool_calls": 2,
+   "cost": 0.0,
+   "cost_available": false,
+   "active_users": 1,
+   "active_days": 1,
+   "actions": 1,
+   "errors": 0,
+   "mcp_calls": 0,
+   "mcp_users": 0,
+   "kb_lookups": 1,
+   "logs_parsed": 0,
+   "exceptions_found": 0,
+   "incidents_filed": 0,
+   "resolutions": 0,
+   "orgs_worked_on": 1,
+   "accounts_worked_on": 1,
+   "orgs_connected": 0,
+   "org_refreshes": 0,
+   "new_users": 0
+  },
+  "inventory": {
+   "orgs_total": 3,
+   "accounts_total": 2,
+   "orgs_unassigned": 0,
+   "components_indexed": 180,
+   "users_total": 3,
+   "users_verified": 3
+  },
+  "trend": [
+   {
+    "date": "2026-11-10",
+    "questions": 0,
+    "tokens": 0,
+    "actions": 0,
+    "users": [],
+    "active_users": 0
+   },
+   {
+    "date": "2026-11-11",
+    "questions": 0,
+    "tokens": 0,
+    "actions": 0,
+    "users": [],
+    "active_users": 0
+   },
+   {
+    "date": "2026-11-12",
+    "questions": 0,
+    "tokens": 0,
+    "actions": 0,
+    "users": [],
+    "active_users": 0
+   },
+   {
+    "date": "2026-11-13",
+    "questions": 0,
+    "tokens": 0,
+    "actions": 2,
+    "users": [
+     "sam"
+    ],
+    "active_users": 1
+   },
+   {
+    "date": "2026-11-14",
+    "questions": 1,
+    "tokens": 3000,
+    "actions": 2,
+    "users": [
+     "dana",
+     "sam"
+    ],
+    "active_users": 2
+   },
+   {
+    "date": "2026-11-15",
+    "questions": 2,
+    "tokens": 2500,
+    "actions": 2,
+    "users": [
+     "dana",
+     "sam"
+    ],
+    "active_users": 2
+   },
+   {
+    "date": "2026-11-16",
+    "questions": 1,
+    "tokens": 1000,
+    "actions": 3,
+    "users": [
+     "dana",
+     "admin"
+    ],
+    "active_users": 2
+   }
+  ],
+  "channels": {
+   "web": 8,
+   "mcp-remote": 1
+  },
+  "channel_labels": {
+   "web": "Web UI",
+   "chat": "In-app AI chat",
+   "mcp-remote": "MCP (remote /mcp)",
+   "mcp-stdio": "MCP (local stdio)",
+   "api": "API token (script, or an older MCP copy)"
+  },
+  "top_orgs": [
+   {
+    "org_id": "00DORG1",
+    "org_name": "Acme Prod",
+    "account": "Acme",
+    "questions": 2,
+    "tokens": 3000,
+    "actions": 4,
+    "incidents": 1,
+    "users": 1
+   },
+   {
+    "org_id": "00DORG3",
+    "org_name": "Globex",
+    "account": "Globex",
+    "questions": 1,
+    "tokens": 500,
+    "actions": 2,
+    "incidents": 0,
+    "users": 1
+   },
+   {
+    "org_id": "00DORG2",
+    "org_name": "Acme UAT",
+    "account": "Acme",
+    "questions": 1,
+    "tokens": 3000,
+    "actions": 0,
+    "incidents": 0,
+    "users": 1
+   }
+  ],
+  "top_accounts": [
+   {
+    "account": "Acme",
+    "orgs": 2,
+    "questions": 3,
+    "tokens": 6000,
+    "actions": 4,
+    "incidents": 1
+   },
+   {
+    "account": "Globex",
+    "orgs": 1,
+    "questions": 1,
+    "tokens": 500,
+    "actions": 2,
+    "incidents": 0
+   }
+  ],
+  "top_users": [
+   {
+    "username": "dana",
+    "questions": 3,
+    "tokens": 6000,
+    "actions": 5,
+    "incidents": 1,
+    "logs": 2,
+    "channels": [
+     "mcp-remote",
+     "web"
+    ],
+    "days": [
+     "2026-11-14",
+     "2026-11-16",
+     "2026-11-15"
+    ],
+    "active_days": 3
+   },
+   {
+    "username": "sam",
+    "questions": 1,
+    "tokens": 500,
+    "actions": 3,
+    "incidents": 0,
+    "logs": 0,
+    "channels": [
+     "web"
+    ],
+    "days": [
+     "2026-11-14",
+     "2026-11-13",
+     "2026-11-15"
+    ],
+    "active_days": 3
+   },
+   {
+    "username": "admin",
+    "questions": 0,
+    "tokens": 0,
+    "actions": 1,
+    "incidents": 0,
+    "logs": 0,
+    "channels": [
+     "web"
+    ],
+    "days": [
+     "2026-11-16"
+    ],
+    "active_days": 1
+   }
+  ],
+  "top_features": [
+   {
+    "action": "kb.component",
+    "label": "Opened a component",
+    "count": 2
+   },
+   {
+    "action": "incident.resolve",
+    "label": "Recorded a resolution",
+    "count": 1
+   },
+   {
+    "action": "log.parse",
+    "label": "Parsed a debug log",
+    "count": 1
+   },
+   {
+    "action": "incident.file",
+    "label": "Filed an incident",
+    "count": 1
+   },
+   {
+    "action": "kb.field_writers",
+    "label": "Field writers",
+    "count": 1
+   },
+   {
+    "action": "kb.search",
+    "label": "Knowledgebase search",
+    "count": 1
+   }
+  ],
+  "top_models": [
+   {
+    "model": "gpt-test",
+    "questions": 4,
+    "tokens": 6500
+   }
+  ],
+  "generated_at": "2026-11-16T17:06:28Z"
+ },
+ "admin_user": {
+  "days": 7,
+  "from": "2026-11-10",
+  "to": "2026-11-16",
+  "previous_from": "2026-11-03",
+  "previous_to": "2026-11-09",
+  "previous_has_data": true,
+  "scope": "sam",
+  "current": {
+   "questions": 1,
+   "failed_questions": 1,
+   "answer_rate": 0.0,
+   "tokens": 500,
+   "prompt_tokens": 400,
+   "completion_tokens": 100,
+   "avg_tokens_per_question": 500,
+   "avg_answer_seconds": 4.0,
+   "chat_tool_calls": 2,
+   "cost": 0.0,
+   "cost_available": false,
+   "active_users": 1,
+   "active_days": 3,
+   "actions": 3,
+   "errors": 1,
+   "mcp_calls": 0,
+   "mcp_users": 0,
+   "kb_lookups": 1,
+   "logs_parsed": 0,
+   "exceptions_found": 0,
+   "incidents_filed": 0,
+   "resolutions": 0,
+   "orgs_worked_on": 1,
+   "accounts_worked_on": 1,
+   "orgs_connected": 1,
+   "org_refreshes": 0,
+   "new_users": null
+  },
+  "previous": {
+   "questions": 0,
+   "failed_questions": 0,
+   "answer_rate": null,
+   "tokens": 0,
+   "prompt_tokens": 0,
+   "completion_tokens": 0,
+   "avg_tokens_per_question": 0,
+   "avg_answer_seconds": 0,
+   "chat_tool_calls": 0,
+   "cost": 0,
+   "cost_available": false,
+   "active_users": 0,
+   "active_days": 0,
+   "actions": 0,
+   "errors": 0,
+   "mcp_calls": 0,
+   "mcp_users": 0,
+   "kb_lookups": 0,
+   "logs_parsed": 0,
+   "exceptions_found": 0,
+   "incidents_filed": 0,
+   "resolutions": 0,
+   "orgs_worked_on": 0,
+   "accounts_worked_on": 0,
+   "orgs_connected": 0,
+   "org_refreshes": 0,
+   "new_users": null
+  },
+  "inventory": {
+   "orgs_total": 3,
+   "accounts_total": 2,
+   "orgs_unassigned": 0,
+   "components_indexed": 180,
+   "users_total": 3,
+   "users_verified": 3
+  },
+  "trend": [
+   {
+    "date": "2026-11-10",
+    "questions": 0,
+    "tokens": 0,
+    "actions": 0,
+    "users": [],
+    "active_users": 0
+   },
+   {
+    "date": "2026-11-11",
+    "questions": 0,
+    "tokens": 0,
+    "actions": 0,
+    "users": [],
+    "active_users": 0
+   },
+   {
+    "date": "2026-11-12",
+    "questions": 0,
+    "tokens": 0,
+    "actions": 0,
+    "users": [],
+    "active_users": 0
+   },
+   {
+    "date": "2026-11-13",
+    "questions": 0,
+    "tokens": 0,
+    "actions": 2,
+    "users": [
+     "sam"
+    ],
+    "active_users": 1
+   },
+   {
+    "date": "2026-11-14",
+    "questions": 0,
+    "tokens": 0,
+    "actions": 1,
+    "users": [
+     "sam"
+    ],
+    "active_users": 1
+   },
+   {
+    "date": "2026-11-15",
+    "questions": 1,
+    "tokens": 500,
+    "actions": 0,
+    "users": [
+     "sam"
+    ],
+    "active_users": 1
+   },
+   {
+    "date": "2026-11-16",
+    "questions": 0,
+    "tokens": 0,
+    "actions": 0,
+    "users": [],
+    "active_users": 0
+   }
+  ],
+  "channels": {
+   "web": 3
+  },
+  "channel_labels": {
+   "web": "Web UI",
+   "chat": "In-app AI chat",
+   "mcp-remote": "MCP (remote /mcp)",
+   "mcp-stdio": "MCP (local stdio)",
+   "api": "API token (script, or an older MCP copy)"
+  },
+  "top_orgs": [
+   {
+    "org_id": "00DORG3",
+    "org_name": "Globex",
+    "account": "Globex",
+    "questions": 1,
+    "tokens": 500,
+    "actions": 2,
+    "incidents": 0,
+    "users": 1
+   }
+  ],
+  "top_accounts": [
+   {
+    "account": "Globex",
+    "orgs": 1,
+    "questions": 1,
+    "tokens": 500,
+    "actions": 2,
+    "incidents": 0
+   }
+  ],
+  "top_users": null,
+  "top_features": [
+   {
+    "action": "kb.component",
+    "label": "Opened a component",
+    "count": 2
+   }
+  ],
+  "top_models": [
+   {
+    "model": "gpt-test",
+    "questions": 1,
+    "tokens": 500
+   }
+  ],
+  "generated_at": "2026-11-16T17:06:28Z"
+ },
+ "user": {
+  "days": 7,
+  "from": "2026-11-10",
+  "to": "2026-11-16",
+  "previous_from": "2026-11-03",
+  "previous_to": "2026-11-09",
+  "previous_has_data": true,
+  "scope": "dana",
+  "current": {
+   "questions": 3,
+   "failed_questions": 0,
+   "answer_rate": 100.0,
+   "tokens": 6000,
+   "prompt_tokens": 5700,
+   "completion_tokens": 300,
+   "avg_tokens_per_question": 2000,
+   "avg_answer_seconds": 4.0,
+   "chat_tool_calls": 6,
+   "cost": 0.0,
+   "cost_available": false,
+   "active_users": 1,
+   "active_days": 3,
+   "actions": 6,
+   "errors": 0,
+   "mcp_calls": 1,
+   "mcp_users": 1,
+   "kb_lookups": 2,
+   "logs_parsed": 2,
+   "exceptions_found": 2,
+   "incidents_filed": 1,
+   "resolutions": 1,
+   "orgs_worked_on": 2,
+   "accounts_worked_on": 1,
+   "orgs_connected": 1,
+   "org_refreshes": 0,
+   "new_users": null
+  },
+  "previous": {
+   "questions": 1,
+   "failed_questions": 0,
+   "answer_rate": 100.0,
+   "tokens": 4000,
+   "prompt_tokens": 3900,
+   "completion_tokens": 100,
+   "avg_tokens_per_question": 4000,
+   "avg_answer_seconds": 4.0,
+   "chat_tool_calls": 2,
+   "cost": 0.0,
+   "cost_available": false,
+   "active_users": 1,
+   "active_days": 1,
+   "actions": 1,
+   "errors": 0,
+   "mcp_calls": 0,
+   "mcp_users": 0,
+   "kb_lookups": 1,
+   "logs_parsed": 0,
+   "exceptions_found": 0,
+   "incidents_filed": 0,
+   "resolutions": 0,
+   "orgs_worked_on": 1,
+   "accounts_worked_on": 1,
+   "orgs_connected": 0,
+   "org_refreshes": 0,
+   "new_users": null
+  },
+  "inventory": {
+   "orgs_total": 2,
+   "accounts_total": 1,
+   "orgs_unassigned": 0,
+   "components_indexed": 170,
+   "users_total": null,
+   "users_verified": null
+  },
+  "trend": [
+   {
+    "date": "2026-11-10",
+    "questions": 0,
+    "tokens": 0,
+    "actions": 0,
+    "users": [],
+    "active_users": 0
+   },
+   {
+    "date": "2026-11-11",
+    "questions": 0,
+    "tokens": 0,
+    "actions": 0,
+    "users": [],
+    "active_users": 0
+   },
+   {
+    "date": "2026-11-12",
+    "questions": 0,
+    "tokens": 0,
+    "actions": 0,
+    "users": [],
+    "active_users": 0
+   },
+   {
+    "date": "2026-11-13",
+    "questions": 0,
+    "tokens": 0,
+    "actions": 0,
+    "users": [],
+    "active_users": 0
+   },
+   {
+    "date": "2026-11-14",
+    "questions": 1,
+    "tokens": 3000,
+    "actions": 1,
+    "users": [
+     "dana"
+    ],
+    "active_users": 1
+   },
+   {
+    "date": "2026-11-15",
+    "questions": 1,
+    "tokens": 2000,
+    "actions": 2,
+    "users": [
+     "dana"
+    ],
+    "active_users": 1
+   },
+   {
+    "date": "2026-11-16",
+    "questions": 1,
+    "tokens": 1000,
+    "actions": 3,
+    "users": [
+     "dana"
+    ],
+    "active_users": 1
+   }
+  ],
+  "channels": {
+   "web": 5,
+   "mcp-remote": 1
+  },
+  "channel_labels": {
+   "web": "Web UI",
+   "chat": "In-app AI chat",
+   "mcp-remote": "MCP (remote /mcp)",
+   "mcp-stdio": "MCP (local stdio)",
+   "api": "API token (script, or an older MCP copy)"
+  },
+  "top_orgs": [
+   {
+    "org_id": "00DORG1",
+    "org_name": "Acme Prod",
+    "account": "Acme",
+    "questions": 2,
+    "tokens": 3000,
+    "actions": 4,
+    "incidents": 1,
+    "users": 1
+   },
+   {
+    "org_id": "00DORG2",
+    "org_name": "Acme UAT",
+    "account": "Acme",
+    "questions": 1,
+    "tokens": 3000,
+    "actions": 0,
+    "incidents": 0,
+    "users": 1
+   }
+  ],
+  "top_accounts": [
+   {
+    "account": "Acme",
+    "orgs": 2,
+    "questions": 3,
+    "tokens": 6000,
+    "actions": 4,
+    "incidents": 1
+   }
+  ],
+  "top_users": null,
+  "top_features": [
+   {
+    "action": "incident.resolve",
+    "label": "Recorded a resolution",
+    "count": 1
+   },
+   {
+    "action": "log.parse",
+    "label": "Parsed a debug log",
+    "count": 1
+   },
+   {
+    "action": "incident.file",
+    "label": "Filed an incident",
+    "count": 1
+   },
+   {
+    "action": "kb.field_writers",
+    "label": "Field writers",
+    "count": 1
+   },
+   {
+    "action": "kb.search",
+    "label": "Knowledgebase search",
+    "count": 1
+   }
+  ],
+  "top_models": [
+   {
+    "model": "gpt-test",
+    "questions": 3,
+    "tokens": 6000
+   }
+  ],
+  "generated_at": "2026-11-16T17:06:28Z"
+ }
+}

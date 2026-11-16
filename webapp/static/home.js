@@ -168,7 +168,7 @@ function renderAdminStrip() {
     <span class="health-title">System health</span>
     ${chip(llm.configured && !llm.problem ? "ok" : "bad", "LLM",
            llm.configured ? `${escapeHtml(llm.provider || "")}${llm.default_model ? " &middot; " + escapeHtml(llm.default_model) : ""}${llm.problem ? " &middot; problem" : " &middot; ready"}` : "not configured",
-           "showView('usage')", llm.problem || "")}
+           "openUsagePane('tokens')", llm.problem || "")}
     ${chip(a.unverified.length ? "warn" : "ok", "Signups waiting",
            a.unverified.length ? `${a.unverified.length} to verify` : "none",
            "showView('admin')", a.unverified.join(", "))}
